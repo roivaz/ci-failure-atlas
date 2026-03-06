@@ -116,7 +116,7 @@ Runtime semantics mirror `release-dashboard`:
 
 1. `source.sippy.runs`
    - key: `environment|run_url`
-   - responsibility: discover/update failing run metadata.
+   - responsibility: discover runs from Sippy, persist failed run metadata, and persist hourly run-count baselines (`total/success/failure`) for metric denominators.
 
 2. `source.prow.failures`
    - key: `environment|run_url`
@@ -211,6 +211,7 @@ Initial NDJSON layout:
 data/
   facts/
     runs.ndjson
+    run_counts_hourly.ndjson
     artifact_failures.ndjson
     raw_failures.ndjson
     metrics_daily.ndjson

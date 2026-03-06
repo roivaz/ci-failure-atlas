@@ -7,6 +7,9 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"ci-failure-atlas/pkg/sourceoptions"
+	"ci-failure-atlas/pkg/store/contracts"
+
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/workqueue"
@@ -19,6 +22,11 @@ const (
 	MetricsRollupDailyControllerName = "metrics.rollup.daily"
 )
 
+type Dependencies struct {
+	Store  contracts.Store
+	Source *sourceoptions.Options
+}
+
 type noopController struct {
 	name              string
 	logger            logr.Logger
@@ -28,10 +36,10 @@ type noopController struct {
 
 var _ Controller = (*noopController)(nil)
 
-func NewByName(name string, logger logr.Logger) (Controller, error) {
+func NewByName(name string, logger logr.Logger, deps Dependencies) (Controller, error) {
 	switch name {
 	case SourceSippyRunsControllerName:
-		return NewSourceSippyRuns(logger), nil
+		return NewSourceSippyRuns(logger, deps)
 	case SourceProwFailuresControllerName:
 		return NewSourceProwFailures(logger), nil
 	case FactsRawFailuresControllerName:
@@ -41,10 +49,6 @@ func NewByName(name string, logger logr.Logger) (Controller, error) {
 	default:
 		return nil, fmt.Errorf("unknown controller %q", name)
 	}
-}
-
-func NewSourceSippyRuns(logger logr.Logger) Controller {
-	return newNoopController(logger, SourceSippyRunsControllerName, 2*time.Minute)
 }
 
 func NewSourceProwFailures(logger logr.Logger) Controller {

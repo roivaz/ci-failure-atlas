@@ -281,6 +281,62 @@ func TestUpsertMetricsDailyAndListDates(t *testing.T) {
 	}
 }
 
+func TestUpsertRunCountsHourlyAndListHours(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	err = store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
+		{Environment: "dev", Hour: "2026-03-05T10:00:00Z", TotalRuns: 7, FailedRuns: 2, SuccessfulRuns: 5},
+		{Environment: "dev", Hour: "2026-03-05T09:00:00Z", TotalRuns: 5, FailedRuns: 1, SuccessfulRuns: 4},
+		{Environment: "int", Hour: "2026-03-05T10:00:00Z", TotalRuns: 3, FailedRuns: 0, SuccessfulRuns: 3},
+	})
+	if err != nil {
+		t.Fatalf("upsert initial run counts hourly: %v", err)
+	}
+
+	err = store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
+		{Environment: "dev", Hour: "2026-03-05T10:10:00Z", TotalRuns: 8, FailedRuns: 3, SuccessfulRuns: 5},
+	})
+	if err != nil {
+		t.Fatalf("upsert updated run count hourly: %v", err)
+	}
+
+	hours, err := store.ListRunCountHourlyHours(ctx)
+	if err != nil {
+		t.Fatalf("list run count hours: %v", err)
+	}
+	wantHours := []string{"2026-03-05T09:00:00Z", "2026-03-05T10:00:00Z"}
+	if !reflect.DeepEqual(hours, wantHours) {
+		t.Fatalf("hour list mismatch: got=%v want=%v", hours, wantHours)
+	}
+
+	rows, err := readNDJSON[contracts.RunCountHourlyRecord](filepath.Join(store.dataDirectory, factsDirectory, runCountsHourlyFilename))
+	if err != nil {
+		t.Fatalf("read run counts hourly file: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("unexpected run count hourly row count: got=%d want=3", len(rows))
+	}
+
+	var devUpdatedFound bool
+	for _, row := range rows {
+		if row.Environment == "dev" && row.Hour == "2026-03-05T10:00:00Z" {
+			devUpdatedFound = true
+			if row.TotalRuns != 8 || row.FailedRuns != 3 || row.SuccessfulRuns != 5 {
+				t.Fatalf("unexpected updated dev run count row: %+v", row)
+			}
+		}
+	}
+	if !devUpdatedFound {
+		t.Fatalf("updated run count row for dev/2026-03-05T10:00:00Z not found")
+	}
+}
+
 func TestUpsertAndGetCheckpoint(t *testing.T) {
 	t.Parallel()
 
@@ -396,5 +452,17 @@ func TestUpsertRequiresEnvironment(t *testing.T) {
 		{RowID: "row-a", RunURL: "https://run-a", SignatureID: "sig-a"},
 	}); err == nil {
 		t.Fatalf("expected UpsertRawFailures to fail without environment")
+	}
+
+	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
+		{Hour: "2026-03-05T10:00:00Z", TotalRuns: 1, FailedRuns: 1, SuccessfulRuns: 0},
+	}); err == nil {
+		t.Fatalf("expected UpsertRunCountsHourly to fail without environment")
+	}
+
+	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
+		{Environment: "dev", Hour: "2026-03-05T10:00:00Z", TotalRuns: 1, FailedRuns: 0, SuccessfulRuns: 0},
+	}); err == nil {
+		t.Fatalf("expected UpsertRunCountsHourly to fail on inconsistent counters")
 	}
 }

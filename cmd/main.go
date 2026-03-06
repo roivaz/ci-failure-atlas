@@ -10,6 +10,8 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
+	"ci-failure-atlas/pkg/cli"
+
 	"k8s.io/klog/v2"
 )
 
@@ -35,12 +37,12 @@ func main() {
 	cmd.PersistentFlags().IntVarP(&logVerbosity, "verbosity", "v", 0, "set the verbosity level")
 
 	commands := []func() (*cobra.Command, error){
-		NewRunCommand,
-		NewRunOnceCommand,
-		NewSyncOnceCommand,
-		NewReportCommand,
-		NewWorkflowCommand,
-		NewMetricsCommand,
+		cli.NewRunCommand,
+		cli.NewRunOnceCommand,
+		cli.NewSyncOnceCommand,
+		cli.NewReportCommand,
+		cli.NewWorkflowCommand,
+		cli.NewMetricsCommand,
 	}
 
 	for _, newCmd := range commands {

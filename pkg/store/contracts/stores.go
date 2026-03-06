@@ -42,6 +42,14 @@ type MetricDailyRecord struct {
 	Value       float64 `json:"value"`
 }
 
+type RunCountHourlyRecord struct {
+	Environment    string `json:"environment"`
+	Hour           string `json:"hour"`
+	TotalRuns      int    `json:"total_runs"`
+	FailedRuns     int    `json:"failed_runs"`
+	SuccessfulRuns int    `json:"successful_runs"`
+}
+
 type CheckpointRecord struct {
 	Name      string `json:"name"`
 	Value     string `json:"value"`
@@ -75,6 +83,11 @@ type MetricsStore interface {
 	ListMetricDates(ctx context.Context) ([]string, error)
 }
 
+type RunCountHourlyStore interface {
+	UpsertRunCountsHourly(ctx context.Context, rows []RunCountHourlyRecord) error
+	ListRunCountHourlyHours(ctx context.Context) ([]string, error)
+}
+
 type CheckpointStore interface {
 	UpsertCheckpoints(ctx context.Context, rows []CheckpointRecord) error
 	GetCheckpoint(ctx context.Context, name string) (CheckpointRecord, bool, error)
@@ -90,6 +103,7 @@ type Store interface {
 	ArtifactFailureStore
 	RawFailureStore
 	MetricsStore
+	RunCountHourlyStore
 	CheckpointStore
 	DeadLetterStore
 

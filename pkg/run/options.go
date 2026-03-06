@@ -162,12 +162,21 @@ func (opts *Options) Run(ctx context.Context) error {
 
 	logger.Info("Starting controllers.")
 
+	deps := controllers.Dependencies{
+		Store:  opts.Store,
+		Source: opts.Source,
+	}
+	sourceSippyRunsController, err := controllers.NewSourceSippyRuns(logger, deps)
+	if err != nil {
+		return err
+	}
+
 	controllersToRun := []struct {
 		controller controllers.Controller
 		threads    int
 	}{
 		{
-			controller: controllers.NewSourceSippyRuns(logger),
+			controller: sourceSippyRunsController,
 			threads:    opts.SourceSippyRunsControllerThreads,
 		},
 		{

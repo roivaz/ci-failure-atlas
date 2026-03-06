@@ -130,7 +130,10 @@ func (opts *Options) Run(ctx context.Context) error {
 	}
 	defer opts.Cleanup()
 
-	controller, err := controllers.NewByName(opts.ControllerName, logger)
+	controller, err := controllers.NewByName(opts.ControllerName, logger, controllers.Dependencies{
+		Store:  opts.Store,
+		Source: opts.Source,
+	})
 	if err != nil {
 		return err
 	}

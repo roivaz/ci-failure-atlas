@@ -25,6 +25,7 @@ const (
 	artifactFailuresFilename = "artifact_failures.ndjson"
 	rawFailuresFilename      = "raw_failures.ndjson"
 	metricsDailyFilename     = "metrics_daily.ndjson"
+	runCountsHourlyFilename  = "run_counts_hourly.ndjson"
 	checkpointsFilename      = "checkpoints.ndjson"
 	deadLettersFilename      = "dead_letters.ndjson"
 )
@@ -324,6 +325,90 @@ func (s *Store) ListRawFailureRunKeys(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
+func (s *Store) UpsertRunCountsHourly(ctx context.Context, rows []contracts.RunCountHourlyRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.runCountsHourlyPath()
+	existing, err := readNDJSON[contracts.RunCountHourlyRecord](path)
+	if err != nil {
+		return err
+	}
+
+	mergedByKey := map[string]contracts.RunCountHourlyRecord{}
+	for _, row := range existing {
+		normalized := normalizeRunCountHourlyRecord(row)
+		key := runCountHourlyKey(normalized)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, row := range rows {
+		normalized := normalizeRunCountHourlyRecord(row)
+		key := runCountHourlyKey(normalized)
+		if key == "" {
+			return fmt.Errorf("run count hourly record missing environment and/or hour")
+		}
+		if normalized.TotalRuns < 0 || normalized.FailedRuns < 0 || normalized.SuccessfulRuns < 0 {
+			return fmt.Errorf("run count hourly record has negative counters for key %q", key)
+		}
+		if normalized.TotalRuns != normalized.FailedRuns+normalized.SuccessfulRuns {
+			return fmt.Errorf("run count hourly record has inconsistent counters for key %q", key)
+		}
+		mergedByKey[key] = normalized
+	}
+
+	merged := make([]contracts.RunCountHourlyRecord, 0, len(mergedByKey))
+	for _, row := range mergedByKey {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Environment != merged[j].Environment {
+			return merged[i].Environment < merged[j].Environment
+		}
+		return merged[i].Hour < merged[j].Hour
+	})
+
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListRunCountHourlyHours(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RunCountHourlyRecord](s.runCountsHourlyPath())
+	if err != nil {
+		return nil, err
+	}
+
+	hoursSet := map[string]struct{}{}
+	for _, row := range rows {
+		hour := normalizeRunCountHourlyRecord(row).Hour
+		if hour == "" {
+			continue
+		}
+		hoursSet[hour] = struct{}{}
+	}
+	hours := make([]string, 0, len(hoursSet))
+	for hour := range hoursSet {
+		hours = append(hours, hour)
+	}
+	sort.Strings(hours)
+	return hours, nil
+}
+
 func (s *Store) UpsertMetricsDaily(ctx context.Context, rows []contracts.MetricDailyRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -579,6 +664,10 @@ func (s *Store) metricsDailyPath() string {
 	return filepath.Join(s.dataDirectory, factsDirectory, metricsDailyFilename)
 }
 
+func (s *Store) runCountsHourlyPath() string {
+	return filepath.Join(s.dataDirectory, factsDirectory, runCountsHourlyFilename)
+}
+
 func (s *Store) checkpointsPath() string {
 	return filepath.Join(s.dataDirectory, stateDirectory, checkpointsFilename)
 }
@@ -629,6 +718,23 @@ func normalizeMetricDailyRecord(row contracts.MetricDailyRecord) contracts.Metri
 	}
 }
 
+func normalizeRunCountHourlyRecord(row contracts.RunCountHourlyRecord) contracts.RunCountHourlyRecord {
+	hour := strings.TrimSpace(row.Hour)
+	if ts, err := time.Parse(time.RFC3339Nano, hour); err == nil {
+		hour = ts.UTC().Truncate(time.Hour).Format(time.RFC3339)
+	} else if ts, err := time.Parse(time.RFC3339, hour); err == nil {
+		hour = ts.UTC().Truncate(time.Hour).Format(time.RFC3339)
+	}
+
+	return contracts.RunCountHourlyRecord{
+		Environment:    normalizeEnvironment(row.Environment),
+		Hour:           hour,
+		TotalRuns:      row.TotalRuns,
+		FailedRuns:     row.FailedRuns,
+		SuccessfulRuns: row.SuccessfulRuns,
+	}
+}
+
 func normalizeCheckpointRecord(row contracts.CheckpointRecord) contracts.CheckpointRecord {
 	return contracts.CheckpointRecord{
 		Name:      strings.TrimSpace(row.Name),
@@ -658,6 +764,13 @@ func metricDailyKey(row contracts.MetricDailyRecord) string {
 		return ""
 	}
 	return row.Environment + "|" + row.Date + "|" + row.Metric
+}
+
+func runCountHourlyKey(row contracts.RunCountHourlyRecord) string {
+	if row.Environment == "" || row.Hour == "" {
+		return ""
+	}
+	return row.Environment + "|" + row.Hour
 }
 
 func runRecordKey(row contracts.RunRecord) string {

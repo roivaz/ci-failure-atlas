@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestValidateAndCompleteEnvironments(t *testing.T) {
@@ -11,6 +12,9 @@ func TestValidateAndCompleteEnvironments(t *testing.T) {
 
 	raw := DefaultOptions()
 	raw.Environments = []string{"DEV", "int", "dev", "stg"}
+	raw.SippyReleaseInt = "Int"
+	raw.SippyReleaseStg = "Stg"
+	raw.SippyLookback = "48h"
 
 	validated, err := raw.Validate()
 	if err != nil {
@@ -25,6 +29,9 @@ func TestValidateAndCompleteEnvironments(t *testing.T) {
 	want := []string{"dev", "int", "stg"}
 	if !reflect.DeepEqual(completed.Environments, want) {
 		t.Fatalf("environment list mismatch: got=%v want=%v", completed.Environments, want)
+	}
+	if completed.SippyLookback != 48*time.Hour {
+		t.Fatalf("lookback mismatch: got=%s want=%s", completed.SippyLookback, 48*time.Hour)
 	}
 }
 
@@ -47,5 +54,17 @@ func TestValidateRejectsEmptyEnvironmentList(t *testing.T) {
 
 	if _, err := raw.Validate(); err == nil {
 		t.Fatalf("expected validate to reject empty environment list")
+	}
+}
+
+func TestValidateRejectsMissingEnvironmentRelease(t *testing.T) {
+	t.Parallel()
+
+	raw := DefaultOptions()
+	raw.Environments = []string{"int"}
+	raw.SippyReleaseInt = ""
+
+	if _, err := raw.Validate(); err == nil {
+		t.Fatalf("expected validate to reject missing release for selected environment")
 	}
 }
