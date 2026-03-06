@@ -15,6 +15,8 @@ func TestValidateAndCompleteEnvironments(t *testing.T) {
 	raw.SippyReleaseInt = "Int"
 	raw.SippyReleaseStg = "Stg"
 	raw.SippyLookback = "48h"
+	raw.ReconcileActiveWindow = "14d"
+	raw.UnresolvedPRRetryWindow = "7d"
 
 	validated, err := raw.Validate()
 	if err != nil {
@@ -32,6 +34,12 @@ func TestValidateAndCompleteEnvironments(t *testing.T) {
 	}
 	if completed.SippyLookback != 48*time.Hour {
 		t.Fatalf("lookback mismatch: got=%s want=%s", completed.SippyLookback, 48*time.Hour)
+	}
+	if completed.ReconcileActiveWindow != 14*24*time.Hour {
+		t.Fatalf("active window mismatch: got=%s want=%s", completed.ReconcileActiveWindow, 14*24*time.Hour)
+	}
+	if completed.UnresolvedPRRetryWindow != 7*24*time.Hour {
+		t.Fatalf("unresolved retry window mismatch: got=%s want=%s", completed.UnresolvedPRRetryWindow, 7*24*time.Hour)
 	}
 }
 
@@ -66,5 +74,16 @@ func TestValidateRejectsMissingEnvironmentRelease(t *testing.T) {
 
 	if _, err := raw.Validate(); err == nil {
 		t.Fatalf("expected validate to reject missing release for selected environment")
+	}
+}
+
+func TestValidateRejectsInvalidReconcileWindow(t *testing.T) {
+	t.Parallel()
+
+	raw := DefaultOptions()
+	raw.ReconcileActiveWindow = "abc"
+
+	if _, err := raw.Validate(); err == nil {
+		t.Fatalf("expected validate to reject invalid active window")
 	}
 }

@@ -43,20 +43,12 @@ func NewByName(name string, logger logr.Logger, deps Dependencies) (Controller, 
 	case SourceProwFailuresControllerName:
 		return NewSourceProwFailures(logger, deps)
 	case FactsRawFailuresControllerName:
-		return NewFactsRawFailures(logger), nil
+		return NewFactsRawFailures(logger, deps)
 	case MetricsRollupDailyControllerName:
-		return NewMetricsRollupDaily(logger), nil
+		return NewMetricsRollupDaily(logger, deps)
 	default:
 		return nil, fmt.Errorf("unknown controller %q", name)
 	}
-}
-
-func NewFactsRawFailures(logger logr.Logger) Controller {
-	return newNoopController(logger, FactsRawFailuresControllerName, 2*time.Minute)
-}
-
-func NewMetricsRollupDaily(logger logr.Logger) Controller {
-	return newNoopController(logger, MetricsRollupDailyControllerName, 5*time.Minute)
 }
 
 func newNoopController(logger logr.Logger, name string, interval time.Duration) *noopController {

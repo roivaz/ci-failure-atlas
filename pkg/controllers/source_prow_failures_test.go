@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -35,7 +36,7 @@ func TestSourceProwFailuresSyncOnceUpsertsArtifactRows(t *testing.T) {
 			Environment: "dev",
 			RunURL:      runURL,
 			JobName:     "job",
-			OccurredAt:  "2026-03-06T10:00:00Z",
+			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
 		},
 	}); err != nil {
 		t.Fatalf("upsert runs: %v", err)
@@ -123,6 +124,9 @@ func TestSourceProwFailuresSyncOnceUpsertsArtifactRows(t *testing.T) {
 	if err := controller.SyncOnce(ctx); err != nil {
 		t.Fatalf("second sync once: %v", err)
 	}
+	if len(fakeClient.calls) != 1 {
+		t.Fatalf("expected second sync to skip prow download for existing rows, calls=%+v", fakeClient.calls)
+	}
 	rowsAfterSecondSync := mustReadArtifactFailureRows(t, filepath.Join(dataDir, "facts", "artifact_failures.ndjson"))
 	if len(rowsAfterSecondSync) != 3 {
 		t.Fatalf("unexpected artifact row count after second sync: got=%d want=3", len(rowsAfterSecondSync))
@@ -149,6 +153,75 @@ func TestSourceProwFailuresRunOnceRejectsInvalidKey(t *testing.T) {
 
 	if err := controller.RunOnce(ctx, "invalid-key"); err == nil {
 		t.Fatalf("expected invalid key to fail")
+	}
+}
+
+func TestSourceProwFailuresSyncOnceSkipsRunsOutsideActiveWindow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	recentRunURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/recent/1"
+	oldRunURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/old/1"
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      recentRunURL,
+			JobName:     "job",
+			OccurredAt:  time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+		},
+		{
+			Environment: "dev",
+			RunURL:      oldRunURL,
+			JobName:     "job",
+			OccurredAt:  time.Now().UTC().Add(-21 * 24 * time.Hour).Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+
+	fakeClient := &fakeProwArtifactsClient{
+		failuresByKey: map[string][]prowartifacts.Failure{
+			"dev|" + recentRunURL: {
+				{
+					ArtifactURL: "https://gcsweb-ci/apps/.../junit_recent.xml",
+					TestSuite:   "suite-recent",
+					TestName:    "test-recent",
+					FailureText: "recent failure",
+				},
+			},
+			"dev|" + oldRunURL: {
+				{
+					ArtifactURL: "https://gcsweb-ci/apps/.../junit_old.xml",
+					TestSuite:   "suite-old",
+					TestName:    "test-old",
+					FailureText: "old failure",
+				},
+			},
+		},
+	}
+	controller, err := newSourceProwFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptionsForProw(t),
+	}, fakeClient)
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+
+	if err := controller.SyncOnce(ctx); err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if len(fakeClient.calls) != 1 {
+		t.Fatalf("expected exactly one fetch for recent key, calls=%+v", fakeClient.calls)
+	}
+	if fakeClient.calls[0] != (prowCall{environment: "dev", runURL: recentRunURL}) {
+		t.Fatalf("unexpected prow fetch call: %+v", fakeClient.calls[0])
 	}
 }
 

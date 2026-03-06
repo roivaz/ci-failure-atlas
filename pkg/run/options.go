@@ -174,6 +174,14 @@ func (opts *Options) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	factsRawFailuresController, err := controllers.NewFactsRawFailures(logger, deps)
+	if err != nil {
+		return err
+	}
+	metricsRollupDailyController, err := controllers.NewMetricsRollupDaily(logger, deps)
+	if err != nil {
+		return err
+	}
 
 	controllersToRun := []struct {
 		controller controllers.Controller
@@ -188,11 +196,11 @@ func (opts *Options) Run(ctx context.Context) error {
 			threads:    opts.SourceProwFailuresControllerThreads,
 		},
 		{
-			controller: controllers.NewFactsRawFailures(logger),
+			controller: factsRawFailuresController,
 			threads:    opts.FactsRawFailuresControllerThreads,
 		},
 		{
-			controller: controllers.NewMetricsRollupDaily(logger),
+			controller: metricsRollupDailyController,
 			threads:    opts.MetricsRollupDailyControllerThreads,
 		},
 	}

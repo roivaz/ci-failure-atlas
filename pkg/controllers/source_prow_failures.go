@@ -25,6 +25,7 @@ type sourceProwFailuresController struct {
 	logger            logr.Logger
 	reconcileInterval time.Duration
 	queue             workqueue.TypedRateLimitingInterface[string]
+	activeWindow      time.Duration
 
 	store      contracts.Store
 	prowClient prowartifacts.Client
@@ -59,6 +60,7 @@ func newSourceProwFailuresController(logger logr.Logger, deps Dependencies, clie
 			},
 		),
 		reconcileInterval: sourceProwFailuresReconcileInterval,
+		activeWindow:      activeReconcileWindow(deps.Source),
 		store:             deps.Store,
 		prowClient:        client,
 	}, nil
@@ -142,13 +144,42 @@ func (c *sourceProwFailuresController) listKeys(ctx context.Context) ([]string, 
 	if err != nil {
 		return nil, fmt.Errorf("list run keys: %w", err)
 	}
-	return keys, nil
+
+	now := time.Now().UTC()
+	filtered := make([]string, 0, len(keys))
+	for _, key := range keys {
+		environment, runURL, err := splitEnvironmentRunKey(key)
+		if err != nil {
+			continue
+		}
+		run, found, err := c.store.GetRun(ctx, environment, runURL)
+		if err != nil {
+			return nil, fmt.Errorf("get run metadata for key %q: %w", key, err)
+		}
+		if !found {
+			continue
+		}
+		if !isRunWithinActiveWindow(run, c.activeWindow, now) {
+			continue
+		}
+		filtered = append(filtered, key)
+	}
+	return filtered, nil
 }
 
 func (c *sourceProwFailuresController) processKey(ctx context.Context, key string) error {
 	environment, runURL, err := splitEnvironmentRunKey(key)
 	if err != nil {
 		return err
+	}
+
+	existingRows, err := c.store.ListArtifactFailuresByRun(ctx, environment, runURL)
+	if err != nil {
+		return fmt.Errorf("list existing artifact failures for run %q: %w", runURL, err)
+	}
+	if len(existingRows) > 0 {
+		c.logger.V(1).Info("Skipping run; artifact failures already materialized.", "key", key, "existing_rows", len(existingRows))
+		return nil
 	}
 
 	failures, err := c.prowClient.ListFailures(ctx, environment, runURL)

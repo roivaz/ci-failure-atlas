@@ -15,13 +15,15 @@ var supportedEnvironments = []string{"dev", "int", "stg", "prod"}
 
 func DefaultOptions() *RawOptions {
 	return &RawOptions{
-		SippyBaseURL:         "https://sippy.dptools.openshift.org",
-		ProwArtifactsBaseURL: "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs",
-		Environments:         []string{"dev"},
-		SippyOrg:             "Azure",
-		SippyRepo:            "ARO-HCP",
-		SippyReleaseDev:      "Presubmits",
-		SippyLookback:        "7d",
+		SippyBaseURL:            "https://sippy.dptools.openshift.org",
+		ProwArtifactsBaseURL:    "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs",
+		Environments:            []string{"dev"},
+		SippyOrg:                "Azure",
+		SippyRepo:               "ARO-HCP",
+		SippyReleaseDev:         "Presubmits",
+		SippyLookback:           "7d",
+		ReconcileActiveWindow:   "14d",
+		UnresolvedPRRetryWindow: "7d",
 	}
 }
 
@@ -34,33 +36,39 @@ func BindSourceOptions(opts *RawOptions, cmd *cobra.Command) error {
 	cmd.Flags().StringVar(&opts.SippyReleaseStg, "source.sippy.release.stg", opts.SippyReleaseStg, "Sippy release value for the stg environment.")
 	cmd.Flags().StringVar(&opts.SippyReleaseProd, "source.sippy.release.prod", opts.SippyReleaseProd, "Sippy release value for the prod environment.")
 	cmd.Flags().StringVar(&opts.SippyLookback, "source.sippy.lookback", opts.SippyLookback, "Lookback window for job-run discovery (for example 24h, 7d, 2w).")
+	cmd.Flags().StringVar(&opts.ReconcileActiveWindow, "source.reconcile.active-window", opts.ReconcileActiveWindow, "Maximum run age to keep reconciling across controllers (for example 14d, 336h).")
+	cmd.Flags().StringVar(&opts.UnresolvedPRRetryWindow, "source.reconcile.unresolved-pr-retry-window", opts.UnresolvedPRRetryWindow, "Retry window for unresolved (not merged) PR-backed runs (for example 7d, 168h).")
 	cmd.Flags().StringVar(&opts.ProwArtifactsBaseURL, "source.prow-artifacts.base-url", opts.ProwArtifactsBaseURL, "Base URL for Prow/GCS artifacts.")
 	cmd.Flags().StringSliceVar(&opts.Environments, "source.envs", opts.Environments, "Environments to ingest from (allowed: dev,int,stg,prod).")
 	return nil
 }
 
 type RawOptions struct {
-	SippyBaseURL         string
-	SippyOrg             string
-	SippyRepo            string
-	SippyReleaseDev      string
-	SippyReleaseInt      string
-	SippyReleaseStg      string
-	SippyReleaseProd     string
-	SippyLookback        string
-	ProwArtifactsBaseURL string
-	Environments         []string
+	SippyBaseURL            string
+	SippyOrg                string
+	SippyRepo               string
+	SippyReleaseDev         string
+	SippyReleaseInt         string
+	SippyReleaseStg         string
+	SippyReleaseProd        string
+	SippyLookback           string
+	ReconcileActiveWindow   string
+	UnresolvedPRRetryWindow string
+	ProwArtifactsBaseURL    string
+	Environments            []string
 }
 
 type validatedOptions struct {
 	*RawOptions
-	SippyBaseURL         string
-	SippyOrg             string
-	SippyRepo            string
-	SippyReleaseByEnv    map[string]string
-	SippyLookback        time.Duration
-	ProwArtifactsBaseURL string
-	Environments         []string
+	SippyBaseURL            string
+	SippyOrg                string
+	SippyRepo               string
+	SippyReleaseByEnv       map[string]string
+	SippyLookback           time.Duration
+	ReconcileActiveWindow   time.Duration
+	UnresolvedPRRetryWindow time.Duration
+	ProwArtifactsBaseURL    string
+	Environments            []string
 }
 
 type ValidatedOptions struct {
@@ -68,13 +76,15 @@ type ValidatedOptions struct {
 }
 
 type completedOptions struct {
-	SippyBaseURL         string
-	SippyOrg             string
-	SippyRepo            string
-	SippyReleaseByEnv    map[string]string
-	SippyLookback        time.Duration
-	ProwArtifactsBaseURL string
-	Environments         []string
+	SippyBaseURL            string
+	SippyOrg                string
+	SippyRepo               string
+	SippyReleaseByEnv       map[string]string
+	SippyLookback           time.Duration
+	ReconcileActiveWindow   time.Duration
+	UnresolvedPRRetryWindow time.Duration
+	ProwArtifactsBaseURL    string
+	Environments            []string
 }
 
 type Options struct {
@@ -102,6 +112,14 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid --source.sippy.lookback value: %w", err)
 	}
+	activeWindow, err := parseLookback(strings.TrimSpace(o.ReconcileActiveWindow))
+	if err != nil {
+		return nil, fmt.Errorf("invalid --source.reconcile.active-window value: %w", err)
+	}
+	unresolvedRetryWindow, err := parseLookback(strings.TrimSpace(o.UnresolvedPRRetryWindow))
+	if err != nil {
+		return nil, fmt.Errorf("invalid --source.reconcile.unresolved-pr-retry-window value: %w", err)
+	}
 
 	envs := normalizeEnvironments(o.Environments)
 	if len(envs) == 0 {
@@ -126,14 +144,16 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 
 	return &ValidatedOptions{
 		validatedOptions: &validatedOptions{
-			RawOptions:           o,
-			SippyBaseURL:         sippyURL,
-			SippyOrg:             sippyOrg,
-			SippyRepo:            sippyRepo,
-			SippyReleaseByEnv:    releasesByEnv,
-			SippyLookback:        lookback,
-			ProwArtifactsBaseURL: artifactsURL,
-			Environments:         envs,
+			RawOptions:              o,
+			SippyBaseURL:            sippyURL,
+			SippyOrg:                sippyOrg,
+			SippyRepo:               sippyRepo,
+			SippyReleaseByEnv:       releasesByEnv,
+			SippyLookback:           lookback,
+			ReconcileActiveWindow:   activeWindow,
+			UnresolvedPRRetryWindow: unresolvedRetryWindow,
+			ProwArtifactsBaseURL:    artifactsURL,
+			Environments:            envs,
 		},
 	}, nil
 }
@@ -141,13 +161,15 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 func (o *ValidatedOptions) Complete(_ context.Context) (*Options, error) {
 	return &Options{
 		completedOptions: &completedOptions{
-			SippyBaseURL:         o.SippyBaseURL,
-			SippyOrg:             o.SippyOrg,
-			SippyRepo:            o.SippyRepo,
-			SippyReleaseByEnv:    copyStringMap(o.SippyReleaseByEnv),
-			SippyLookback:        o.SippyLookback,
-			ProwArtifactsBaseURL: o.ProwArtifactsBaseURL,
-			Environments:         append([]string(nil), o.Environments...),
+			SippyBaseURL:            o.SippyBaseURL,
+			SippyOrg:                o.SippyOrg,
+			SippyRepo:               o.SippyRepo,
+			SippyReleaseByEnv:       copyStringMap(o.SippyReleaseByEnv),
+			SippyLookback:           o.SippyLookback,
+			ReconcileActiveWindow:   o.ReconcileActiveWindow,
+			UnresolvedPRRetryWindow: o.UnresolvedPRRetryWindow,
+			ProwArtifactsBaseURL:    o.ProwArtifactsBaseURL,
+			Environments:            append([]string(nil), o.Environments...),
 		},
 	}, nil
 }

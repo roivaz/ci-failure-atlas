@@ -18,10 +18,20 @@ import (
 )
 
 const (
-	sourceSippyRunsReconcileInterval = 2 * time.Minute
+	sourceSippyRunsReconcileInterval = 30 * time.Minute
 	sourceSippyRunsDefaultPageSize   = 1000
 	sourceSippyRunsReplayWindow      = 3 * time.Hour
+	sourceSippyRunsPRLookupMinLimit  = 100
+	sourceSippyRunsPRLookupMaxLimit  = 1000
 )
+
+// TODO: Wire this map via CLI flags/config file (same for deterministic JUnit path mapping).
+var sippyJobNameByEnvironment = map[string]string{
+	"dev":  "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+	"int":  "periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel",
+	"stg":  "periodic-ci-Azure-ARO-HCP-main-periodic-stage-e2e-parallel",
+	"prod": "periodic-ci-Azure-ARO-HCP-main-periodic-prod-e2e-parallel",
+}
 
 type sourceSippyRunsController struct {
 	logger            logr.Logger
@@ -53,6 +63,9 @@ func newSourceSippyRunsController(logger logr.Logger, deps Dependencies, client 
 	for _, env := range deps.Source.Environments {
 		if strings.TrimSpace(deps.Source.SippyReleaseByEnv[env]) == "" {
 			return nil, fmt.Errorf("source.sippy.runs: missing sippy release mapping for environment %q", env)
+		}
+		if _, err := sippyJobNameForEnvironment(env); err != nil {
+			return nil, fmt.Errorf("source.sippy.runs: %w", err)
 		}
 	}
 
@@ -176,6 +189,10 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 	if err != nil {
 		return err
 	}
+	jobName, err := sippyJobNameForEnvironment(environment)
+	if err != nil {
+		return err
+	}
 
 	checkpointTime, err := c.getCheckpointTime(ctx, environment)
 	if err != nil {
@@ -183,7 +200,7 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 	}
 	since := c.resolveSince(checkpointTime)
 
-	runs, err := c.sippyClient.ListJobRuns(ctx, sippysource.ListJobRunsOptions{
+	allRuns, err := c.sippyClient.ListJobRuns(ctx, sippysource.ListJobRunsOptions{
 		Release:  release,
 		Org:      c.deps.Source.SippyOrg,
 		Repo:     c.deps.Source.SippyRepo,
@@ -194,6 +211,7 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 		return fmt.Errorf("list sippy job runs for environment %q: %w", environment, err)
 	}
 
+	runs := filterRunsByJobName(allRuns, jobName)
 	hourlyCounts := buildHourlyRunCounts(environment, runs)
 	if len(hourlyCounts) > 0 {
 		if err := c.store.UpsertRunCountsHourly(ctx, hourlyCounts); err != nil {
@@ -201,26 +219,46 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 		}
 	}
 
-	failedRuns := make([]contracts.RunRecord, 0, len(runs))
+	failedRuns := make([]sippysource.JobRun, 0, len(runs))
 	for _, run := range runs {
 		if !run.Failed {
 			continue
 		}
-		record := mapToRunRecord(environment, run)
+		failedRuns = append(failedRuns, run)
+	}
+
+	now := time.Now().UTC()
+	unresolvedRuns, err := c.listUnresolvedRunsForEnvironment(ctx, environment, now)
+	if err != nil {
+		return err
+	}
+
+	neededPRNumbers := collectPRNumbers(failedRuns, unresolvedRuns)
+	mergedSHAsByPR, mergedLookupErr := c.loadMergedSHAsByPR(ctx, release, neededPRNumbers, now)
+	if mergedLookupErr != nil {
+		c.logger.Error(mergedLookupErr, "Failed merged PR lookup. Continuing without merged PR enrichment.", "environment", environment, "needed_prs", len(neededPRNumbers))
+		mergedSHAsByPR = map[int]string{}
+	}
+
+	runRecords := make([]contracts.RunRecord, 0, len(failedRuns)+len(unresolvedRuns))
+	refreshedUnresolved := refreshUnresolvedRunRecords(unresolvedRuns, mergedSHAsByPR)
+	runRecords = append(runRecords, refreshedUnresolved...)
+	for _, run := range failedRuns {
+		record := mapToRunRecord(environment, run, mergedSHAsByPR[run.PRNumber])
 		if record.RunURL == "" {
 			continue
 		}
-		failedRuns = append(failedRuns, record)
+		runRecords = append(runRecords, record)
 	}
+	runRecords = dedupeRunRecords(runRecords)
 
-	if len(failedRuns) > 0 {
-		if err := c.store.UpsertRuns(ctx, failedRuns); err != nil {
-			return fmt.Errorf("upsert %d run records for environment %q: %w", len(failedRuns), environment, err)
+	if len(runRecords) > 0 {
+		if err := c.store.UpsertRuns(ctx, runRecords); err != nil {
+			return fmt.Errorf("upsert %d run records for environment %q: %w", len(runRecords), environment, err)
 		}
 	}
 
 	nextCheckpoint := computeNextCheckpoint(checkpointTime, runs)
-	now := time.Now().UTC()
 	checkpoint := contracts.CheckpointRecord{
 		Name:      checkpointNameForEnvironment(environment),
 		Value:     nextCheckpoint.Format(time.RFC3339Nano),
@@ -230,7 +268,19 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 		return fmt.Errorf("update checkpoint for environment %q: %w", environment, err)
 	}
 
-	c.logger.Info("Synced Sippy runs for environment.", "environment", environment, "fetched", len(runs), "failed", len(failedRuns), "hourly_buckets", len(hourlyCounts), "since", since.Format(time.RFC3339))
+	c.logger.Info(
+		"Synced Sippy runs for environment.",
+		"environment", environment,
+		"job_name", jobName,
+		"fetched_total", len(allRuns),
+		"fetched_job_matched", len(runs),
+		"failed", len(failedRuns),
+		"hourly_buckets", len(hourlyCounts),
+		"upserted_runs", len(runRecords),
+		"refreshed_unresolved_runs", len(refreshedUnresolved),
+		"merged_prs_matched", len(mergedSHAsByPR),
+		"since", since.Format(time.RFC3339),
+	)
 	return nil
 }
 
@@ -250,9 +300,13 @@ func (c *sourceSippyRunsController) syncSingleRunByKey(ctx context.Context, key 
 	if err != nil {
 		return err
 	}
+	jobName, err := sippyJobNameForEnvironment(environment)
+	if err != nil {
+		return err
+	}
 
 	since := c.resolveSince(time.Time{})
-	runs, err := c.sippyClient.ListJobRuns(ctx, sippysource.ListJobRunsOptions{
+	allRuns, err := c.sippyClient.ListJobRuns(ctx, sippysource.ListJobRunsOptions{
 		Release:  release,
 		Org:      c.deps.Source.SippyOrg,
 		Repo:     c.deps.Source.SippyRepo,
@@ -263,31 +317,37 @@ func (c *sourceSippyRunsController) syncSingleRunByKey(ctx context.Context, key 
 		return fmt.Errorf("list sippy job runs for key %q: %w", key, err)
 	}
 
-	for _, run := range runs {
-		if strings.TrimSpace(run.RunURL) != runURL {
-			continue
-		}
+	runs := filterRunsByJobName(allRuns, jobName)
+	targetRun, found := findRunByURL(runs, runURL)
+	if !found {
+		return fmt.Errorf("run not found in lookback window for key %q (job=%q)", key, jobName)
+	}
 
-		if !run.StartedAt.IsZero() {
-			if err := c.store.UpsertRunCountsHourly(ctx, buildHourlyRunCountsForHour(environment, runs, run.StartedAt)); err != nil {
-				return fmt.Errorf("upsert run-count hourly for key %q: %w", key, err)
-			}
+	if !targetRun.StartedAt.IsZero() {
+		if err := c.store.UpsertRunCountsHourly(ctx, buildHourlyRunCountsForHour(environment, runs, targetRun.StartedAt)); err != nil {
+			return fmt.Errorf("upsert run-count hourly for key %q: %w", key, err)
 		}
+	}
 
-		if !run.Failed {
-			c.logger.Info("Skipping run because it is not failed.", "key", key, "run_url", runURL)
-			return nil
-		}
-
-		if err := c.store.UpsertRuns(ctx, []contracts.RunRecord{mapToRunRecord(environment, run)}); err != nil {
-			return fmt.Errorf("upsert run %q: %w", runURL, err)
-		}
-
-		c.logger.Info("Synced one run.", "key", key)
+	if !targetRun.Failed {
+		c.logger.Info("Skipping run because it is not failed.", "key", key, "run_url", runURL)
 		return nil
 	}
 
-	return fmt.Errorf("run not found in lookback window for key %q", key)
+	neededPRNumbers := collectPRNumbersFromJobRuns(runs)
+	mergedSHAsByPR, mergedLookupErr := c.loadMergedSHAsByPR(ctx, release, neededPRNumbers, time.Now().UTC())
+	if mergedLookupErr != nil {
+		c.logger.Error(mergedLookupErr, "Failed merged PR lookup for single run. Continuing without merged PR enrichment.", "key", key)
+		mergedSHAsByPR = map[int]string{}
+	}
+
+	record := mapToRunRecord(environment, targetRun, mergedSHAsByPR[targetRun.PRNumber])
+	if err := c.store.UpsertRuns(ctx, []contracts.RunRecord{record}); err != nil {
+		return fmt.Errorf("upsert run %q: %w", runURL, err)
+	}
+
+	c.logger.Info("Synced one run.", "key", key)
+	return nil
 }
 
 func (c *sourceSippyRunsController) releaseForEnvironment(environment string) (string, error) {
@@ -300,6 +360,18 @@ func (c *sourceSippyRunsController) releaseForEnvironment(environment string) (s
 		return "", fmt.Errorf("missing sippy release for environment %q", normalized)
 	}
 	return release, nil
+}
+
+func sippyJobNameForEnvironment(environment string) (string, error) {
+	normalized := normalizeEnvironment(environment)
+	if normalized == "" {
+		return "", fmt.Errorf("empty environment")
+	}
+	jobName := strings.TrimSpace(sippyJobNameByEnvironment[normalized])
+	if jobName == "" {
+		return "", fmt.Errorf("missing sippy job mapping for environment %q", normalized)
+	}
+	return jobName, nil
 }
 
 func (c *sourceSippyRunsController) getCheckpointTime(ctx context.Context, environment string) (time.Time, error) {
@@ -345,16 +417,225 @@ func computeNextCheckpoint(previous time.Time, runs []sippysource.JobRun) time.T
 	return next
 }
 
-func mapToRunRecord(environment string, run sippysource.JobRun) contracts.RunRecord {
+func filterRunsByJobName(runs []sippysource.JobRun, jobName string) []sippysource.JobRun {
+	normalizedJobName := strings.TrimSpace(jobName)
+	if normalizedJobName == "" {
+		return []sippysource.JobRun{}
+	}
+	filtered := make([]sippysource.JobRun, 0, len(runs))
+	for _, run := range runs {
+		if strings.TrimSpace(run.JobName) != normalizedJobName {
+			continue
+		}
+		filtered = append(filtered, run)
+	}
+	return filtered
+}
+
+func mapToRunRecord(environment string, run sippysource.JobRun, finalMergedSHA string) contracts.RunRecord {
+	normalizedPRSHA := strings.TrimSpace(run.PRSHA)
+	normalizedFinalMergedSHA := strings.TrimSpace(finalMergedSHA)
 	record := contracts.RunRecord{
-		Environment: normalizeEnvironment(environment),
-		RunURL:      strings.TrimSpace(run.RunURL),
-		JobName:     strings.TrimSpace(run.JobName),
+		Environment:    normalizeEnvironment(environment),
+		RunURL:         strings.TrimSpace(run.RunURL),
+		JobName:        strings.TrimSpace(run.JobName),
+		PRNumber:       run.PRNumber,
+		PRSHA:          normalizedPRSHA,
+		FinalMergedSHA: normalizedFinalMergedSHA,
+		MergedPR:       run.PRNumber > 0 && normalizedFinalMergedSHA != "",
+		PostGoodCommit: run.Failed && normalizedPRSHA != "" && normalizedPRSHA == normalizedFinalMergedSHA,
 	}
 	if !run.StartedAt.IsZero() {
 		record.OccurredAt = run.StartedAt.UTC().Format(time.RFC3339Nano)
 	}
 	return record
+}
+
+func collectPRNumbers(failedRuns []sippysource.JobRun, unresolvedRuns []contracts.RunRecord) map[int]struct{} {
+	out := map[int]struct{}{}
+	for _, run := range failedRuns {
+		if run.PRNumber > 0 {
+			out[run.PRNumber] = struct{}{}
+		}
+	}
+	for _, run := range unresolvedRuns {
+		if run.PRNumber > 0 {
+			out[run.PRNumber] = struct{}{}
+		}
+	}
+	return out
+}
+
+func collectPRNumbersFromJobRuns(runs []sippysource.JobRun) map[int]struct{} {
+	out := map[int]struct{}{}
+	for _, run := range runs {
+		if run.PRNumber > 0 {
+			out[run.PRNumber] = struct{}{}
+		}
+	}
+	return out
+}
+
+func findRunByURL(runs []sippysource.JobRun, runURL string) (sippysource.JobRun, bool) {
+	target := strings.TrimSpace(runURL)
+	if target == "" {
+		return sippysource.JobRun{}, false
+	}
+	for _, run := range runs {
+		if strings.TrimSpace(run.RunURL) == target {
+			return run, true
+		}
+	}
+	return sippysource.JobRun{}, false
+}
+
+func dedupeRunRecords(rows []contracts.RunRecord) []contracts.RunRecord {
+	if len(rows) == 0 {
+		return []contracts.RunRecord{}
+	}
+	byKey := make(map[string]contracts.RunRecord, len(rows))
+	for _, row := range rows {
+		normalizedEnvironment := normalizeEnvironment(row.Environment)
+		normalizedRunURL := strings.TrimSpace(row.RunURL)
+		if normalizedEnvironment == "" || normalizedRunURL == "" {
+			continue
+		}
+		key := normalizedEnvironment + "|" + normalizedRunURL
+		byKey[key] = row
+	}
+
+	out := make([]contracts.RunRecord, 0, len(byKey))
+	for _, row := range byKey {
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Environment != out[j].Environment {
+			return out[i].Environment < out[j].Environment
+		}
+		return out[i].RunURL < out[j].RunURL
+	})
+	return out
+}
+
+func refreshUnresolvedRunRecords(existing []contracts.RunRecord, mergedSHAsByPR map[int]string) []contracts.RunRecord {
+	refreshed := make([]contracts.RunRecord, 0)
+	for _, row := range existing {
+		mergedSHA := strings.TrimSpace(mergedSHAsByPR[row.PRNumber])
+		if mergedSHA == "" {
+			continue
+		}
+		if row.MergedPR && strings.TrimSpace(row.FinalMergedSHA) == mergedSHA {
+			continue
+		}
+
+		next := row
+		next.FinalMergedSHA = mergedSHA
+		next.MergedPR = true
+		next.PostGoodCommit = strings.TrimSpace(row.PRSHA) != "" && strings.TrimSpace(row.PRSHA) == mergedSHA
+		refreshed = append(refreshed, next)
+	}
+	return refreshed
+}
+
+func (c *sourceSippyRunsController) listUnresolvedRunsForEnvironment(ctx context.Context, environment string, now time.Time) ([]contracts.RunRecord, error) {
+	keys, err := c.store.ListRunKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list run keys for unresolved run refresh: %w", err)
+	}
+
+	normalizedEnvironment := normalizeEnvironment(environment)
+	out := make([]contracts.RunRecord, 0)
+	retryWindow := unresolvedPRRetryWindow(c.deps.Source)
+
+	for _, key := range keys {
+		keyEnvironment, runURL, err := splitEnvironmentRunKey(key)
+		if err != nil {
+			continue
+		}
+		if keyEnvironment != normalizedEnvironment {
+			continue
+		}
+
+		row, found, err := c.store.GetRun(ctx, keyEnvironment, runURL)
+		if err != nil {
+			return nil, fmt.Errorf("get run metadata for unresolved refresh key %q: %w", key, err)
+		}
+		if !found {
+			continue
+		}
+		if !isRunWithinUnresolvedRetryWindow(row, retryWindow, now) {
+			continue
+		}
+		out = append(out, row)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].OccurredAt != out[j].OccurredAt {
+			return out[i].OccurredAt < out[j].OccurredAt
+		}
+		return out[i].RunURL < out[j].RunURL
+	})
+	return out, nil
+}
+
+func (c *sourceSippyRunsController) loadMergedSHAsByPR(ctx context.Context, release string, neededPRNumbers map[int]struct{}, now time.Time) (map[int]string, error) {
+	result := map[int]string{}
+	if len(neededPRNumbers) == 0 {
+		return result, nil
+	}
+
+	retryWindow := unresolvedPRRetryWindow(c.deps.Source)
+	since := now.UTC().Add(-retryWindow)
+	limit := mergedPRLookupLimit(len(neededPRNumbers))
+
+	for {
+		rows, err := c.sippyClient.ListPullRequests(ctx, sippysource.ListPullRequestsOptions{
+			Release: release,
+			Org:     c.deps.Source.SippyOrg,
+			Repo:    c.deps.Source.SippyRepo,
+			Since:   since,
+			Limit:   limit,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list pull requests from sippy: %w", err)
+		}
+
+		for _, row := range rows {
+			if _, needed := neededPRNumbers[row.Number]; !needed {
+				continue
+			}
+			sha := strings.TrimSpace(row.SHA)
+			if sha == "" {
+				continue
+			}
+			result[row.Number] = sha
+		}
+
+		if len(result) == len(neededPRNumbers) || len(rows) < limit || limit >= sourceSippyRunsPRLookupMaxLimit {
+			break
+		}
+		limit = nextMergedPRLookupLimit(limit)
+	}
+	return result, nil
+}
+
+func mergedPRLookupLimit(neededPRs int) int {
+	limit := neededPRs * 3
+	if limit < sourceSippyRunsPRLookupMinLimit {
+		limit = sourceSippyRunsPRLookupMinLimit
+	}
+	if limit > sourceSippyRunsPRLookupMaxLimit {
+		limit = sourceSippyRunsPRLookupMaxLimit
+	}
+	return limit
+}
+
+func nextMergedPRLookupLimit(current int) int {
+	next := current * 2
+	if next > sourceSippyRunsPRLookupMaxLimit {
+		next = sourceSippyRunsPRLookupMaxLimit
+	}
+	return next
 }
 
 func checkpointNameForEnvironment(environment string) string {

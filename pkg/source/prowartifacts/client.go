@@ -20,6 +20,7 @@ const (
 	defaultHTTPTimeout      = 90 * time.Second
 )
 
+// TODO: Wire this map via CLI flags/config file (same for env-to-Sippy-job mapping).
 var deterministicJUnitPathsByEnvironment = map[string][]string{
 	"dev": {
 		"artifacts/e2e-parallel/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml",

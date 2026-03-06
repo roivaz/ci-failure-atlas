@@ -3,10 +3,15 @@ package contracts
 import "context"
 
 type RunRecord struct {
-	Environment string `json:"environment"`
-	RunURL      string `json:"run_url"`
-	JobName     string `json:"job_name"`
-	OccurredAt  string `json:"occurred_at"`
+	Environment    string `json:"environment"`
+	RunURL         string `json:"run_url"`
+	JobName        string `json:"job_name"`
+	PRNumber       int    `json:"pr_number"`
+	PRSHA          string `json:"pr_sha"`
+	FinalMergedSHA string `json:"final_merged_sha"`
+	MergedPR       bool   `json:"merged_pr"`
+	PostGoodCommit bool   `json:"post_good_commit"`
+	OccurredAt     string `json:"occurred_at"`
 }
 
 type ArtifactFailureRecord struct {
@@ -27,6 +32,12 @@ type RawFailureRecord struct {
 	Environment string `json:"environment"`
 	RowID       string `json:"row_id"`
 	RunURL      string `json:"run_url"`
+	TestName    string `json:"test_name"`
+	TestSuite   string `json:"test_suite"`
+	MergedPR    bool   `json:"merged_pr"`
+	// PostGoodCommitFailures is a row-level contribution to the aggregate
+	// post-good-commit failure count. It is either 0 or 1 in v1.
+	PostGoodCommitFailures int `json:"post_good_commit_failures"`
 	// SignatureID is the deterministic failure fingerprint:
 	// sha256(normalized failure text).
 	SignatureID    string `json:"signature_id"`
@@ -66,26 +77,32 @@ type DeadLetterRecord struct {
 type RunStore interface {
 	UpsertRuns(ctx context.Context, runs []RunRecord) error
 	ListRunKeys(ctx context.Context) ([]string, error)
+	GetRun(ctx context.Context, environment string, runURL string) (RunRecord, bool, error)
 }
 
 type ArtifactFailureStore interface {
 	UpsertArtifactFailures(ctx context.Context, rows []ArtifactFailureRecord) error
 	ListArtifactRunKeys(ctx context.Context) ([]string, error)
+	ListArtifactFailuresByRun(ctx context.Context, environment string, runURL string) ([]ArtifactFailureRecord, error)
 }
 
 type RawFailureStore interface {
 	UpsertRawFailures(ctx context.Context, rows []RawFailureRecord) error
 	ListRawFailureRunKeys(ctx context.Context) ([]string, error)
+	ListRawFailuresByRun(ctx context.Context, environment string, runURL string) ([]RawFailureRecord, error)
+	ListRawFailuresByDate(ctx context.Context, environment string, date string) ([]RawFailureRecord, error)
 }
 
 type MetricsStore interface {
 	UpsertMetricsDaily(ctx context.Context, rows []MetricDailyRecord) error
+	ListMetricsDailyByDate(ctx context.Context, environment string, date string) ([]MetricDailyRecord, error)
 	ListMetricDates(ctx context.Context) ([]string, error)
 }
 
 type RunCountHourlyStore interface {
 	UpsertRunCountsHourly(ctx context.Context, rows []RunCountHourlyRecord) error
 	ListRunCountHourlyHours(ctx context.Context) ([]string, error)
+	ListRunCountsHourlyByDate(ctx context.Context, environment string, date string) ([]RunCountHourlyRecord, error)
 }
 
 type CheckpointStore interface {

@@ -16,8 +16,16 @@ import (
 type JobRun struct {
 	RunURL    string
 	JobName   string
+	PRNumber  int
+	PRSHA     string
 	StartedAt time.Time
 	Failed    bool
+}
+
+type PullRequest struct {
+	Number   int
+	SHA      string
+	MergedAt time.Time
 }
 
 type ListJobRunsOptions struct {
@@ -28,7 +36,16 @@ type ListJobRunsOptions struct {
 	PageSize int
 }
 
+type ListPullRequestsOptions struct {
+	Release string
+	Org     string
+	Repo    string
+	Since   time.Time
+	Limit   int
+}
+
 type Client interface {
+	ListPullRequests(ctx context.Context, opts ListPullRequestsOptions) ([]PullRequest, error)
 	ListJobRuns(ctx context.Context, opts ListJobRunsOptions) ([]JobRun, error)
 }
 
@@ -48,6 +65,79 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 			Timeout: 90 * time.Second,
 		},
 	}
+}
+
+func (c *HTTPClient) ListPullRequests(ctx context.Context, opts ListPullRequestsOptions) ([]PullRequest, error) {
+	if strings.TrimSpace(opts.Release) == "" {
+		return nil, fmt.Errorf("release is required")
+	}
+	if strings.TrimSpace(opts.Org) == "" {
+		return nil, fmt.Errorf("org is required")
+	}
+	if strings.TrimSpace(opts.Repo) == "" {
+		return nil, fmt.Errorf("repo is required")
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	filterJSON, err := buildPullRequestFilter(opts.Org, opts.Repo, opts.Since)
+	if err != nil {
+		return nil, fmt.Errorf("build pull request filter: %w", err)
+	}
+
+	results := make([]PullRequest, 0, limit)
+	seen := make(map[int]struct{}, limit)
+
+	remaining := limit
+	offset := 0
+	for remaining > 0 {
+		pageSize := remaining
+		if pageSize > 100 {
+			pageSize = 100
+		}
+
+		params := url.Values{}
+		params.Set("release", opts.Release)
+		params.Set("filter", filterJSON)
+		params.Set("sortField", "merged_at")
+		params.Set("sort", "desc")
+		params.Set("limit", strconv.Itoa(pageSize))
+		params.Set("offset", strconv.Itoa(offset))
+
+		var rows []pullRequestResponse
+		if err := c.getJSON(ctx, "/api/pull_requests", params, &rows); err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+
+		for _, row := range rows {
+			if row.MergedAt == nil || row.Number == 0 {
+				continue
+			}
+			if _, exists := seen[row.Number]; exists {
+				continue
+			}
+			seen[row.Number] = struct{}{}
+			results = append(results, PullRequest{
+				Number:   row.Number,
+				SHA:      strings.TrimSpace(row.SHA),
+				MergedAt: row.MergedAt.UTC(),
+			})
+		}
+
+		if len(rows) < pageSize {
+			break
+		}
+		offset += len(rows)
+		remaining -= len(rows)
+	}
+
+	return results, nil
 }
 
 func (c *HTTPClient) ListJobRuns(ctx context.Context, opts ListJobRunsOptions) ([]JobRun, error) {
@@ -111,6 +201,8 @@ func (c *HTTPClient) ListJobRuns(ctx context.Context, opts ListJobRunsOptions) (
 			results = append(results, JobRun{
 				RunURL:    runURL,
 				JobName:   strings.TrimSpace(row.Job),
+				PRNumber:  pullRequestNumberFromLink(row.PullRequestLink),
+				PRSHA:     strings.TrimSpace(row.PullRequestSHA),
 				StartedAt: startedAt,
 				Failed:    failed,
 			})
@@ -228,6 +320,62 @@ func buildJobRunsFilter(org, repo string, since time.Time) (string, error) {
 	return string(b), nil
 }
 
+func buildPullRequestFilter(org, repo string, since time.Time) (string, error) {
+	items := []filterItem{
+		{ColumnField: "org", OperatorValue: "equals", Value: org},
+		{ColumnField: "repo", OperatorValue: "equals", Value: repo},
+	}
+	if !since.IsZero() {
+		items = append(items, filterItem{
+			ColumnField:   "merged_at",
+			OperatorValue: ">",
+			Value:         strconv.FormatInt(since.UTC().Unix(), 10),
+		})
+	}
+
+	b, err := json.Marshal(filterModel{
+		Items:        items,
+		LinkOperator: "and",
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func pullRequestNumberFromLink(link string) int {
+	trimmed := strings.TrimSpace(link)
+	if trimmed == "" {
+		return 0
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return 0
+	}
+
+	path := strings.Trim(parsed.Path, "/")
+	if path == "" {
+		return 0
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) < 3 || parts[len(parts)-2] != "pull" {
+		return 0
+	}
+
+	n, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+type pullRequestResponse struct {
+	Number   int        `json:"number"`
+	SHA      string     `json:"sha"`
+	MergedAt *time.Time `json:"merged_at"`
+}
+
 type jobRunsResponse struct {
 	Rows      []jobRunResponse `json:"rows"`
 	PageSize  int              `json:"page_size"`
@@ -239,6 +387,8 @@ type jobRunResponse struct {
 	URL                   string `json:"url"`
 	Job                   string `json:"job"`
 	Timestamp             int64  `json:"timestamp"`
+	PullRequestSHA        string `json:"pull_request_sha"`
+	PullRequestLink       string `json:"pull_request_link"`
 	Failed                bool   `json:"failed"`
 	InfrastructureFailure bool   `json:"infrastructure_failure"`
 	Succeeded             bool   `json:"succeeded"`

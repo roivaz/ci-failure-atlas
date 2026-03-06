@@ -116,7 +116,7 @@ Runtime semantics mirror `release-dashboard`:
 
 1. `source.sippy.runs`
    - key: `environment|run_url`
-   - responsibility: discover runs from Sippy, persist failed run metadata, and persist hourly run-count baselines (`total/success/failure`) for metric denominators.
+   - responsibility: discover runs from Sippy, filter to the environment's canonical job name, persist failed run metadata, and persist hourly run-count baselines (`total/success/failure`) for metric denominators.
 
 2. `source.prow.failures`
    - key: `environment|run_url`
@@ -239,6 +239,7 @@ Artifact identity note:
 
 - `artifact_row_id` is the occurrence identity for one testcase failure row.
 - `signature_id` is the grouping fingerprint (`sha256(normalized failure text)`), so multiple artifact rows may intentionally share the same signature.
+- In `facts.raw-failures`, `row_id` is sourced from `artifact_row_id`, `test_name`/`test_suite` are carried forward from `artifact_failures`, and `occurred_at` is sourced from the matching `runs` metadata when available.
 
 ## 11) Semantic Core Migration Strategy
 
@@ -282,6 +283,11 @@ Target metric families:
 
 These are generated from fresh facts + semantic outputs, not from ad-hoc snapshots.
 
+Current v1 daily rollup metrics:
+
+- `total_runs`, `failed_runs`, `successful_runs`, `run_failure_rate` (from `run_counts_hourly`)
+- `raw_failure_rows` (from `raw_failures`)
+
 ## 13) Initial Implementation Slices
 
 1. CLI and options scaffolding
@@ -303,3 +309,5 @@ These are generated from fresh facts + semantic outputs, not from ad-hoc snapsho
 ---
 
 This document captures the accepted baseline design and is the source for implementation planning.
+
+TODO: externalize environment-scoped static maps (Sippy job-name map and deterministic JUnit artifact-path map) to CLI/config file inputs.

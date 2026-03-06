@@ -100,6 +100,21 @@ func (s *Store) UpsertRuns(ctx context.Context, runs []contracts.RunRecord) erro
 		if merged[i].OccurredAt != merged[j].OccurredAt {
 			return merged[i].OccurredAt < merged[j].OccurredAt
 		}
+		if merged[i].PRNumber != merged[j].PRNumber {
+			return merged[i].PRNumber < merged[j].PRNumber
+		}
+		if merged[i].PRSHA != merged[j].PRSHA {
+			return merged[i].PRSHA < merged[j].PRSHA
+		}
+		if merged[i].FinalMergedSHA != merged[j].FinalMergedSHA {
+			return merged[i].FinalMergedSHA < merged[j].FinalMergedSHA
+		}
+		if merged[i].MergedPR != merged[j].MergedPR {
+			return !merged[i].MergedPR && merged[j].MergedPR
+		}
+		if merged[i].PostGoodCommit != merged[j].PostGoodCommit {
+			return !merged[i].PostGoodCommit && merged[j].PostGoodCommit
+		}
 		return merged[i].JobName < merged[j].JobName
 	})
 
@@ -133,6 +148,36 @@ func (s *Store) ListRunKeys(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+func (s *Store) GetRun(ctx context.Context, environment string, runURL string) (contracts.RunRecord, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return contracts.RunRecord{}, false, err
+	}
+
+	lookup := normalizeRunRecord(contracts.RunRecord{
+		Environment: environment,
+		RunURL:      runURL,
+	})
+	if lookup.Environment == "" || lookup.RunURL == "" {
+		return contracts.RunRecord{}, false, fmt.Errorf("run lookup requires environment and run_url")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RunRecord](s.runsPath())
+	if err != nil {
+		return contracts.RunRecord{}, false, err
+	}
+
+	for _, row := range rows {
+		normalized := normalizeRunRecord(row)
+		if normalized.Environment == lookup.Environment && normalized.RunURL == lookup.RunURL {
+			return normalized, true, nil
+		}
+	}
+	return contracts.RunRecord{}, false, nil
 }
 
 func (s *Store) UpsertArtifactFailures(ctx context.Context, rows []contracts.ArtifactFailureRecord) error {
@@ -238,6 +283,58 @@ func (s *Store) ListArtifactRunKeys(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
+func (s *Store) ListArtifactFailuresByRun(ctx context.Context, environment string, runURL string) ([]contracts.ArtifactFailureRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	lookup := normalizeRunRecord(contracts.RunRecord{
+		Environment: environment,
+		RunURL:      runURL,
+	})
+	if lookup.Environment == "" || lookup.RunURL == "" {
+		return nil, fmt.Errorf("artifact failure lookup requires environment and run_url")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.ArtifactFailureRecord](s.artifactFailuresPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.ArtifactFailureRecord, 0)
+	for _, row := range rows {
+		normalized := normalizeArtifactFailureRecord(row)
+		if normalized.Environment != lookup.Environment || normalized.RunURL != lookup.RunURL {
+			continue
+		}
+		if normalized.ArtifactRowID == "" || normalized.SignatureID == "" || normalized.FailureText == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].TestSuite != filtered[j].TestSuite {
+			return filtered[i].TestSuite < filtered[j].TestSuite
+		}
+		if filtered[i].TestName != filtered[j].TestName {
+			return filtered[i].TestName < filtered[j].TestName
+		}
+		if filtered[i].ArtifactRowID != filtered[j].ArtifactRowID {
+			return filtered[i].ArtifactRowID < filtered[j].ArtifactRowID
+		}
+		if filtered[i].SignatureID != filtered[j].SignatureID {
+			return filtered[i].SignatureID < filtered[j].SignatureID
+		}
+		return filtered[i].FailureText < filtered[j].FailureText
+	})
+
+	return filtered, nil
+}
+
 func (s *Store) UpsertRawFailures(ctx context.Context, rows []contracts.RawFailureRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -325,6 +422,105 @@ func (s *Store) ListRawFailureRunKeys(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
+func (s *Store) ListRawFailuresByRun(ctx context.Context, environment string, runURL string) ([]contracts.RawFailureRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	lookup := normalizeRunRecord(contracts.RunRecord{
+		Environment: environment,
+		RunURL:      runURL,
+	})
+	if lookup.Environment == "" || lookup.RunURL == "" {
+		return nil, fmt.Errorf("raw failure lookup requires environment and run_url")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RawFailureRecord](s.rawFailuresPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.RawFailureRecord, 0)
+	for _, row := range rows {
+		normalized := normalizeRawFailureRecord(row)
+		if normalized.Environment != lookup.Environment || normalized.RunURL != lookup.RunURL {
+			continue
+		}
+		if normalized.RowID == "" || normalized.SignatureID == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].OccurredAt != filtered[j].OccurredAt {
+			return filtered[i].OccurredAt < filtered[j].OccurredAt
+		}
+		if filtered[i].RowID != filtered[j].RowID {
+			return filtered[i].RowID < filtered[j].RowID
+		}
+		return filtered[i].SignatureID < filtered[j].SignatureID
+	})
+
+	return filtered, nil
+}
+
+func (s *Store) ListRawFailuresByDate(ctx context.Context, environment string, date string) ([]contracts.RawFailureRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	lookupEnv := normalizeEnvironment(environment)
+	if lookupEnv == "" {
+		return nil, fmt.Errorf("raw failure lookup requires environment")
+	}
+	lookupDate, err := normalizeDate(date)
+	if err != nil {
+		return nil, fmt.Errorf("raw failure lookup requires valid date (YYYY-MM-DD): %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RawFailureRecord](s.rawFailuresPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.RawFailureRecord, 0)
+	for _, row := range rows {
+		normalized := normalizeRawFailureRecord(row)
+		if normalized.Environment != lookupEnv {
+			continue
+		}
+		if rowDate, ok := dateFromTimestamp(normalized.OccurredAt); !ok || rowDate != lookupDate {
+			continue
+		}
+		if normalized.RowID == "" || normalized.RunURL == "" || normalized.SignatureID == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].OccurredAt != filtered[j].OccurredAt {
+			return filtered[i].OccurredAt < filtered[j].OccurredAt
+		}
+		if filtered[i].RunURL != filtered[j].RunURL {
+			return filtered[i].RunURL < filtered[j].RunURL
+		}
+		if filtered[i].RowID != filtered[j].RowID {
+			return filtered[i].RowID < filtered[j].RowID
+		}
+		return filtered[i].SignatureID < filtered[j].SignatureID
+	})
+
+	return filtered, nil
+}
+
 func (s *Store) UpsertRunCountsHourly(ctx context.Context, rows []contracts.RunCountHourlyRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -409,6 +605,50 @@ func (s *Store) ListRunCountHourlyHours(ctx context.Context) ([]string, error) {
 	return hours, nil
 }
 
+func (s *Store) ListRunCountsHourlyByDate(ctx context.Context, environment string, date string) ([]contracts.RunCountHourlyRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	lookupEnv := normalizeEnvironment(environment)
+	if lookupEnv == "" {
+		return nil, fmt.Errorf("run count hourly lookup requires environment")
+	}
+	lookupDate, err := normalizeDate(date)
+	if err != nil {
+		return nil, fmt.Errorf("run count hourly lookup requires valid date (YYYY-MM-DD): %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RunCountHourlyRecord](s.runCountsHourlyPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.RunCountHourlyRecord, 0)
+	for _, row := range rows {
+		normalized := normalizeRunCountHourlyRecord(row)
+		if normalized.Environment != lookupEnv {
+			continue
+		}
+		if rowDate, ok := dateFromTimestamp(normalized.Hour); !ok || rowDate != lookupDate {
+			continue
+		}
+		if normalized.Hour == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Hour < filtered[j].Hour
+	})
+
+	return filtered, nil
+}
+
 func (s *Store) UpsertMetricsDaily(ctx context.Context, rows []contracts.MetricDailyRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -426,6 +666,18 @@ func (s *Store) UpsertMetricsDaily(ctx context.Context, rows []contracts.MetricD
 		return err
 	}
 
+	normalizedInput := make([]contracts.MetricDailyRecord, 0, len(rows))
+	touchedDateEnvironments := map[string]struct{}{}
+	for _, row := range rows {
+		normalized := normalizeMetricDailyRecord(row)
+		key := metricDailyKey(normalized)
+		if key == "" {
+			return fmt.Errorf("metric daily record missing environment, date, and/or metric")
+		}
+		normalizedInput = append(normalizedInput, normalized)
+		touchedDateEnvironments[normalized.Environment+"|"+normalized.Date] = struct{}{}
+	}
+
 	mergedByKey := map[string]contracts.MetricDailyRecord{}
 	for _, row := range existing {
 		normalized := normalizeMetricDailyRecord(row)
@@ -433,14 +685,13 @@ func (s *Store) UpsertMetricsDaily(ctx context.Context, rows []contracts.MetricD
 		if key == "" {
 			continue
 		}
+		if _, touched := touchedDateEnvironments[normalized.Environment+"|"+normalized.Date]; touched {
+			continue
+		}
 		mergedByKey[key] = normalized
 	}
-	for _, row := range rows {
-		normalized := normalizeMetricDailyRecord(row)
+	for _, normalized := range normalizedInput {
 		key := metricDailyKey(normalized)
-		if key == "" {
-			return fmt.Errorf("metric daily record missing environment, date, and/or metric")
-		}
 		mergedByKey[key] = normalized
 	}
 
@@ -459,6 +710,47 @@ func (s *Store) UpsertMetricsDaily(ctx context.Context, rows []contracts.MetricD
 	})
 
 	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListMetricsDailyByDate(ctx context.Context, environment string, date string) ([]contracts.MetricDailyRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	lookupEnv := normalizeEnvironment(environment)
+	if lookupEnv == "" {
+		return nil, fmt.Errorf("metric daily lookup requires environment")
+	}
+	lookupDate, err := normalizeDate(date)
+	if err != nil {
+		return nil, fmt.Errorf("metric daily lookup requires valid date (YYYY-MM-DD): %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.MetricDailyRecord](s.metricsDailyPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.MetricDailyRecord, 0)
+	for _, row := range rows {
+		normalized := normalizeMetricDailyRecord(row)
+		if normalized.Environment != lookupEnv || normalized.Date != lookupDate {
+			continue
+		}
+		if normalized.Metric == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Metric < filtered[j].Metric
+	})
+
+	return filtered, nil
 }
 
 func (s *Store) ListMetricDates(ctx context.Context) ([]string, error) {
@@ -677,11 +969,20 @@ func (s *Store) deadLettersPath() string {
 }
 
 func normalizeRunRecord(row contracts.RunRecord) contracts.RunRecord {
+	prNumber := row.PRNumber
+	if prNumber < 0 {
+		prNumber = 0
+	}
 	return contracts.RunRecord{
-		Environment: normalizeEnvironment(row.Environment),
-		RunURL:      strings.TrimSpace(row.RunURL),
-		JobName:     strings.TrimSpace(row.JobName),
-		OccurredAt:  strings.TrimSpace(row.OccurredAt),
+		Environment:    normalizeEnvironment(row.Environment),
+		RunURL:         strings.TrimSpace(row.RunURL),
+		JobName:        strings.TrimSpace(row.JobName),
+		PRNumber:       prNumber,
+		PRSHA:          strings.TrimSpace(row.PRSHA),
+		FinalMergedSHA: strings.TrimSpace(row.FinalMergedSHA),
+		MergedPR:       row.MergedPR,
+		PostGoodCommit: row.PostGoodCommit,
+		OccurredAt:     strings.TrimSpace(row.OccurredAt),
 	}
 }
 
@@ -698,14 +999,22 @@ func normalizeArtifactFailureRecord(row contracts.ArtifactFailureRecord) contrac
 }
 
 func normalizeRawFailureRecord(row contracts.RawFailureRecord) contracts.RawFailureRecord {
+	postGoodCommitFailures := row.PostGoodCommitFailures
+	if postGoodCommitFailures < 0 {
+		postGoodCommitFailures = 0
+	}
 	return contracts.RawFailureRecord{
-		Environment:    normalizeEnvironment(row.Environment),
-		RowID:          strings.TrimSpace(row.RowID),
-		RunURL:         strings.TrimSpace(row.RunURL),
-		SignatureID:    strings.TrimSpace(row.SignatureID),
-		OccurredAt:     strings.TrimSpace(row.OccurredAt),
-		RawText:        strings.TrimSpace(row.RawText),
-		NormalizedText: strings.TrimSpace(row.NormalizedText),
+		Environment:            normalizeEnvironment(row.Environment),
+		RowID:                  strings.TrimSpace(row.RowID),
+		RunURL:                 strings.TrimSpace(row.RunURL),
+		TestName:               strings.TrimSpace(row.TestName),
+		TestSuite:              strings.TrimSpace(row.TestSuite),
+		MergedPR:               row.MergedPR,
+		PostGoodCommitFailures: postGoodCommitFailures,
+		SignatureID:            strings.TrimSpace(row.SignatureID),
+		OccurredAt:             strings.TrimSpace(row.OccurredAt),
+		RawText:                strings.TrimSpace(row.RawText),
+		NormalizedText:         strings.TrimSpace(row.NormalizedText),
 	}
 }
 
@@ -789,6 +1098,32 @@ func rawFailureKey(row contracts.RawFailureRecord) string {
 
 func normalizeEnvironment(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeDate(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", fmt.Errorf("date is empty")
+	}
+	parsed, err := time.Parse("2006-01-02", trimmed)
+	if err != nil {
+		return "", err
+	}
+	return parsed.UTC().Format("2006-01-02"), nil
+}
+
+func dateFromTimestamp(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", false
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+		return ts.UTC().Format("2006-01-02"), true
+	}
+	if ts, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return ts.UTC().Format("2006-01-02"), true
+	}
+	return "", false
 }
 
 func readNDJSON[T any](path string) ([]T, error) {
