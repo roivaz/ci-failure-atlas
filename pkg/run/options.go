@@ -170,6 +170,10 @@ func (opts *Options) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	sourceProwFailuresController, err := controllers.NewSourceProwFailures(logger, deps)
+	if err != nil {
+		return err
+	}
 
 	controllersToRun := []struct {
 		controller controllers.Controller
@@ -180,7 +184,7 @@ func (opts *Options) Run(ctx context.Context) error {
 			threads:    opts.SourceSippyRunsControllerThreads,
 		},
 		{
-			controller: controllers.NewSourceProwFailures(logger),
+			controller: sourceProwFailuresController,
 			threads:    opts.SourceProwFailuresControllerThreads,
 		},
 		{

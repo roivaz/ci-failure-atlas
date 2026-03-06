@@ -120,7 +120,7 @@ Runtime semantics mirror `release-dashboard`:
 
 2. `source.prow.failures`
    - key: `environment|run_url`
-   - responsibility: fetch deterministic JUnit artifacts and extract failure rows.
+   - responsibility: fetch deterministic JUnit artifacts from environment-scoped known paths (no directory crawling) and extract failure rows.
 
 3. `facts.raw-failures`
    - key: `environment|run_url`
