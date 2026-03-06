@@ -1,0 +1,450 @@
+package testsummary
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestBuildMarkdownHighlightsSignalsAndWarnings(t *testing.T) {
+	t.Parallel()
+
+	postGoodCluster := testCluster{
+		Phase1ClusterID:         "cluster-a",
+		Lane:                    "e2e",
+		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		TestName:                "Customer should be able to create an HCP cluster",
+		TestSuite:               "rp-api-compat-all/parallel",
+		CanonicalEvidencePhrase: "msg: \"failed to create route: the server is currently unable to handle the request\",",
+		SupportCount:            2,
+		PostGoodCommitCount:     2,
+		MemberSignatureIDs:      []string{"sig-a", "sig-b"},
+		References: []reference{
+			{
+				RunURL:      "https://prow.example/run/postgood-1",
+				OccurredAt:  "2026-03-03T15:33:10Z",
+				PRNumber:    4212,
+				SignatureID: "sig-a",
+			},
+			{
+				RunURL:      "https://prow.example/run/postgood-2",
+				OccurredAt:  "2026-03-02T15:33:10Z",
+				PRNumber:    4252,
+				SignatureID: "sig-b",
+			},
+		},
+	}
+
+	badPRCluster := testCluster{
+		Phase1ClusterID:         "cluster-b",
+		Lane:                    "e2e",
+		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		TestName:                "Customer should be able to create an HCP cluster and manage pull secrets",
+		TestSuite:               "rp-api-compat-all/parallel",
+		CanonicalEvidencePhrase: "msg: \"failed waiting for cluster=\\\"<id>\\\" in resourcegroup=\\\"<id>\\\" to finish creating, caused by: timeout '45.000000' minutes exceeded during CreateHCPClusterFromParam\"",
+		SupportCount:            11,
+		PostGoodCommitCount:     0,
+		MemberSignatureIDs:      []string{"sig-c", "sig-d"},
+		References: []reference{
+			{
+				RunURL:      "https://prow.example/run/badpr-1",
+				OccurredAt:  "2026-03-02T07:10:51Z",
+				PRNumber:    4249,
+				SignatureID: "sig-c",
+			},
+			{
+				RunURL:      "https://prow.example/run/badpr-2",
+				OccurredAt:  "2026-03-02T02:51:46Z",
+				PRNumber:    4249,
+				SignatureID: "sig-d",
+			},
+		},
+	}
+
+	metadataByFull := map[testKey]testMetadata{
+		toTestKey(postGoodCluster.Lane, postGoodCluster.JobName, postGoodCluster.TestName, postGoodCluster.TestSuite): {
+			PassRate: float64Ptr(96.25),
+			Runs:     160,
+			Tags:     []string{"required"},
+		},
+		toTestKey(badPRCluster.Lane, badPRCluster.JobName, badPRCluster.TestName, badPRCluster.TestSuite): {
+			PassRate: float64Ptr(81.00),
+			Runs:     90,
+		},
+	}
+
+	reviewIndex := buildReviewSignalIndex([]reviewItem{
+		{
+			Reason:                 "insufficient_inner_error",
+			SourcePhase1ClusterIDs: []string{"cluster-b"},
+		},
+		{
+			Reason:             "low_confidence_evidence",
+			MemberSignatureIDs: []string{"sig-a"},
+		},
+	})
+
+	report := buildMarkdown(
+		[]testCluster{postGoodCluster, badPRCluster},
+		metadataByFull,
+		map[testKeyNoSuite]testMetadata{},
+		map[referenceKey]string{
+			{RunURL: "https://prow.example/run/badpr-1", SignatureID: "sig-c"}: "full badpr error sample 1",
+			{RunURL: "https://prow.example/run/badpr-2", SignatureID: "sig-d"}: "full badpr error sample 2",
+		},
+		reviewIndex,
+		"data/views/agent/test_clusters.ndjson",
+		"data/raw/failures.ndjson",
+		time.Date(2026, 3, 4, 16, 30, 0, 0, time.UTC),
+		0,
+		4,
+		10,
+	)
+
+	required := []string{
+		"# CI Test Failure Summary",
+		"Filtered to tests with at least **10** observed runs.",
+		"## 1. Customer should be able to create an HCP cluster and manage pull secrets",
+		"## 2. Customer should be able to create an HCP cluster",
+		"Risk classification: **likely PR-specific (single PR)**",
+		"Risk classification: **systemic signal (post-good-commit-runs > 0)**",
+		"Current success rate: **81.00%** over **90** runs",
+		"Current success rate: **96.25%** over **160** runs",
+		"Confidence: **needs review** (`insufficient_inner_error`)",
+		"Confidence: **needs review** (`low_confidence_evidence`)",
+		"WARNING: signature post-good-commit-runs=0 and all observed failures map to PR #4249 (2/11). Strong bad-PR signal.",
+		"SIGNAL: signature has post-good-commit-runs evidence (**2/2** failures). Treat as likely systemic or pre-existing instability.",
+		"Daily density (last 7d, oldest->newest",
+		"Full error samples (for eyeballing report accuracy)",
+		"full badpr error sample 1",
+		"full badpr error sample 2",
+	}
+	for _, expected := range required {
+		if !strings.Contains(report, expected) {
+			t.Fatalf("expected report to contain %q", expected)
+		}
+	}
+
+	disallowed := []string{
+		"## Quick Index",
+		"## At A Glance",
+		"## Triage Queue",
+		"## Top Signature Hotspots",
+	}
+	for _, section := range disallowed {
+		if strings.Contains(report, section) {
+			t.Fatalf("did not expect report section %q", section)
+		}
+	}
+}
+
+func TestBuildMarkdownSortsTestsBySuccessRate(t *testing.T) {
+	t.Parallel()
+
+	highPassHighFailures := testCluster{
+		Phase1ClusterID:         "cluster-high-pass",
+		Lane:                    "e2e",
+		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		TestName:                "high pass-rate test",
+		TestSuite:               "rp-api-compat-all/parallel",
+		CanonicalEvidencePhrase: "high pass sample",
+		SupportCount:            20,
+		References: []reference{
+			{RunURL: "https://prow.example/run/high-1", OccurredAt: "2026-03-03T10:00:00Z", SignatureID: "sig-high"},
+		},
+	}
+	lowPassLowFailures := testCluster{
+		Phase1ClusterID:         "cluster-low-pass",
+		Lane:                    "e2e",
+		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		TestName:                "low pass-rate test",
+		TestSuite:               "rp-api-compat-all/parallel",
+		CanonicalEvidencePhrase: "low pass sample",
+		SupportCount:            2,
+		References: []reference{
+			{RunURL: "https://prow.example/run/low-1", OccurredAt: "2026-03-03T09:00:00Z", SignatureID: "sig-low"},
+		},
+	}
+
+	metadataByFull := map[testKey]testMetadata{
+		toTestKey(highPassHighFailures.Lane, highPassHighFailures.JobName, highPassHighFailures.TestName, highPassHighFailures.TestSuite): {
+			PassRate: float64Ptr(99.0),
+			Runs:     200,
+		},
+		toTestKey(lowPassLowFailures.Lane, lowPassLowFailures.JobName, lowPassLowFailures.TestName, lowPassLowFailures.TestSuite): {
+			PassRate: float64Ptr(75.0),
+			Runs:     100,
+		},
+	}
+
+	report := buildMarkdown(
+		[]testCluster{highPassHighFailures, lowPassLowFailures},
+		metadataByFull,
+		map[testKeyNoSuite]testMetadata{},
+		map[referenceKey]string{},
+		reviewSignalIndex{},
+		"data/views/agent/test_clusters.ndjson",
+		"data/raw/failures.ndjson",
+		time.Date(2026, 3, 4, 16, 30, 0, 0, time.UTC),
+		0,
+		4,
+		10,
+	)
+
+	first := strings.Index(report, "## 1. low pass-rate test")
+	second := strings.Index(report, "## 2. high pass-rate test")
+	if first < 0 || second < 0 {
+		t.Fatalf("expected both tests to be present in ordered headings; report=%q", report)
+	}
+	if first > second {
+		t.Fatalf("expected lower success-rate test first; report=%q", report)
+	}
+}
+
+func TestBuildMarkdownFiltersTestsByMinRuns(t *testing.T) {
+	t.Parallel()
+
+	eligible := testCluster{
+		Phase1ClusterID:         "cluster-eligible",
+		Lane:                    "e2e",
+		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		TestName:                "eligible test",
+		TestSuite:               "rp-api-compat-all/parallel",
+		CanonicalEvidencePhrase: "eligible sample",
+		SupportCount:            3,
+		References: []reference{
+			{RunURL: "https://prow.example/run/eligible", OccurredAt: "2026-03-03T10:00:00Z", SignatureID: "sig-e"},
+		},
+	}
+	ineligible := testCluster{
+		Phase1ClusterID:         "cluster-ineligible",
+		Lane:                    "e2e",
+		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		TestName:                "ineligible test",
+		TestSuite:               "rp-api-compat-all/parallel",
+		CanonicalEvidencePhrase: "ineligible sample",
+		SupportCount:            9,
+		References: []reference{
+			{RunURL: "https://prow.example/run/ineligible", OccurredAt: "2026-03-03T11:00:00Z", SignatureID: "sig-i"},
+		},
+	}
+
+	metadataByFull := map[testKey]testMetadata{
+		toTestKey(eligible.Lane, eligible.JobName, eligible.TestName, eligible.TestSuite): {
+			PassRate: float64Ptr(90.0),
+			Runs:     10,
+		},
+		toTestKey(ineligible.Lane, ineligible.JobName, ineligible.TestName, ineligible.TestSuite): {
+			PassRate: float64Ptr(50.0),
+			Runs:     9,
+		},
+	}
+
+	report := buildMarkdown(
+		[]testCluster{eligible, ineligible},
+		metadataByFull,
+		map[testKeyNoSuite]testMetadata{},
+		map[referenceKey]string{},
+		reviewSignalIndex{},
+		"data/views/agent/test_clusters.ndjson",
+		"data/raw/failures.ndjson",
+		time.Date(2026, 3, 4, 16, 30, 0, 0, time.UTC),
+		0,
+		4,
+		10,
+	)
+
+	if !strings.Contains(report, "## 1. eligible test") {
+		t.Fatalf("expected eligible test in report, got: %q", report)
+	}
+	if strings.Contains(report, "ineligible test") {
+		t.Fatalf("did not expect ineligible test in report, got: %q", report)
+	}
+}
+
+func TestLookupMetadataFallsBackWithoutSuite(t *testing.T) {
+	t.Parallel()
+
+	key := toTestKey("e2e", "job-a", "test-a", "suite-a")
+	fallback := map[testKeyNoSuite]testMetadata{
+		{Lane: "e2e", JobName: "job-a", TestName: "test-a"}: {
+			PassRate: float64Ptr(78.5),
+			Runs:     40,
+		},
+	}
+
+	got := lookupMetadata(key, map[testKey]testMetadata{}, fallback)
+	if got.PassRate == nil || *got.PassRate != 78.5 {
+		t.Fatalf("expected fallback metadata pass rate 78.5, got %+v", got)
+	}
+	if got.Runs != 40 {
+		t.Fatalf("expected fallback runs 40, got %d", got.Runs)
+	}
+}
+
+func TestSignaturePRWarningForRecentConcentration(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		SupportCount:        9,
+		PostGoodCommitCount: 0,
+		References: []reference{
+			{PRNumber: 4201},
+			{PRNumber: 4202},
+			{PRNumber: 4203},
+		},
+	}
+	recent := []reference{
+		{PRNumber: 4249},
+		{PRNumber: 4249},
+		{PRNumber: 4249},
+		{PRNumber: 4249},
+	}
+
+	warning, ok := signaturePRWarning(cluster, recent)
+	if !ok {
+		t.Fatal("expected warning for recent PR concentration")
+	}
+	if !strings.Contains(warning, "recent failures are concentrated on PR #4249") {
+		t.Fatalf("unexpected warning: %q", warning)
+	}
+}
+
+func TestSignaturePRWarningForTentativeBadPRSignal(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		SupportCount:        12,
+		PostGoodCommitCount: 0,
+		References: []reference{
+			{PRNumber: 4249},
+			{PRNumber: 4249},
+			{PRNumber: 4313},
+		},
+	}
+	recent := []reference{
+		{PRNumber: 4313},
+		{PRNumber: 4249},
+		{PRNumber: 4249},
+		{PRNumber: 4313},
+	}
+
+	warning, ok := signaturePRWarning(cluster, recent)
+	if !ok {
+		t.Fatal("expected warning for missing post-merge signal")
+	}
+	if !strings.Contains(warning, "post-good-commit-runs=0 across 2 recent PRs") {
+		t.Fatalf("unexpected warning: %q", warning)
+	}
+	if !strings.Contains(warning, "Bad-PR attribution is tentative") {
+		t.Fatalf("unexpected warning: %q", warning)
+	}
+}
+
+func TestSignaturePRWarningUsesRecentDistinctPRsForTentativeCount(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		SupportCount:        12,
+		PostGoodCommitCount: 0,
+		References: []reference{
+			{PRNumber: 4208},
+			{PRNumber: 4225},
+			{PRNumber: 4249},
+			{PRNumber: 4313},
+		},
+	}
+	recent := []reference{
+		{PRNumber: 4313},
+		{PRNumber: 4249},
+		{PRNumber: 4249},
+		{PRNumber: 4313},
+	}
+
+	warning, ok := signaturePRWarning(cluster, recent)
+	if !ok {
+		t.Fatal("expected warning for missing post-merge signal")
+	}
+	if !strings.Contains(warning, "post-good-commit-runs=0 across 2 recent PRs") {
+		t.Fatalf("unexpected warning: %q", warning)
+	}
+	if !strings.Contains(warning, "Bad-PR attribution is tentative") {
+		t.Fatalf("unexpected warning: %q", warning)
+	}
+}
+
+func TestReviewReasonsForClusterIgnoresInformationalReason(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		Phase1ClusterID:    "cluster-a",
+		MemberSignatureIDs: []string{"sig-a"},
+	}
+	index := buildReviewSignalIndex([]reviewItem{
+		{
+			Reason:                 "phase1_cluster_id_collision",
+			SourcePhase1ClusterIDs: []string{"cluster-a"},
+		},
+		{
+			Reason:             "phase1_cluster_id_collision",
+			MemberSignatureIDs: []string{"sig-a"},
+		},
+	})
+
+	reasons := reviewReasonsForCluster(cluster, index)
+	if len(reasons) != 0 {
+		t.Fatalf("expected informational reasons to be filtered, got %v", reasons)
+	}
+}
+
+func TestClusterDailyDensitySparkline(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		References: []reference{
+			{OccurredAt: "2026-03-01T10:00:00Z"},
+			{OccurredAt: "2026-03-02T10:00:00Z"},
+			{OccurredAt: "2026-03-02T12:00:00Z"},
+			{OccurredAt: "2026-03-04T10:00:00Z"},
+		},
+	}
+
+	unicodeSpark, counts, dateRange, ok := clusterDailyDensitySparkline(cluster, 4, time.Date(2026, 3, 4, 16, 30, 0, 0, time.UTC))
+	if !ok {
+		t.Fatal("expected sparkline to be generated")
+	}
+	if unicodeSpark == "" {
+		t.Fatalf("expected non-empty sparkline string, got unicode=%q", unicodeSpark)
+	}
+	if got, want := dateRange, "2026-03-01..2026-03-04"; got != want {
+		t.Fatalf("unexpected date range: got %q want %q", got, want)
+	}
+	if got, want := formatCounts(counts), "1,2,0,1"; got != want {
+		t.Fatalf("unexpected counts: got %q want %q", got, want)
+	}
+}
+
+func TestClusterDailyDensitySparklineAnchorsToGeneratedAtWindow(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		References: []reference{
+			{OccurredAt: "2026-03-01T10:00:00Z"},
+			{OccurredAt: "2026-03-02T10:00:00Z"},
+		},
+	}
+
+	unicodeSpark, counts, dateRange, ok := clusterDailyDensitySparkline(cluster, 4, time.Date(2026, 3, 7, 1, 0, 0, 0, time.UTC))
+	if !ok {
+		t.Fatal("expected sparkline to be generated")
+	}
+	if unicodeSpark != "····" {
+		t.Fatalf("unexpected sparkline: got %q want %q", unicodeSpark, "····")
+	}
+	if got, want := dateRange, "2026-03-04..2026-03-07"; got != want {
+		t.Fatalf("unexpected date range: got %q want %q", got, want)
+	}
+	if got, want := formatCounts(counts), "0,0,0,0"; got != want {
+		t.Fatalf("unexpected counts: got %q want %q", got, want)
+	}
+}

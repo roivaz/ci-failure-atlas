@@ -1,6 +1,10 @@
 package contracts
 
-import "context"
+import (
+	"context"
+
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+)
 
 type RunRecord struct {
 	Environment    string `json:"environment"`
@@ -115,6 +119,23 @@ type DeadLetterStore interface {
 	ListDeadLetters(ctx context.Context, limit int) ([]DeadLetterRecord, error)
 }
 
+type SemanticStore interface {
+	UpsertPhase1Workset(ctx context.Context, rows []semanticcontracts.Phase1WorksetRecord) error
+	ListPhase1Workset(ctx context.Context) ([]semanticcontracts.Phase1WorksetRecord, error)
+
+	UpsertPhase1Normalized(ctx context.Context, rows []semanticcontracts.Phase1NormalizedRecord) error
+	ListPhase1Normalized(ctx context.Context) ([]semanticcontracts.Phase1NormalizedRecord, error)
+
+	UpsertPhase1Assignments(ctx context.Context, rows []semanticcontracts.Phase1AssignmentRecord) error
+	ListPhase1Assignments(ctx context.Context) ([]semanticcontracts.Phase1AssignmentRecord, error)
+
+	UpsertTestClusters(ctx context.Context, rows []semanticcontracts.TestClusterRecord) error
+	ListTestClusters(ctx context.Context) ([]semanticcontracts.TestClusterRecord, error)
+
+	UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.ReviewItemRecord) error
+	ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error)
+}
+
 type Store interface {
 	RunStore
 	ArtifactFailureStore
@@ -123,6 +144,7 @@ type Store interface {
 	RunCountHourlyStore
 	CheckpointStore
 	DeadLetterStore
+	SemanticStore
 
 	Close() error
 }

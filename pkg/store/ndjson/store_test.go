@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	"ci-failure-atlas/pkg/store/contracts"
 )
 
@@ -564,6 +565,216 @@ func TestAppendAndListDeadLetters(t *testing.T) {
 	}
 	if latestTwo[0].FailedAt != "2026-03-05T03:00:00Z" || latestTwo[1].FailedAt != "2026-03-05T02:00:00Z" {
 		t.Fatalf("unexpected dead letter ordering: %+v", latestTwo)
+	}
+}
+
+func TestUpsertAndListSemanticPhase1Artifacts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	worksetInput := []semanticcontracts.Phase1WorksetRecord{
+		{
+			SchemaVersion:  semanticcontracts.SchemaVersionV1,
+			RowID:          "row-b",
+			GroupKey:       "e2e|job|test",
+			Lane:           "e2e",
+			JobName:        "job",
+			TestName:       "test",
+			SignatureID:    "sig-b",
+			OccurredAt:     "2026-03-05T11:00:00Z",
+			RunURL:         "https://run-b",
+			RawText:        "raw-b",
+			NormalizedText: "norm-b",
+		},
+		{
+			SchemaVersion:  semanticcontracts.SchemaVersionV1,
+			RowID:          "row-a",
+			GroupKey:       "e2e|job|test",
+			Lane:           "e2e",
+			JobName:        "job",
+			TestName:       "test",
+			SignatureID:    "sig-a",
+			OccurredAt:     "2026-03-05T10:00:00Z",
+			RunURL:         "https://run-a",
+			RawText:        "raw-a",
+			NormalizedText: "norm-a",
+		},
+	}
+	if err := store.UpsertPhase1Workset(ctx, worksetInput); err != nil {
+		t.Fatalf("upsert phase1 workset: %v", err)
+	}
+
+	if err := store.UpsertPhase1Normalized(ctx, []semanticcontracts.Phase1NormalizedRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			RowID:                   "row-a",
+			GroupKey:                "e2e|job|test",
+			Lane:                    "e2e",
+			JobName:                 "job",
+			TestName:                "test",
+			SignatureID:             "sig-a",
+			OccurredAt:              "2026-03-05T10:00:00Z",
+			RunURL:                  "https://run-a",
+			CanonicalEvidencePhrase: "failure a",
+			SearchQueryPhrase:       "failure a",
+			Phase1Key:               "failure a",
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			RowID:                   "row-b",
+			GroupKey:                "e2e|job|test",
+			Lane:                    "e2e",
+			JobName:                 "job",
+			TestName:                "test",
+			SignatureID:             "sig-b",
+			OccurredAt:              "2026-03-05T11:00:00Z",
+			RunURL:                  "https://run-b",
+			CanonicalEvidencePhrase: "failure b",
+			SearchQueryPhrase:       "failure b",
+			Phase1Key:               "failure b",
+		},
+	}); err != nil {
+		t.Fatalf("upsert phase1 normalized: %v", err)
+	}
+
+	if err := store.UpsertPhase1Assignments(ctx, []semanticcontracts.Phase1AssignmentRecord{
+		{
+			SchemaVersion:                    semanticcontracts.SchemaVersionV1,
+			RowID:                            "row-a",
+			GroupKey:                         "e2e|job|test",
+			Phase1LocalClusterKey:            "k-1",
+			CanonicalEvidencePhraseCandidate: "failure a",
+			SearchQueryPhraseCandidate:       "failure a",
+			Confidence:                       "high",
+		},
+		{
+			SchemaVersion:                    semanticcontracts.SchemaVersionV1,
+			RowID:                            "row-b",
+			GroupKey:                         "e2e|job|test",
+			Phase1LocalClusterKey:            "k-2",
+			CanonicalEvidencePhraseCandidate: "failure b",
+			SearchQueryPhraseCandidate:       "failure b",
+			Confidence:                       "low",
+			Reasons:                          []string{"ambiguous_provider_merge"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert phase1 assignments: %v", err)
+	}
+
+	clusterInput := []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:                semanticcontracts.SchemaVersionV1,
+			Phase1ClusterID:              "cluster-2",
+			Lane:                         "e2e",
+			JobName:                      "job",
+			TestName:                     "test",
+			CanonicalEvidencePhrase:      "failure b",
+			SearchQueryPhrase:            "failure b",
+			SearchQuerySourceRunURL:      "https://run-b",
+			SearchQuerySourceSignatureID: "sig-b",
+			SupportCount:                 1,
+			MemberSignatureIDs:           []string{"sig-b"},
+		},
+		{
+			SchemaVersion:                semanticcontracts.SchemaVersionV1,
+			Phase1ClusterID:              "cluster-1",
+			Lane:                         "e2e",
+			JobName:                      "job",
+			TestName:                     "test",
+			CanonicalEvidencePhrase:      "failure a",
+			SearchQueryPhrase:            "failure a",
+			SearchQuerySourceRunURL:      "https://run-a",
+			SearchQuerySourceSignatureID: "sig-a",
+			SupportCount:                 2,
+			MemberSignatureIDs:           []string{"sig-a"},
+		},
+	}
+	if err := store.UpsertTestClusters(ctx, clusterInput); err != nil {
+		t.Fatalf("upsert test clusters: %v", err)
+	}
+
+	if err := store.UpsertReviewQueue(ctx, []semanticcontracts.ReviewItemRecord{
+		{
+			SchemaVersion:                        semanticcontracts.SchemaVersionV1,
+			ReviewItemID:                         "review-2",
+			Phase:                                "phase1",
+			Reason:                               "low_confidence_evidence",
+			ProposedCanonicalEvidencePhrase:      "failure b",
+			ProposedSearchQueryPhrase:            "failure b",
+			ProposedSearchQuerySourceRunURL:      "https://run-b",
+			ProposedSearchQuerySourceSignatureID: "sig-b",
+			SourcePhase1ClusterIDs:               []string{"cluster-2"},
+		},
+		{
+			SchemaVersion:                        semanticcontracts.SchemaVersionV1,
+			ReviewItemID:                         "review-1",
+			Phase:                                "phase1",
+			Reason:                               "ambiguous_provider_merge",
+			ProposedCanonicalEvidencePhrase:      "failure a",
+			ProposedSearchQueryPhrase:            "failure a",
+			ProposedSearchQuerySourceRunURL:      "https://run-a",
+			ProposedSearchQuerySourceSignatureID: "sig-a",
+			SourcePhase1ClusterIDs:               []string{"cluster-1"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert review queue: %v", err)
+	}
+
+	worksetRows, err := store.ListPhase1Workset(ctx)
+	if err != nil {
+		t.Fatalf("list phase1 workset: %v", err)
+	}
+	if len(worksetRows) != 2 {
+		t.Fatalf("unexpected phase1 workset count: got=%d want=2", len(worksetRows))
+	}
+	if worksetRows[0].RowID != "row-a" || worksetRows[1].RowID != "row-b" {
+		t.Fatalf("unexpected phase1 workset ordering: %+v", worksetRows)
+	}
+
+	normalizedRows, err := store.ListPhase1Normalized(ctx)
+	if err != nil {
+		t.Fatalf("list phase1 normalized: %v", err)
+	}
+	if len(normalizedRows) != 2 {
+		t.Fatalf("unexpected phase1 normalized count: got=%d want=2", len(normalizedRows))
+	}
+
+	assignmentRows, err := store.ListPhase1Assignments(ctx)
+	if err != nil {
+		t.Fatalf("list phase1 assignments: %v", err)
+	}
+	if len(assignmentRows) != 2 {
+		t.Fatalf("unexpected phase1 assignment count: got=%d want=2", len(assignmentRows))
+	}
+	if assignmentRows[1].Confidence != "low" || !reflect.DeepEqual(assignmentRows[1].Reasons, []string{"ambiguous_provider_merge"}) {
+		t.Fatalf("unexpected phase1 assignment content: %+v", assignmentRows[1])
+	}
+
+	clusterRows, err := store.ListTestClusters(ctx)
+	if err != nil {
+		t.Fatalf("list test clusters: %v", err)
+	}
+	if len(clusterRows) != 2 {
+		t.Fatalf("unexpected test cluster count: got=%d want=2", len(clusterRows))
+	}
+	if clusterRows[0].Phase1ClusterID != "cluster-1" || clusterRows[0].SupportCount != 2 {
+		t.Fatalf("unexpected test cluster ordering/content: %+v", clusterRows)
+	}
+
+	reviewRows, err := store.ListReviewQueue(ctx)
+	if err != nil {
+		t.Fatalf("list review queue: %v", err)
+	}
+	if len(reviewRows) != 2 {
+		t.Fatalf("unexpected review queue count: got=%d want=2", len(reviewRows))
+	}
+	if reviewRows[0].Reason != "ambiguous_provider_merge" || reviewRows[1].Reason != "low_confidence_evidence" {
+		t.Fatalf("unexpected review queue ordering/content: %+v", reviewRows)
 	}
 }
 

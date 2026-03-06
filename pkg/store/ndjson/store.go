@@ -14,18 +14,25 @@ import (
 	"sync"
 	"time"
 
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	"ci-failure-atlas/pkg/store/contracts"
 )
 
 const (
-	factsDirectory = "facts"
-	stateDirectory = "state"
+	factsDirectory    = "facts"
+	semanticDirectory = "semantic"
+	stateDirectory    = "state"
 
 	runsFilename             = "runs.ndjson"
 	artifactFailuresFilename = "artifact_failures.ndjson"
 	rawFailuresFilename      = "raw_failures.ndjson"
 	metricsDailyFilename     = "metrics_daily.ndjson"
 	runCountsHourlyFilename  = "run_counts_hourly.ndjson"
+	phase1WorksetFilename    = "phase1_workset.ndjson"
+	phase1NormalizedFilename = "phase1_normalized.ndjson"
+	phase1AssignmentsFile    = "phase1_assignments.ndjson"
+	testClustersFilename     = "test_clusters.ndjson"
+	reviewQueueFilename      = "review_queue.ndjson"
 	checkpointsFilename      = "checkpoints.ndjson"
 	deadLettersFilename      = "dead_letters.ndjson"
 )
@@ -940,6 +947,414 @@ func (s *Store) ListDeadLetters(ctx context.Context, limit int) ([]contracts.Dea
 	return rows, nil
 }
 
+func (s *Store) UpsertPhase1Workset(ctx context.Context, rows []semanticcontracts.Phase1WorksetRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.phase1WorksetPath()
+	existing, err := readNDJSON[semanticcontracts.Phase1WorksetRecord](path)
+	if err != nil {
+		return err
+	}
+
+	mergedByKey := map[string]semanticcontracts.Phase1WorksetRecord{}
+	for _, row := range existing {
+		normalized := normalizePhase1WorksetRecord(row)
+		key := phase1WorksetKey(normalized)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, row := range rows {
+		normalized := normalizePhase1WorksetRecord(row)
+		key := phase1WorksetKey(normalized)
+		if key == "" {
+			return fmt.Errorf("phase1 workset record missing row_id")
+		}
+		mergedByKey[key] = normalized
+	}
+
+	merged := make([]semanticcontracts.Phase1WorksetRecord, 0, len(mergedByKey))
+	for _, row := range mergedByKey {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return phase1WorksetLess(merged[i], merged[j])
+	})
+
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListPhase1Workset(ctx context.Context) ([]semanticcontracts.Phase1WorksetRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[semanticcontracts.Phase1WorksetRecord](s.phase1WorksetPath())
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]semanticcontracts.Phase1WorksetRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizePhase1WorksetRecord(row)
+		if normalized.RowID == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return phase1WorksetLess(filtered[i], filtered[j])
+	})
+	return filtered, nil
+}
+
+func (s *Store) UpsertPhase1Normalized(ctx context.Context, rows []semanticcontracts.Phase1NormalizedRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.phase1NormalizedPath()
+	existing, err := readNDJSON[semanticcontracts.Phase1NormalizedRecord](path)
+	if err != nil {
+		return err
+	}
+
+	mergedByKey := map[string]semanticcontracts.Phase1NormalizedRecord{}
+	for _, row := range existing {
+		normalized := normalizePhase1NormalizedRecord(row)
+		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{RowID: normalized.RowID})
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, row := range rows {
+		normalized := normalizePhase1NormalizedRecord(row)
+		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{RowID: normalized.RowID})
+		if key == "" {
+			return fmt.Errorf("phase1 normalized record missing row_id")
+		}
+		mergedByKey[key] = normalized
+	}
+
+	merged := make([]semanticcontracts.Phase1NormalizedRecord, 0, len(mergedByKey))
+	for _, row := range mergedByKey {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Lane != merged[j].Lane {
+			return merged[i].Lane < merged[j].Lane
+		}
+		if merged[i].JobName != merged[j].JobName {
+			return merged[i].JobName < merged[j].JobName
+		}
+		if merged[i].TestName != merged[j].TestName {
+			return merged[i].TestName < merged[j].TestName
+		}
+		if merged[i].OccurredAt != merged[j].OccurredAt {
+			return merged[i].OccurredAt < merged[j].OccurredAt
+		}
+		if merged[i].RunURL != merged[j].RunURL {
+			return merged[i].RunURL < merged[j].RunURL
+		}
+		if merged[i].SignatureID != merged[j].SignatureID {
+			return merged[i].SignatureID < merged[j].SignatureID
+		}
+		return merged[i].RowID < merged[j].RowID
+	})
+
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListPhase1Normalized(ctx context.Context) ([]semanticcontracts.Phase1NormalizedRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[semanticcontracts.Phase1NormalizedRecord](s.phase1NormalizedPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]semanticcontracts.Phase1NormalizedRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizePhase1NormalizedRecord(row)
+		if normalized.RowID == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].GroupKey != filtered[j].GroupKey {
+			return filtered[i].GroupKey < filtered[j].GroupKey
+		}
+		if filtered[i].Phase1Key != filtered[j].Phase1Key {
+			return filtered[i].Phase1Key < filtered[j].Phase1Key
+		}
+		return filtered[i].RowID < filtered[j].RowID
+	})
+	return filtered, nil
+}
+
+func (s *Store) UpsertPhase1Assignments(ctx context.Context, rows []semanticcontracts.Phase1AssignmentRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.phase1AssignmentsPath()
+	existing, err := readNDJSON[semanticcontracts.Phase1AssignmentRecord](path)
+	if err != nil {
+		return err
+	}
+
+	mergedByKey := map[string]semanticcontracts.Phase1AssignmentRecord{}
+	for _, row := range existing {
+		normalized := normalizePhase1AssignmentRecord(row)
+		key := strings.TrimSpace(normalized.RowID)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, row := range rows {
+		normalized := normalizePhase1AssignmentRecord(row)
+		key := strings.TrimSpace(normalized.RowID)
+		if key == "" {
+			return fmt.Errorf("phase1 assignment record missing row_id")
+		}
+		mergedByKey[key] = normalized
+	}
+
+	merged := make([]semanticcontracts.Phase1AssignmentRecord, 0, len(mergedByKey))
+	for _, row := range mergedByKey {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].GroupKey != merged[j].GroupKey {
+			return merged[i].GroupKey < merged[j].GroupKey
+		}
+		if merged[i].Phase1LocalClusterKey != merged[j].Phase1LocalClusterKey {
+			return merged[i].Phase1LocalClusterKey < merged[j].Phase1LocalClusterKey
+		}
+		return merged[i].RowID < merged[j].RowID
+	})
+
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListPhase1Assignments(ctx context.Context) ([]semanticcontracts.Phase1AssignmentRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[semanticcontracts.Phase1AssignmentRecord](s.phase1AssignmentsPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]semanticcontracts.Phase1AssignmentRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizePhase1AssignmentRecord(row)
+		if normalized.RowID == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].GroupKey != filtered[j].GroupKey {
+			return filtered[i].GroupKey < filtered[j].GroupKey
+		}
+		if filtered[i].Phase1LocalClusterKey != filtered[j].Phase1LocalClusterKey {
+			return filtered[i].Phase1LocalClusterKey < filtered[j].Phase1LocalClusterKey
+		}
+		return filtered[i].RowID < filtered[j].RowID
+	})
+	return filtered, nil
+}
+
+func (s *Store) UpsertTestClusters(ctx context.Context, rows []semanticcontracts.TestClusterRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.testClustersPath()
+	existing, err := readNDJSON[semanticcontracts.TestClusterRecord](path)
+	if err != nil {
+		return err
+	}
+
+	mergedByKey := map[string]semanticcontracts.TestClusterRecord{}
+	for _, row := range existing {
+		normalized := normalizeTestClusterRecord(row)
+		key := strings.TrimSpace(normalized.Phase1ClusterID)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, row := range rows {
+		normalized := normalizeTestClusterRecord(row)
+		key := strings.TrimSpace(normalized.Phase1ClusterID)
+		if key == "" {
+			return fmt.Errorf("test cluster record missing phase1_cluster_id")
+		}
+		mergedByKey[key] = normalized
+	}
+
+	merged := make([]semanticcontracts.TestClusterRecord, 0, len(mergedByKey))
+	for _, row := range mergedByKey {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return testClusterLess(merged[i], merged[j])
+	})
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListTestClusters(ctx context.Context) ([]semanticcontracts.TestClusterRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[semanticcontracts.TestClusterRecord](s.testClustersPath())
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]semanticcontracts.TestClusterRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizeTestClusterRecord(row)
+		if normalized.Phase1ClusterID == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return testClusterLess(filtered[i], filtered[j])
+	})
+	return filtered, nil
+}
+
+func (s *Store) UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.ReviewItemRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.reviewQueuePath()
+	existing, err := readNDJSON[semanticcontracts.ReviewItemRecord](path)
+	if err != nil {
+		return err
+	}
+
+	mergedByKey := map[string]semanticcontracts.ReviewItemRecord{}
+	for _, row := range existing {
+		normalized := normalizeReviewItemRecord(row)
+		key := strings.TrimSpace(normalized.ReviewItemID)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, row := range rows {
+		normalized := normalizeReviewItemRecord(row)
+		key := strings.TrimSpace(normalized.ReviewItemID)
+		if key == "" {
+			return fmt.Errorf("review item record missing review_item_id")
+		}
+		mergedByKey[key] = normalized
+	}
+
+	merged := make([]semanticcontracts.ReviewItemRecord, 0, len(mergedByKey))
+	for _, row := range mergedByKey {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Phase != merged[j].Phase {
+			return merged[i].Phase < merged[j].Phase
+		}
+		if merged[i].Reason != merged[j].Reason {
+			return merged[i].Reason < merged[j].Reason
+		}
+		return merged[i].ReviewItemID < merged[j].ReviewItemID
+	})
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[semanticcontracts.ReviewItemRecord](s.reviewQueuePath())
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]semanticcontracts.ReviewItemRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizeReviewItemRecord(row)
+		if normalized.ReviewItemID == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Phase != filtered[j].Phase {
+			return filtered[i].Phase < filtered[j].Phase
+		}
+		if filtered[i].Reason != filtered[j].Reason {
+			return filtered[i].Reason < filtered[j].Reason
+		}
+		return filtered[i].ReviewItemID < filtered[j].ReviewItemID
+	})
+	return filtered, nil
+}
+
 func (s *Store) runsPath() string {
 	return filepath.Join(s.dataDirectory, factsDirectory, runsFilename)
 }
@@ -958,6 +1373,26 @@ func (s *Store) metricsDailyPath() string {
 
 func (s *Store) runCountsHourlyPath() string {
 	return filepath.Join(s.dataDirectory, factsDirectory, runCountsHourlyFilename)
+}
+
+func (s *Store) phase1WorksetPath() string {
+	return filepath.Join(s.dataDirectory, semanticDirectory, phase1WorksetFilename)
+}
+
+func (s *Store) phase1NormalizedPath() string {
+	return filepath.Join(s.dataDirectory, semanticDirectory, phase1NormalizedFilename)
+}
+
+func (s *Store) phase1AssignmentsPath() string {
+	return filepath.Join(s.dataDirectory, semanticDirectory, phase1AssignmentsFile)
+}
+
+func (s *Store) testClustersPath() string {
+	return filepath.Join(s.dataDirectory, semanticDirectory, testClustersFilename)
+}
+
+func (s *Store) reviewQueuePath() string {
+	return filepath.Join(s.dataDirectory, semanticDirectory, reviewQueueFilename)
 }
 
 func (s *Store) checkpointsPath() string {
@@ -1061,6 +1496,176 @@ func normalizeDeadLetterRecord(row contracts.DeadLetterRecord) contracts.DeadLet
 	}
 }
 
+func normalizePhase1WorksetRecord(row semanticcontracts.Phase1WorksetRecord) semanticcontracts.Phase1WorksetRecord {
+	prNumber := row.PRNumber
+	if prNumber < 0 {
+		prNumber = 0
+	}
+	return semanticcontracts.Phase1WorksetRecord{
+		SchemaVersion:  strings.TrimSpace(row.SchemaVersion),
+		RowID:          strings.TrimSpace(row.RowID),
+		GroupKey:       strings.TrimSpace(row.GroupKey),
+		Lane:           strings.TrimSpace(row.Lane),
+		JobName:        strings.TrimSpace(row.JobName),
+		TestName:       strings.TrimSpace(row.TestName),
+		TestSuite:      strings.TrimSpace(row.TestSuite),
+		SignatureID:    strings.TrimSpace(row.SignatureID),
+		OccurredAt:     strings.TrimSpace(row.OccurredAt),
+		RunURL:         strings.TrimSpace(row.RunURL),
+		PRNumber:       prNumber,
+		PostGoodCommit: row.PostGoodCommit,
+		RawText:        strings.TrimSpace(row.RawText),
+		NormalizedText: strings.TrimSpace(row.NormalizedText),
+	}
+}
+
+func normalizePhase1NormalizedRecord(row semanticcontracts.Phase1NormalizedRecord) semanticcontracts.Phase1NormalizedRecord {
+	prNumber := row.PRNumber
+	if prNumber < 0 {
+		prNumber = 0
+	}
+	return semanticcontracts.Phase1NormalizedRecord{
+		SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
+		RowID:                   strings.TrimSpace(row.RowID),
+		GroupKey:                strings.TrimSpace(row.GroupKey),
+		Lane:                    strings.TrimSpace(row.Lane),
+		JobName:                 strings.TrimSpace(row.JobName),
+		TestName:                strings.TrimSpace(row.TestName),
+		TestSuite:               strings.TrimSpace(row.TestSuite),
+		SignatureID:             strings.TrimSpace(row.SignatureID),
+		OccurredAt:              strings.TrimSpace(row.OccurredAt),
+		RunURL:                  strings.TrimSpace(row.RunURL),
+		PRNumber:                prNumber,
+		PostGoodCommit:          row.PostGoodCommit,
+		RawText:                 strings.TrimSpace(row.RawText),
+		NormalizedText:          strings.TrimSpace(row.NormalizedText),
+		CanonicalEvidencePhrase: strings.TrimSpace(row.CanonicalEvidencePhrase),
+		SearchQueryPhrase:       strings.TrimSpace(row.SearchQueryPhrase),
+		ProviderAnchor:          strings.TrimSpace(row.ProviderAnchor),
+		GenericPhrase:           row.GenericPhrase,
+		Phase1Key:               strings.TrimSpace(row.Phase1Key),
+	}
+}
+
+func normalizePhase1AssignmentRecord(row semanticcontracts.Phase1AssignmentRecord) semanticcontracts.Phase1AssignmentRecord {
+	return semanticcontracts.Phase1AssignmentRecord{
+		SchemaVersion:                    strings.TrimSpace(row.SchemaVersion),
+		RowID:                            strings.TrimSpace(row.RowID),
+		GroupKey:                         strings.TrimSpace(row.GroupKey),
+		Phase1LocalClusterKey:            strings.TrimSpace(row.Phase1LocalClusterKey),
+		CanonicalEvidencePhraseCandidate: strings.TrimSpace(row.CanonicalEvidencePhraseCandidate),
+		SearchQueryPhraseCandidate:       strings.TrimSpace(row.SearchQueryPhraseCandidate),
+		Confidence:                       strings.TrimSpace(row.Confidence),
+		Reasons:                          normalizeStringSlice(row.Reasons),
+	}
+}
+
+func normalizeReferenceRecord(row semanticcontracts.ReferenceRecord) semanticcontracts.ReferenceRecord {
+	prNumber := row.PRNumber
+	if prNumber < 0 {
+		prNumber = 0
+	}
+	return semanticcontracts.ReferenceRecord{
+		RunURL:         strings.TrimSpace(row.RunURL),
+		OccurredAt:     strings.TrimSpace(row.OccurredAt),
+		SignatureID:    strings.TrimSpace(row.SignatureID),
+		PRNumber:       prNumber,
+		PostGoodCommit: row.PostGoodCommit,
+		RawTextExcerpt: strings.TrimSpace(row.RawTextExcerpt),
+	}
+}
+
+func normalizeReferenceSlice(rows []semanticcontracts.ReferenceRecord) []semanticcontracts.ReferenceRecord {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]semanticcontracts.ReferenceRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizeReferenceRecord(row)
+		if normalized.RunURL == "" && normalized.SignatureID == "" && normalized.OccurredAt == "" && normalized.RawTextExcerpt == "" {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].OccurredAt != out[j].OccurredAt {
+			return out[i].OccurredAt < out[j].OccurredAt
+		}
+		if out[i].RunURL != out[j].RunURL {
+			return out[i].RunURL < out[j].RunURL
+		}
+		if out[i].SignatureID != out[j].SignatureID {
+			return out[i].SignatureID < out[j].SignatureID
+		}
+		return out[i].RawTextExcerpt < out[j].RawTextExcerpt
+	})
+	return out
+}
+
+func normalizeTestClusterRecord(row semanticcontracts.TestClusterRecord) semanticcontracts.TestClusterRecord {
+	postGoodCommitCount := row.PostGoodCommitCount
+	if postGoodCommitCount < 0 {
+		postGoodCommitCount = 0
+	}
+	supportCount := row.SupportCount
+	if supportCount < 0 {
+		supportCount = 0
+	}
+	return semanticcontracts.TestClusterRecord{
+		SchemaVersion:                strings.TrimSpace(row.SchemaVersion),
+		Phase1ClusterID:              strings.TrimSpace(row.Phase1ClusterID),
+		Lane:                         strings.TrimSpace(row.Lane),
+		JobName:                      strings.TrimSpace(row.JobName),
+		TestName:                     strings.TrimSpace(row.TestName),
+		TestSuite:                    strings.TrimSpace(row.TestSuite),
+		CanonicalEvidencePhrase:      strings.TrimSpace(row.CanonicalEvidencePhrase),
+		SearchQueryPhrase:            strings.TrimSpace(row.SearchQueryPhrase),
+		SearchQuerySourceRunURL:      strings.TrimSpace(row.SearchQuerySourceRunURL),
+		SearchQuerySourceSignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
+		SupportCount:                 supportCount,
+		SeenPostGoodCommit:           row.SeenPostGoodCommit,
+		PostGoodCommitCount:          postGoodCommitCount,
+		MemberSignatureIDs:           normalizeStringSlice(row.MemberSignatureIDs),
+		References:                   normalizeReferenceSlice(row.References),
+	}
+}
+
+func normalizeReviewItemRecord(row semanticcontracts.ReviewItemRecord) semanticcontracts.ReviewItemRecord {
+	return semanticcontracts.ReviewItemRecord{
+		SchemaVersion:                        strings.TrimSpace(row.SchemaVersion),
+		ReviewItemID:                         strings.TrimSpace(row.ReviewItemID),
+		Phase:                                strings.TrimSpace(row.Phase),
+		Reason:                               strings.TrimSpace(row.Reason),
+		ProposedCanonicalEvidencePhrase:      strings.TrimSpace(row.ProposedCanonicalEvidencePhrase),
+		ProposedSearchQueryPhrase:            strings.TrimSpace(row.ProposedSearchQueryPhrase),
+		ProposedSearchQuerySourceRunURL:      strings.TrimSpace(row.ProposedSearchQuerySourceRunURL),
+		ProposedSearchQuerySourceSignatureID: strings.TrimSpace(row.ProposedSearchQuerySourceSignatureID),
+		SourcePhase1ClusterIDs:               normalizeStringSlice(row.SourcePhase1ClusterIDs),
+		MemberSignatureIDs:                   normalizeStringSlice(row.MemberSignatureIDs),
+		References:                           normalizeReferenceSlice(row.References),
+	}
+}
+
+func normalizeStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	set := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		set[trimmed] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func artifactFailureKey(row contracts.ArtifactFailureRecord) string {
 	if row.Environment == "" || row.ArtifactRowID == "" {
 		return ""
@@ -1094,6 +1699,48 @@ func rawFailureKey(row contracts.RawFailureRecord) string {
 		return ""
 	}
 	return row.Environment + "|" + row.RowID
+}
+
+func phase1WorksetKey(row semanticcontracts.Phase1WorksetRecord) string {
+	return strings.TrimSpace(row.RowID)
+}
+
+func phase1WorksetLess(a semanticcontracts.Phase1WorksetRecord, b semanticcontracts.Phase1WorksetRecord) bool {
+	if a.Lane != b.Lane {
+		return a.Lane < b.Lane
+	}
+	if a.JobName != b.JobName {
+		return a.JobName < b.JobName
+	}
+	if a.TestName != b.TestName {
+		return a.TestName < b.TestName
+	}
+	if a.OccurredAt != b.OccurredAt {
+		return a.OccurredAt < b.OccurredAt
+	}
+	if a.RunURL != b.RunURL {
+		return a.RunURL < b.RunURL
+	}
+	if a.SignatureID != b.SignatureID {
+		return a.SignatureID < b.SignatureID
+	}
+	return a.RowID < b.RowID
+}
+
+func testClusterLess(a semanticcontracts.TestClusterRecord, b semanticcontracts.TestClusterRecord) bool {
+	if a.Lane != b.Lane {
+		return a.Lane < b.Lane
+	}
+	if a.JobName != b.JobName {
+		return a.JobName < b.JobName
+	}
+	if a.TestName != b.TestName {
+		return a.TestName < b.TestName
+	}
+	if a.SupportCount != b.SupportCount {
+		return a.SupportCount > b.SupportCount
+	}
+	return a.Phase1ClusterID < b.Phase1ClusterID
 }
 
 func normalizeEnvironment(value string) string {
