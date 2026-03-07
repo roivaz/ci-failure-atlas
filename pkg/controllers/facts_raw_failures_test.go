@@ -116,6 +116,121 @@ func TestFactsRawFailuresSyncOnceUsesRunOccurredAt(t *testing.T) {
 	}
 }
 
+func TestFactsRawFailuresSyncOnceMaterializesSyntheticNonArtifactRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	runURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/5100/job/111111"
+	occurredAt := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339)
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      runURL,
+			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			OccurredAt:  occurredAt,
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+	if err := controller.SyncOnce(ctx); err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+
+	rows := mustReadRawFailureRows(t, filepath.Join(dataDir, "facts", "raw_failures.ndjson"))
+	if len(rows) != 1 {
+		t.Fatalf("unexpected raw failure row count: got=%d want=1", len(rows))
+	}
+	row := rows[0]
+	if !row.NonArtifactBacked {
+		t.Fatalf("expected synthetic non_artifact_backed row, got=%+v", row)
+	}
+	if row.TestName != rawFailureUnknownPlaceholder || row.TestSuite != rawFailureUnknownPlaceholder {
+		t.Fatalf("expected unknown placeholders for synthetic row, got=%+v", row)
+	}
+	if row.RowID != sha256Hex("dev|"+runURL+"|non_artifact_backed") {
+		t.Fatalf("unexpected synthetic row_id: got=%q", row.RowID)
+	}
+	if row.OccurredAt != occurredAt {
+		t.Fatalf("expected occurred_at propagated from run metadata, got=%q", row.OccurredAt)
+	}
+	if row.SignatureID == "" || row.NormalizedText == "" || row.RawText == "" {
+		t.Fatalf("expected synthetic failure text/signature fields to be populated, got=%+v", row)
+	}
+}
+
+func TestFactsRawFailuresRunOnceUpgradesSyntheticRowToArtifactBacked(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	runURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/5101/job/222222"
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      runURL,
+			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			OccurredAt:  "2026-03-06T12:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+	if err := controller.RunOnce(ctx, "dev|"+runURL); err != nil {
+		t.Fatalf("run once (synthetic): %v", err)
+	}
+
+	if err := store.UpsertArtifactFailures(ctx, []contracts.ArtifactFailureRecord{
+		{
+			Environment:   "dev",
+			ArtifactRowID: "dev-row-upgrade",
+			RunURL:        runURL,
+			TestName:      "test-upgrade",
+			TestSuite:     "suite-upgrade",
+			SignatureID:   "sig-upgrade",
+			FailureText:   "artifact-backed failure",
+		},
+	}); err != nil {
+		t.Fatalf("upsert artifact failures: %v", err)
+	}
+	if err := controller.RunOnce(ctx, "dev|"+runURL); err != nil {
+		t.Fatalf("run once (upgrade): %v", err)
+	}
+
+	rows := mustReadRawFailureRows(t, filepath.Join(dataDir, "facts", "raw_failures.ndjson"))
+	if len(rows) != 1 {
+		t.Fatalf("unexpected raw failure row count after upgrade: got=%d want=1", len(rows))
+	}
+	row := rows[0]
+	if row.NonArtifactBacked {
+		t.Fatalf("expected artifact-backed row after upgrade, got=%+v", row)
+	}
+	if row.RowID != "dev-row-upgrade" || row.TestName != "test-upgrade" || row.TestSuite != "suite-upgrade" {
+		t.Fatalf("unexpected upgraded row content: %+v", row)
+	}
+}
+
 func TestFactsRawFailuresRunOnceWithoutRunMetadata(t *testing.T) {
 	t.Parallel()
 

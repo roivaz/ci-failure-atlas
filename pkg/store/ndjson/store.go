@@ -359,6 +359,25 @@ func (s *Store) UpsertRawFailures(ctx context.Context, rows []contracts.RawFailu
 		return err
 	}
 
+	normalizedInput := make([]contracts.RawFailureRecord, 0, len(rows))
+	touchedRunKeys := map[string]struct{}{}
+	for _, row := range rows {
+		normalized := normalizeRawFailureRecord(row)
+		key := rawFailureKey(normalized)
+		if key == "" {
+			return fmt.Errorf("raw failure record missing environment and/or row_id")
+		}
+		runKey := runRecordKey(contracts.RunRecord{
+			Environment: normalized.Environment,
+			RunURL:      normalized.RunURL,
+		})
+		if runKey == "" {
+			return fmt.Errorf("raw failure record missing run_url")
+		}
+		normalizedInput = append(normalizedInput, normalized)
+		touchedRunKeys[runKey] = struct{}{}
+	}
+
 	mergedByRowID := map[string]contracts.RawFailureRecord{}
 	for _, row := range existing {
 		normalized := normalizeRawFailureRecord(row)
@@ -366,14 +385,17 @@ func (s *Store) UpsertRawFailures(ctx context.Context, rows []contracts.RawFailu
 		if key == "" {
 			continue
 		}
+		runKey := runRecordKey(contracts.RunRecord{
+			Environment: normalized.Environment,
+			RunURL:      normalized.RunURL,
+		})
+		if _, touched := touchedRunKeys[runKey]; touched {
+			continue
+		}
 		mergedByRowID[key] = normalized
 	}
-	for _, row := range rows {
-		normalized := normalizeRawFailureRecord(row)
+	for _, normalized := range normalizedInput {
 		key := rawFailureKey(normalized)
-		if key == "" {
-			return fmt.Errorf("raw failure record missing environment and/or row_id")
-		}
 		mergedByRowID[key] = normalized
 	}
 
@@ -1442,6 +1464,7 @@ func normalizeRawFailureRecord(row contracts.RawFailureRecord) contracts.RawFail
 		Environment:            normalizeEnvironment(row.Environment),
 		RowID:                  strings.TrimSpace(row.RowID),
 		RunURL:                 strings.TrimSpace(row.RunURL),
+		NonArtifactBacked:      row.NonArtifactBacked,
 		TestName:               strings.TrimSpace(row.TestName),
 		TestSuite:              strings.TrimSpace(row.TestSuite),
 		MergedPR:               row.MergedPR,

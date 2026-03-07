@@ -27,6 +27,9 @@ func BuildWorkset(rawFailures []storecontracts.RawFailureRecord, runs []storecon
 
 	workset := make([]semanticcontracts.Phase1WorksetRecord, 0, len(rawFailures))
 	for _, row := range rawFailures {
+		if row.NonArtifactBacked {
+			continue
+		}
 		environment := strings.ToLower(strings.TrimSpace(row.Environment))
 		runURL := strings.TrimSpace(row.RunURL)
 		if environment == "" || runURL == "" {

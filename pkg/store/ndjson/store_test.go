@@ -207,7 +207,7 @@ func TestUpsertRawFailuresAndListRunKeys(t *testing.T) {
 	err = store.UpsertRawFailures(ctx, []contracts.RawFailureRecord{
 		{Environment: "dev", RowID: "row-2", RunURL: "https://run-b", TestName: "test-b", TestSuite: "suite-dev", MergedPR: false, PostGoodCommitFailures: 0, SignatureID: "sig-b", OccurredAt: "2026-03-05T10:00:00Z", RawText: "raw-b", NormalizedText: "norm-b"},
 		{Environment: "dev", RowID: "row-1", RunURL: "https://run-a", TestName: "test-a", TestSuite: "suite-dev", MergedPR: false, PostGoodCommitFailures: 0, SignatureID: "sig-a", OccurredAt: "2026-03-05T09:00:00Z", RawText: "raw-a", NormalizedText: "norm-a"},
-		{Environment: "int", RowID: "row-1", RunURL: "https://run-a", TestName: "test-a-int", TestSuite: "suite-int", MergedPR: true, PostGoodCommitFailures: 1, SignatureID: "sig-a-int", OccurredAt: "2026-03-05T07:00:00Z", RawText: "raw-a-int", NormalizedText: "norm-a-int"},
+		{Environment: "int", RowID: "row-1", RunURL: "https://run-a", NonArtifactBacked: true, TestName: "test-a-int", TestSuite: "suite-int", MergedPR: true, PostGoodCommitFailures: 1, SignatureID: "sig-a-int", OccurredAt: "2026-03-05T07:00:00Z", RawText: "raw-a-int", NormalizedText: "norm-a-int"},
 	})
 	if err != nil {
 		t.Fatalf("upsert initial raw failures: %v", err)
@@ -274,6 +274,9 @@ func TestUpsertRawFailuresAndListRunKeys(t *testing.T) {
 			if !row.MergedPR || row.PostGoodCommitFailures != 1 {
 				t.Fatalf("expected updated merge metadata for dev/row-1, got=%+v", row)
 			}
+		}
+		if row.Environment == "int" && row.RowID == "row-1" && !row.NonArtifactBacked {
+			t.Fatalf("expected int/row-1 non_artifact_backed=true to be preserved, got=%+v", row)
 		}
 	}
 	if !updatedFound {

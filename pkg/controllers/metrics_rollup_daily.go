@@ -19,11 +19,22 @@ import (
 const metricsRollupDailyReconcileInterval = 5 * time.Minute
 
 const (
-	metricTotalRuns      = "total_runs"
-	metricFailedRuns     = "failed_runs"
-	metricSuccessfulRuns = "successful_runs"
-	metricRunFailureRate = "run_failure_rate"
-	metricRawFailureRows = "raw_failure_rows"
+	metricRunCount              = "run_count"
+	metricFailureCount          = "failure_count"
+	metricCIInfraFailureCount   = "ci_infra_failure_count"
+	metricProvisionFailureCount = "provision_failure_count"
+	metricE2EFailureCount       = "e2e_failure_count"
+
+	metricPostGoodFailureCount          = "post_good_failure_count"
+	metricPostGoodCIInfraFailureCount   = "post_good_ci_infra_failure_count"
+	metricPostGoodProvisionFailureCount = "post_good_provision_failure_count"
+	metricPostGoodE2EFailureCount       = "post_good_e2e_failure_count"
+)
+
+const (
+	laneFamilyCIInfra   = "ci_infra"
+	laneFamilyProvision = "provision"
+	laneFamilyE2E       = "e2e"
 )
 
 type metricsRollupDailyController struct {
@@ -187,14 +198,14 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		return fmt.Errorf("invalid rollup date key %q: %w", key, err)
 	}
 
-	out := make([]contracts.MetricDailyRecord, 0, len(c.envs)*5)
+	out := make([]contracts.MetricDailyRecord, 0, len(c.envs)*9)
 	for _, env := range c.envs {
 		existingRows, err := c.store.ListMetricsDailyByDate(ctx, env, date)
 		if err != nil {
 			return fmt.Errorf("list existing metric daily rows for env=%q date=%q: %w", env, date, err)
 		}
-		if len(existingRows) > 0 {
-			c.logger.V(1).Info("Skipping env/date; daily metrics already materialized.", "date", date, "environment", env, "existing_rows", len(existingRows))
+		if hasRequiredMetricSet(existingRows, env) {
+			c.logger.V(1).Info("Skipping env/date; required daily metrics already materialized.", "date", date, "environment", env, "existing_rows", len(existingRows))
 			continue
 		}
 
@@ -209,32 +220,67 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		}
 
 		totalRuns := 0
-		failedRuns := 0
-		successfulRuns := 0
 		for _, row := range rows {
 			totalRuns += row.TotalRuns
-			failedRuns += row.FailedRuns
-			successfulRuns += row.SuccessfulRuns
 		}
 
-		rawFailureRows := len(rawFailures)
-
-		if totalRuns == 0 && rawFailureRows == 0 {
+		failureCount := len(rawFailures)
+		if totalRuns == 0 && failureCount == 0 {
 			continue
 		}
 
-		failureRate := 0.0
-		if totalRuns > 0 {
-			failureRate = float64(failedRuns) / float64(totalRuns)
+		ciInfraRows := 0
+		provisionRows := 0
+		e2eRows := 0
+		postGoodFailureRows := 0
+		postGoodCIInfraRows := 0
+		postGoodProvisionRows := 0
+		postGoodE2ERows := 0
+
+		runCache := map[string]contracts.RunRecord{}
+		runFoundCache := map[string]bool{}
+		for _, row := range rawFailures {
+			laneFamily, err := classifyMetricLaneFamily(ctx, c.store, env, row, runCache, runFoundCache)
+			if err != nil {
+				return fmt.Errorf("classify lane family for env=%q date=%q run_url=%q row_id=%q: %w", env, date, row.RunURL, row.RowID, err)
+			}
+			switch laneFamily {
+			case laneFamilyProvision:
+				provisionRows++
+			case laneFamilyE2E:
+				e2eRows++
+			default:
+				ciInfraRows++
+			}
+
+			if env == "dev" && row.PostGoodCommitFailures > 0 {
+				postGoodFailureRows++
+				switch laneFamily {
+				case laneFamilyProvision:
+					postGoodProvisionRows++
+				case laneFamilyE2E:
+					postGoodE2ERows++
+				default:
+					postGoodCIInfraRows++
+				}
+			}
 		}
 
 		out = append(out,
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricTotalRuns, Value: float64(totalRuns)},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailedRuns, Value: float64(failedRuns)},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricSuccessfulRuns, Value: float64(successfulRuns)},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricRunFailureRate, Value: failureRate},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricRawFailureRows, Value: float64(rawFailureRows)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricRunCount, Value: float64(totalRuns)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailureCount, Value: float64(failureCount)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricCIInfraFailureCount, Value: float64(ciInfraRows)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricProvisionFailureCount, Value: float64(provisionRows)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricE2EFailureCount, Value: float64(e2eRows)},
 		)
+		if env == "dev" {
+			out = append(out,
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailureCount, Value: float64(postGoodFailureRows)},
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodCIInfraFailureCount, Value: float64(postGoodCIInfraRows)},
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodProvisionFailureCount, Value: float64(postGoodProvisionRows)},
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodE2EFailureCount, Value: float64(postGoodE2ERows)},
+			)
+		}
 	}
 
 	if len(out) == 0 {
@@ -274,4 +320,109 @@ func dateFromMetricTimestamp(value string) (string, bool) {
 		return ts.UTC().Format("2006-01-02"), true
 	}
 	return "", false
+}
+
+func hasRequiredMetricSet(existingRows []contracts.MetricDailyRecord, environment string) bool {
+	required := requiredMetricSet(environment)
+	if len(required) == 0 {
+		return false
+	}
+	if len(existingRows) == 0 {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, row := range existingRows {
+		metric := strings.TrimSpace(row.Metric)
+		if metric == "" {
+			continue
+		}
+		seen[metric] = struct{}{}
+	}
+	for _, metric := range required {
+		if _, ok := seen[metric]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func requiredMetricSet(environment string) []string {
+	required := []string{
+		metricRunCount,
+		metricFailureCount,
+		metricCIInfraFailureCount,
+		metricE2EFailureCount,
+		metricProvisionFailureCount,
+	}
+	if normalizeEnvironment(environment) != "dev" {
+		return required
+	}
+	return append(required,
+		metricPostGoodFailureCount,
+		metricPostGoodCIInfraFailureCount,
+		metricPostGoodProvisionFailureCount,
+		metricPostGoodE2EFailureCount,
+	)
+}
+
+func classifyMetricLaneFamily(
+	ctx context.Context,
+	store contracts.Store,
+	environment string,
+	row contracts.RawFailureRecord,
+	runCache map[string]contracts.RunRecord,
+	runFoundCache map[string]bool,
+) (string, error) {
+	if row.NonArtifactBacked {
+		return laneFamilyCIInfra, nil
+	}
+
+	runURL := strings.TrimSpace(row.RunURL)
+	jobName := ""
+	if runURL != "" {
+		if cachedFound, ok := runFoundCache[runURL]; ok {
+			if cachedFound {
+				jobName = strings.TrimSpace(runCache[runURL].JobName)
+			}
+		} else {
+			run, found, err := store.GetRun(ctx, environment, runURL)
+			if err != nil {
+				return "", err
+			}
+			runFoundCache[runURL] = found
+			if found {
+				runCache[runURL] = run
+				jobName = strings.TrimSpace(run.JobName)
+			}
+		}
+	}
+
+	lane := deriveLane(jobName, row.TestName, row.TestSuite)
+	switch lane {
+	case laneFamilyProvision:
+		return laneFamilyProvision, nil
+	case laneFamilyE2E:
+		return laneFamilyE2E, nil
+	default:
+		return laneFamilyCIInfra, nil
+	}
+}
+
+func deriveLane(jobName string, testName string, testSuite string) string {
+	normalizedJob := strings.ToLower(strings.TrimSpace(jobName))
+	normalizedName := strings.ToLower(strings.TrimSpace(testName))
+	normalizedSuite := strings.ToLower(strings.TrimSpace(testSuite))
+
+	switch {
+	case strings.Contains(normalizedSuite, "step graph"):
+		return laneFamilyProvision
+	case strings.HasPrefix(normalizedName, "run pipeline step "):
+		return laneFamilyProvision
+	case strings.Contains(normalizedJob, "provision"):
+		return laneFamilyProvision
+	case strings.Contains(normalizedJob, "e2e"):
+		return laneFamilyE2E
+	default:
+		return "unknown"
+	}
 }

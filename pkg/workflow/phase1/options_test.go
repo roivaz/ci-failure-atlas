@@ -67,6 +67,20 @@ func TestRunWorkflowPhase1WritesSemanticArtifacts(t *testing.T) {
 			MergedPR:               true,
 			PostGoodCommitFailures: 1,
 		},
+		{
+			Environment:            "dev",
+			RowID:                  "raw-non-artifact",
+			RunURL:                 "https://prow.example/run/1",
+			TestName:               "unknown",
+			TestSuite:              "unknown",
+			SignatureID:            "sig-non-artifact",
+			OccurredAt:             "2026-03-06T10:20:00Z",
+			RawText:                "non-artifact-backed failure",
+			NormalizedText:         "non-artifact-backed failure",
+			NonArtifactBacked:      true,
+			MergedPR:               true,
+			PostGoodCommitFailures: 1,
+		},
 	}); err != nil {
 		t.Fatalf("seed raw failures: %v", err)
 	}

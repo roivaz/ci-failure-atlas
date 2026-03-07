@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,7 @@ import (
 	"ci-failure-atlas/pkg/store/ndjson"
 )
 
-func TestMetricsRollupDailyRunOnceComputesMetrics(t *testing.T) {
+func TestMetricsRollupDailyRunOnceComputesAllEnvAndDevPostGoodMetrics(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -29,40 +30,95 @@ func TestMetricsRollupDailyRunOnceComputesMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
-		{Environment: "dev", Hour: "2026-03-05T10:00:00Z", TotalRuns: 7, FailedRuns: 2, SuccessfulRuns: 5},
-		{Environment: "dev", Hour: "2026-03-05T11:00:00Z", TotalRuns: 5, FailedRuns: 1, SuccessfulRuns: 4},
-		{Environment: "int", Hour: "2026-03-05T10:00:00Z", TotalRuns: 4, FailedRuns: 1, SuccessfulRuns: 3},
+		{Environment: "dev", Hour: "2026-03-05T10:00:00Z", TotalRuns: 12, FailedRuns: 4, SuccessfulRuns: 8},
+		{Environment: "int", Hour: "2026-03-05T10:00:00Z", TotalRuns: 4, FailedRuns: 2, SuccessfulRuns: 2},
 	}); err != nil {
 		t.Fatalf("upsert run counts hourly: %v", err)
 	}
 
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{Environment: "dev", RunURL: "https://run-dev-e2e", JobName: "pull-ci-Azure-ARO-HCP-main-e2e-parallel", OccurredAt: "2026-03-05T10:00:00Z"},
+		{Environment: "dev", RunURL: "https://run-dev-provision", JobName: "pull-ci-Azure-ARO-HCP-main-e2e-parallel", OccurredAt: "2026-03-05T10:05:00Z"},
+		{Environment: "dev", RunURL: "https://run-dev-ciinfra", JobName: "pull-ci-Azure-ARO-HCP-main-build", OccurredAt: "2026-03-05T10:10:00Z"},
+		{Environment: "dev", RunURL: "https://run-dev-unknown", JobName: "periodic-ci-Azure-ARO-HCP-main-nightly", OccurredAt: "2026-03-05T10:15:00Z"},
+		{Environment: "int", RunURL: "https://run-int-e2e", JobName: "periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel", OccurredAt: "2026-03-05T10:20:00Z"},
+		{Environment: "int", RunURL: "https://run-int-ciinfra", JobName: "periodic-ci-Azure-ARO-HCP-main-periodic-integration-health", OccurredAt: "2026-03-05T10:25:00Z"},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+
 	if err := store.UpsertRawFailures(ctx, []contracts.RawFailureRecord{
 		{
-			Environment:    "dev",
-			RowID:          "dev-row-1",
-			RunURL:         "https://run-dev-1",
-			SignatureID:    "sig-a",
-			OccurredAt:     "2026-03-05T10:00:00Z",
-			RawText:        "raw-a",
-			NormalizedText: "norm-a",
+			Environment:            "dev",
+			RowID:                  "dev-row-e2e",
+			RunURL:                 "https://run-dev-e2e",
+			SignatureID:            "sig-dev-e2e",
+			OccurredAt:             "2026-03-05T10:00:00Z",
+			RawText:                "e2e failure",
+			NormalizedText:         "e2e failure",
+			TestName:               "should run user journey",
+			TestSuite:              "rp-api-compat/parallel",
+			MergedPR:               true,
+			PostGoodCommitFailures: 1,
+		},
+		{
+			Environment:            "dev",
+			RowID:                  "dev-row-provision",
+			RunURL:                 "https://run-dev-provision",
+			SignatureID:            "sig-dev-provision",
+			OccurredAt:             "2026-03-05T10:05:00Z",
+			RawText:                "provision failure",
+			NormalizedText:         "provision failure",
+			TestName:               "Run pipeline step gather",
+			TestSuite:              "step graph",
+			MergedPR:               true,
+			PostGoodCommitFailures: 1,
+		},
+		{
+			Environment:       "dev",
+			RowID:             "dev-row-ciinfra-non-artifact",
+			RunURL:            "https://run-dev-ciinfra",
+			SignatureID:       "sig-dev-ciinfra",
+			OccurredAt:        "2026-03-05T10:10:00Z",
+			RawText:           "synthetic infra",
+			NormalizedText:    "synthetic infra",
+			TestName:          "unknown",
+			TestSuite:         "unknown",
+			NonArtifactBacked: true,
 		},
 		{
 			Environment:    "dev",
-			RowID:          "dev-row-2",
-			RunURL:         "https://run-dev-2",
-			SignatureID:    "sig-a",
-			OccurredAt:     "2026-03-05T10:01:00Z",
-			RawText:        "raw-b",
-			NormalizedText: "norm-b",
+			RowID:          "dev-row-ciinfra-unknown-lane",
+			RunURL:         "https://run-dev-unknown",
+			SignatureID:    "sig-dev-ciinfra-unknown",
+			OccurredAt:     "2026-03-05T10:15:00Z",
+			RawText:        "job failure unknown",
+			NormalizedText: "job failure unknown",
+			TestName:       "unknown failure",
+			TestSuite:      "misc",
 		},
 		{
-			Environment:    "dev",
-			RowID:          "dev-row-3",
-			RunURL:         "https://run-dev-3",
-			SignatureID:    "sig-b",
-			OccurredAt:     "2026-03-05T11:00:00Z",
-			RawText:        "raw-c",
-			NormalizedText: "norm-c",
+			Environment:    "int",
+			RowID:          "int-row-e2e",
+			RunURL:         "https://run-int-e2e",
+			SignatureID:    "sig-int-e2e",
+			OccurredAt:     "2026-03-05T10:20:00Z",
+			RawText:        "int e2e failure",
+			NormalizedText: "int e2e failure",
+			TestName:       "int e2e",
+			TestSuite:      "persistent/parallel",
+		},
+		{
+			Environment:       "int",
+			RowID:             "int-row-ciinfra",
+			RunURL:            "https://run-int-ciinfra",
+			SignatureID:       "sig-int-ciinfra",
+			OccurredAt:        "2026-03-05T10:25:00Z",
+			RawText:           "int ci infra failure",
+			NormalizedText:    "int ci infra failure",
+			TestName:          "unknown",
+			TestSuite:         "unknown",
+			NonArtifactBacked: true,
 		},
 	}); err != nil {
 		t.Fatalf("upsert raw failures: %v", err)
@@ -81,49 +137,39 @@ func TestMetricsRollupDailyRunOnceComputesMetrics(t *testing.T) {
 	}
 
 	rows := mustReadMetricDailyRows(t, filepath.Join(dataDir, "facts", "metrics_daily.ndjson"))
-	if len(rows) != 10 {
-		t.Fatalf("unexpected metric row count: got=%d want=10", len(rows))
+	if len(rows) != 14 {
+		t.Fatalf("unexpected metric row count: got=%d want=14", len(rows))
 	}
 
 	devMetrics := toMetricMap(rows, "dev", "2026-03-05")
-	if got := devMetrics[metricTotalRuns]; got != 12 {
-		t.Fatalf("dev total_runs mismatch: got=%v want=12", got)
+	if len(devMetrics) != 9 {
+		t.Fatalf("unexpected dev metric count: got=%d want=9 metrics=%v", len(devMetrics), devMetrics)
 	}
-	if got := devMetrics[metricFailedRuns]; got != 3 {
-		t.Fatalf("dev failed_runs mismatch: got=%v want=3", got)
-	}
-	if got := devMetrics[metricSuccessfulRuns]; got != 9 {
-		t.Fatalf("dev successful_runs mismatch: got=%v want=9", got)
-	}
-	if got := devMetrics[metricRunFailureRate]; got != 0.25 {
-		t.Fatalf("dev run_failure_rate mismatch: got=%v want=0.25", got)
-	}
-	if got := devMetrics[metricRawFailureRows]; got != 3 {
-		t.Fatalf("dev raw_failure_rows mismatch: got=%v want=3", got)
-	}
-	if _, exists := devMetrics["unique_failure_signatures"]; exists {
-		t.Fatalf("expected deprecated unique_failure_signatures metric to be absent in dev rollup output, got=%v", devMetrics["unique_failure_signatures"])
-	}
+	assertMetricValue(t, devMetrics, metricRunCount, 12)
+	assertMetricValue(t, devMetrics, metricFailureCount, 4)
+	assertMetricValue(t, devMetrics, metricCIInfraFailureCount, 2)
+	assertMetricValue(t, devMetrics, metricProvisionFailureCount, 1)
+	assertMetricValue(t, devMetrics, metricE2EFailureCount, 1)
+	assertMetricValue(t, devMetrics, metricPostGoodFailureCount, 2)
+	assertMetricValue(t, devMetrics, metricPostGoodCIInfraFailureCount, 0)
+	assertMetricValue(t, devMetrics, metricPostGoodProvisionFailureCount, 1)
+	assertMetricValue(t, devMetrics, metricPostGoodE2EFailureCount, 1)
 
 	intMetrics := toMetricMap(rows, "int", "2026-03-05")
-	if got := intMetrics[metricTotalRuns]; got != 4 {
-		t.Fatalf("int total_runs mismatch: got=%v want=4", got)
+	if len(intMetrics) != 5 {
+		t.Fatalf("unexpected int metric count: got=%d want=5 metrics=%v", len(intMetrics), intMetrics)
 	}
-	if got := intMetrics[metricFailedRuns]; got != 1 {
-		t.Fatalf("int failed_runs mismatch: got=%v want=1", got)
-	}
-	if got := intMetrics[metricSuccessfulRuns]; got != 3 {
-		t.Fatalf("int successful_runs mismatch: got=%v want=3", got)
-	}
-	if got := intMetrics[metricRunFailureRate]; got != 0.25 {
-		t.Fatalf("int run_failure_rate mismatch: got=%v want=0.25", got)
-	}
-	if got := intMetrics[metricRawFailureRows]; got != 0 {
-		t.Fatalf("int raw_failure_rows mismatch: got=%v want=0", got)
+	assertMetricValue(t, intMetrics, metricRunCount, 4)
+	assertMetricValue(t, intMetrics, metricFailureCount, 2)
+	assertMetricValue(t, intMetrics, metricCIInfraFailureCount, 1)
+	assertMetricValue(t, intMetrics, metricProvisionFailureCount, 0)
+	assertMetricValue(t, intMetrics, metricE2EFailureCount, 1)
+	if _, ok := intMetrics[metricPostGoodFailureCount]; ok {
+		t.Fatalf("expected non-dev env to not emit post-good metric %q", metricPostGoodFailureCount)
 	}
 }
 
-func TestMetricsRollupDailyRunOnceSkipsAlreadyMaterializedDateEnvironment(t *testing.T) {
+func TestMetricsRollupDailyRunOnceBackfillsWhenMetricSetIsPartial(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -135,9 +181,14 @@ func TestMetricsRollupDailyRunOnceSkipsAlreadyMaterializedDateEnvironment(t *tes
 	t.Cleanup(func() { _ = store.Close() })
 
 	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
-		{Environment: "dev", Hour: "2026-03-07T10:00:00Z", TotalRuns: 10, FailedRuns: 3, SuccessfulRuns: 7},
+		{Environment: "dev", Hour: "2026-03-07T10:00:00Z", TotalRuns: 10, FailedRuns: 2, SuccessfulRuns: 8},
 	}); err != nil {
 		t.Fatalf("upsert run counts hourly: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{Environment: "dev", RunURL: "https://run-dev-100", JobName: "pull-ci-Azure-ARO-HCP-main-e2e-parallel", OccurredAt: "2026-03-07T10:00:00Z"},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
 	}
 	if err := store.UpsertRawFailures(ctx, []contracts.RawFailureRecord{
 		{
@@ -148,16 +199,15 @@ func TestMetricsRollupDailyRunOnceSkipsAlreadyMaterializedDateEnvironment(t *tes
 			OccurredAt:     "2026-03-07T10:00:00Z",
 			RawText:        "raw-100",
 			NormalizedText: "norm-100",
+			TestName:       "test-100",
+			TestSuite:      "suite-100",
 		},
 	}); err != nil {
 		t.Fatalf("upsert raw failures: %v", err)
 	}
 	if err := store.UpsertMetricsDaily(ctx, []contracts.MetricDailyRecord{
-		{Environment: "dev", Date: "2026-03-07", Metric: metricTotalRuns, Value: 999},
-		{Environment: "dev", Date: "2026-03-07", Metric: metricFailedRuns, Value: 111},
-		{Environment: "dev", Date: "2026-03-07", Metric: metricSuccessfulRuns, Value: 888},
-		{Environment: "dev", Date: "2026-03-07", Metric: metricRunFailureRate, Value: 0.111},
-		{Environment: "dev", Date: "2026-03-07", Metric: metricRawFailureRows, Value: 42},
+		{Environment: "dev", Date: "2026-03-07", Metric: metricRunCount, Value: 999},
+		{Environment: "dev", Date: "2026-03-07", Metric: "total_runs", Value: 10},
 	}); err != nil {
 		t.Fatalf("upsert existing metrics: %v", err)
 	}
@@ -176,12 +226,85 @@ func TestMetricsRollupDailyRunOnceSkipsAlreadyMaterializedDateEnvironment(t *tes
 
 	rows := mustReadMetricDailyRows(t, filepath.Join(dataDir, "facts", "metrics_daily.ndjson"))
 	devMetrics := toMetricMap(rows, "dev", "2026-03-07")
-	if got := devMetrics[metricTotalRuns]; got != 999 {
-		t.Fatalf("expected pre-existing total_runs=999 to be preserved by skip behavior, got=%v", got)
+	if len(devMetrics) != 9 {
+		t.Fatalf("unexpected dev metric count after backfill: got=%d want=9 metrics=%v", len(devMetrics), devMetrics)
 	}
-	if got := devMetrics[metricRawFailureRows]; got != 42 {
-		t.Fatalf("expected pre-existing raw_failure_rows=42 to be preserved by skip behavior, got=%v", got)
+	assertMetricValue(t, devMetrics, metricRunCount, 10)
+	assertMetricValue(t, devMetrics, metricFailureCount, 1)
+	assertMetricValue(t, devMetrics, metricCIInfraFailureCount, 0)
+	assertMetricValue(t, devMetrics, metricProvisionFailureCount, 0)
+	assertMetricValue(t, devMetrics, metricE2EFailureCount, 1)
+	assertMetricValue(t, devMetrics, metricPostGoodFailureCount, 0)
+	assertMetricValue(t, devMetrics, metricPostGoodCIInfraFailureCount, 0)
+	assertMetricValue(t, devMetrics, metricPostGoodProvisionFailureCount, 0)
+	assertMetricValue(t, devMetrics, metricPostGoodE2EFailureCount, 0)
+	if _, exists := devMetrics["total_runs"]; exists {
+		t.Fatalf("expected stale legacy metric to be replaced during backfill, got metrics=%v", devMetrics)
 	}
+}
+
+func TestMetricsRollupDailyRunOnceSkipsWhenRequiredSetAlreadyExists(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
+		{Environment: "int", Hour: "2026-03-08T10:00:00Z", TotalRuns: 10, FailedRuns: 3, SuccessfulRuns: 7},
+	}); err != nil {
+		t.Fatalf("upsert run counts hourly: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, []contracts.RawFailureRecord{
+		{
+			Environment:    "int",
+			RowID:          "int-row-1",
+			RunURL:         "https://run-int-1",
+			SignatureID:    "sig-int-1",
+			OccurredAt:     "2026-03-08T10:00:00Z",
+			RawText:        "int failure",
+			NormalizedText: "int failure",
+			TestName:       "test-int",
+			TestSuite:      "suite-int",
+		},
+	}); err != nil {
+		t.Fatalf("upsert raw failures: %v", err)
+	}
+	if err := store.UpsertMetricsDaily(ctx, []contracts.MetricDailyRecord{
+		{Environment: "int", Date: "2026-03-08", Metric: metricRunCount, Value: 321},
+		{Environment: "int", Date: "2026-03-08", Metric: metricFailureCount, Value: 123},
+		{Environment: "int", Date: "2026-03-08", Metric: metricCIInfraFailureCount, Value: 11},
+		{Environment: "int", Date: "2026-03-08", Metric: metricProvisionFailureCount, Value: 22},
+		{Environment: "int", Date: "2026-03-08", Metric: metricE2EFailureCount, Value: 90},
+	}); err != nil {
+		t.Fatalf("upsert existing complete metric set: %v", err)
+	}
+
+	controller, err := newMetricsRollupDailyController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptionsForMetrics(t, []string{"int"}),
+	})
+	if err != nil {
+		t.Fatalf("create metrics controller: %v", err)
+	}
+	if err := controller.RunOnce(ctx, "2026-03-08"); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	rows := mustReadMetricDailyRows(t, filepath.Join(dataDir, "facts", "metrics_daily.ndjson"))
+	intMetrics := toMetricMap(rows, "int", "2026-03-08")
+	if len(intMetrics) != 5 {
+		t.Fatalf("unexpected int metric count: got=%d want=5 metrics=%v", len(intMetrics), intMetrics)
+	}
+	assertMetricValue(t, intMetrics, metricRunCount, 321)
+	assertMetricValue(t, intMetrics, metricFailureCount, 123)
+	assertMetricValue(t, intMetrics, metricCIInfraFailureCount, 11)
+	assertMetricValue(t, intMetrics, metricProvisionFailureCount, 22)
+	assertMetricValue(t, intMetrics, metricE2EFailureCount, 90)
 }
 
 func TestMetricsRollupDailySyncOnceUsesDatesFromRunCountHours(t *testing.T) {
@@ -329,4 +452,15 @@ func toMetricMap(rows []contracts.MetricDailyRecord, environment string, date st
 		}
 	}
 	return out
+}
+
+func assertMetricValue(t *testing.T, metrics map[string]float64, metric string, want float64) {
+	t.Helper()
+	got, ok := metrics[metric]
+	if !ok {
+		t.Fatalf("expected metric %q to exist; metrics=%v", metric, metrics)
+	}
+	if math.Abs(got-want) > 1e-9 {
+		t.Fatalf("metric %q mismatch: got=%v want=%v", metric, got, want)
+	}
 }

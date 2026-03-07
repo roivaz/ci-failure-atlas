@@ -36,9 +36,12 @@ type RawFailureRecord struct {
 	Environment string `json:"environment"`
 	RowID       string `json:"row_id"`
 	RunURL      string `json:"run_url"`
-	TestName    string `json:"test_name"`
-	TestSuite   string `json:"test_suite"`
-	MergedPR    bool   `json:"merged_pr"`
+	// NonArtifactBacked marks synthetic rows generated from failed runs when no
+	// artifact-backed JUnit failure rows are available.
+	NonArtifactBacked bool   `json:"non_artifact_backed"`
+	TestName          string `json:"test_name"`
+	TestSuite         string `json:"test_suite"`
+	MergedPR          bool   `json:"merged_pr"`
 	// PostGoodCommitFailures is a row-level contribution to the aggregate
 	// post-good-commit failure count. It is either 0 or 1 in v1.
 	PostGoodCommitFailures int `json:"post_good_commit_failures"`
