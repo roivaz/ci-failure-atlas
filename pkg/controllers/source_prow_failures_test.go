@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -225,10 +226,134 @@ func TestSourceProwFailuresSyncOnceSkipsRunsOutsideActiveWindow(t *testing.T) {
 	}
 }
 
+func TestSourceProwFailuresSyncOnceFiltersConfiguredEnvironments(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	devRunURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/dev/1"
+	intRunURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/int/1"
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      devRunURL,
+			JobName:     "job-dev",
+			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+		},
+		{
+			Environment: "int",
+			RunURL:      intRunURL,
+			JobName:     "job-int",
+			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+
+	fakeClient := &fakeProwArtifactsClient{
+		failuresByKey: map[string][]prowartifacts.Failure{
+			"dev|" + devRunURL: {
+				{
+					ArtifactURL: "https://gcsweb-ci/apps/.../junit_dev.xml",
+					TestSuite:   "suite-dev",
+					TestName:    "test-dev",
+					FailureText: "dev failure",
+				},
+			},
+			"int|" + intRunURL: {
+				{
+					ArtifactURL: "https://gcsweb-ci/apps/.../junit_int.xml",
+					TestSuite:   "suite-int",
+					TestName:    "test-int",
+					FailureText: "int failure",
+				},
+			},
+		},
+	}
+
+	controller, err := newSourceProwFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptionsForProw(t, "int"),
+	}, fakeClient)
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+
+	if err := controller.SyncOnce(ctx); err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+
+	if len(fakeClient.calls) != 1 {
+		t.Fatalf("expected exactly one fetch call, got=%+v", fakeClient.calls)
+	}
+	if fakeClient.calls[0] != (prowCall{environment: "int", runURL: intRunURL}) {
+		t.Fatalf("unexpected fetch call: %+v", fakeClient.calls[0])
+	}
+
+	keys, err := store.ListArtifactRunKeys(ctx)
+	if err != nil {
+		t.Fatalf("list artifact run keys: %v", err)
+	}
+	wantKeys := []string{"int|" + intRunURL}
+	if !reflect.DeepEqual(keys, wantKeys) {
+		t.Fatalf("artifact run keys mismatch: got=%v want=%v", keys, wantKeys)
+	}
+}
+
+func TestSourceProwFailuresRunOnceTimesOutSlowListFailures(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := ndjson.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	runURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/dev/slow/1"
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      runURL,
+			JobName:     "job-dev",
+			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+
+	fakeClient := &fakeProwArtifactsClient{
+		blockUntilContextDone: true,
+	}
+	controller, err := newSourceProwFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptionsForProw(t, "dev"),
+	}, fakeClient)
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+	controller.listFailuresTimeout = 10 * time.Millisecond
+
+	err = controller.RunOnce(ctx, "dev|"+runURL)
+	if err == nil {
+		t.Fatalf("expected timeout error for slow list failures")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got=%v", err)
+	}
+}
+
 type fakeProwArtifactsClient struct {
-	failuresByKey map[string][]prowartifacts.Failure
-	err           error
-	calls         []prowCall
+	failuresByKey         map[string][]prowartifacts.Failure
+	err                   error
+	calls                 []prowCall
+	blockUntilContextDone bool
 }
 
 type prowCall struct {
@@ -236,11 +361,15 @@ type prowCall struct {
 	runURL      string
 }
 
-func (f *fakeProwArtifactsClient) ListFailures(_ context.Context, environment string, runURL string) ([]prowartifacts.Failure, error) {
+func (f *fakeProwArtifactsClient) ListFailures(ctx context.Context, environment string, runURL string) ([]prowartifacts.Failure, error) {
 	f.calls = append(f.calls, prowCall{
 		environment: environment,
 		runURL:      runURL,
 	})
+	if f.blockUntilContextDone {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -248,11 +377,14 @@ func (f *fakeProwArtifactsClient) ListFailures(_ context.Context, environment st
 	return failures, nil
 }
 
-func mustCompleteSourceOptionsForProw(t *testing.T) *sourceoptions.Options {
+func mustCompleteSourceOptionsForProw(t *testing.T, envs ...string) *sourceoptions.Options {
 	t.Helper()
 
 	raw := sourceoptions.DefaultOptions()
 	raw.ProwArtifactsBaseURL = "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs"
+	if len(envs) > 0 {
+		raw.Environments = append([]string(nil), envs...)
+	}
 
 	validated, err := raw.Validate()
 	if err != nil {

@@ -19,13 +19,18 @@ import (
 const metricsRollupDailyReconcileInterval = 5 * time.Minute
 
 const (
-	metricRunCount              = "run_count"
-	metricFailureCount          = "failure_count"
-	metricCIInfraFailureCount   = "ci_infra_failure_count"
-	metricProvisionFailureCount = "provision_failure_count"
-	metricE2EFailureCount       = "e2e_failure_count"
+	metricRunCount                = "run_count"
+	metricFailureCount            = "failure_count"
+	metricFailureRowCount         = "failure_row_count"
+	metricFailedCIInfraRunCount   = "failed_ci_infra_run_count"
+	metricFailedProvisionRunCount = "failed_provision_run_count"
+	metricFailedE2ERunCount       = "failed_e2e_run_count"
+	metricCIInfraFailureCount     = "ci_infra_failure_count"
+	metricProvisionFailureCount   = "provision_failure_count"
+	metricE2EFailureCount         = "e2e_failure_count"
 
 	metricPostGoodFailureCount          = "post_good_failure_count"
+	metricPostGoodFailedE2EJobs         = "post_good_failed_e2e_jobs"
 	metricPostGoodCIInfraFailureCount   = "post_good_ci_infra_failure_count"
 	metricPostGoodProvisionFailureCount = "post_good_provision_failure_count"
 	metricPostGoodE2EFailureCount       = "post_good_e2e_failure_count"
@@ -198,7 +203,7 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		return fmt.Errorf("invalid rollup date key %q: %w", key, err)
 	}
 
-	out := make([]contracts.MetricDailyRecord, 0, len(c.envs)*9)
+	out := make([]contracts.MetricDailyRecord, 0, len(c.envs)*10)
 	for _, env := range c.envs {
 		existingRows, err := c.store.ListMetricsDailyByDate(ctx, env, date)
 		if err != nil {
@@ -220,19 +225,23 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		}
 
 		totalRuns := 0
+		failedRuns := 0
 		for _, row := range rows {
 			totalRuns += row.TotalRuns
+			failedRuns += row.FailedRuns
 		}
 
-		failureCount := len(rawFailures)
-		if totalRuns == 0 && failureCount == 0 {
+		failureRowCount := len(rawFailures)
+		if totalRuns == 0 && failureRowCount == 0 {
 			continue
 		}
 
 		ciInfraRows := 0
 		provisionRows := 0
 		e2eRows := 0
+		failedRunLaneByRunURL := map[string]string{}
 		postGoodFailureRows := 0
+		postGoodFailedE2EJobsSet := map[string]struct{}{}
 		postGoodCIInfraRows := 0
 		postGoodProvisionRows := 0
 		postGoodE2ERows := 0
@@ -252,9 +261,16 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 			default:
 				ciInfraRows++
 			}
+			runURL := strings.TrimSpace(row.RunURL)
+			if runURL != "" {
+				failedRunLaneByRunURL[runURL] = mergeFailedRunLaneFamily(failedRunLaneByRunURL[runURL], laneFamily)
+			}
 
 			if env == "dev" && row.PostGoodCommitFailures > 0 {
 				postGoodFailureRows++
+				if runURL != "" {
+					postGoodFailedE2EJobsSet[runURL] = struct{}{}
+				}
 				switch laneFamily {
 				case laneFamilyProvision:
 					postGoodProvisionRows++
@@ -266,9 +282,34 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 			}
 		}
 
+		failedCIInfraRuns := 0
+		failedProvisionRuns := 0
+		failedE2ERuns := 0
+		for _, laneFamily := range failedRunLaneByRunURL {
+			switch laneFamily {
+			case laneFamilyProvision:
+				failedProvisionRuns++
+			case laneFamilyE2E:
+				failedE2ERuns++
+			default:
+				failedCIInfraRuns++
+			}
+		}
+		// If some failed runs still have no lane assignment (for example a delayed
+		// raw-failure materialization race), attribute them to CI/Infra so the
+		// failed-run lane partition remains complete for visualization.
+		unclassifiedFailedRuns := failedRuns - (failedCIInfraRuns + failedProvisionRuns + failedE2ERuns)
+		if unclassifiedFailedRuns > 0 {
+			failedCIInfraRuns += unclassifiedFailedRuns
+		}
+
 		out = append(out,
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricRunCount, Value: float64(totalRuns)},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailureCount, Value: float64(failureCount)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailureCount, Value: float64(failedRuns)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailureRowCount, Value: float64(failureRowCount)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailedCIInfraRunCount, Value: float64(failedCIInfraRuns)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailedProvisionRunCount, Value: float64(failedProvisionRuns)},
+			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailedE2ERunCount, Value: float64(failedE2ERuns)},
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricCIInfraFailureCount, Value: float64(ciInfraRows)},
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricProvisionFailureCount, Value: float64(provisionRows)},
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricE2EFailureCount, Value: float64(e2eRows)},
@@ -276,6 +317,7 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		if env == "dev" {
 			out = append(out,
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailureCount, Value: float64(postGoodFailureRows)},
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailedE2EJobs, Value: float64(len(postGoodFailedE2EJobsSet))},
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodCIInfraFailureCount, Value: float64(postGoodCIInfraRows)},
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodProvisionFailureCount, Value: float64(postGoodProvisionRows)},
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodE2EFailureCount, Value: float64(postGoodE2ERows)},
@@ -350,6 +392,10 @@ func requiredMetricSet(environment string) []string {
 	required := []string{
 		metricRunCount,
 		metricFailureCount,
+		metricFailureRowCount,
+		metricFailedCIInfraRunCount,
+		metricFailedProvisionRunCount,
+		metricFailedE2ERunCount,
 		metricCIInfraFailureCount,
 		metricE2EFailureCount,
 		metricProvisionFailureCount,
@@ -359,10 +405,42 @@ func requiredMetricSet(environment string) []string {
 	}
 	return append(required,
 		metricPostGoodFailureCount,
+		metricPostGoodFailedE2EJobs,
 		metricPostGoodCIInfraFailureCount,
 		metricPostGoodProvisionFailureCount,
 		metricPostGoodE2EFailureCount,
 	)
+}
+
+func mergeFailedRunLaneFamily(current string, next string) string {
+	currentRank := failedRunLaneFamilyRank(current)
+	nextRank := failedRunLaneFamilyRank(next)
+	if nextRank > currentRank {
+		return normalizeFailedRunLaneFamily(next)
+	}
+	return normalizeFailedRunLaneFamily(current)
+}
+
+func failedRunLaneFamilyRank(laneFamily string) int {
+	switch normalizeFailedRunLaneFamily(laneFamily) {
+	case laneFamilyProvision:
+		return 3
+	case laneFamilyE2E:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func normalizeFailedRunLaneFamily(laneFamily string) string {
+	switch strings.TrimSpace(laneFamily) {
+	case laneFamilyProvision:
+		return laneFamilyProvision
+	case laneFamilyE2E:
+		return laneFamilyE2E
+	default:
+		return laneFamilyCIInfra
+	}
 }
 
 func classifyMetricLaneFamily(
@@ -374,6 +452,8 @@ func classifyMetricLaneFamily(
 	runFoundCache map[string]bool,
 ) (string, error) {
 	if row.NonArtifactBacked {
+		// Synthetic rows are infrastructure ingestion gaps and should always be
+		// attributed to ci/infra until artifact reconciliation completes.
 		return laneFamilyCIInfra, nil
 	}
 

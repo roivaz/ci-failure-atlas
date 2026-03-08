@@ -32,6 +32,7 @@ type ListJobRunsOptions struct {
 	Release  string
 	Org      string
 	Repo     string
+	JobName  string
 	Since    time.Time
 	PageSize int
 }
@@ -144,11 +145,11 @@ func (c *HTTPClient) ListJobRuns(ctx context.Context, opts ListJobRunsOptions) (
 	if strings.TrimSpace(opts.Release) == "" {
 		return nil, fmt.Errorf("release is required")
 	}
-	if strings.TrimSpace(opts.Org) == "" {
-		return nil, fmt.Errorf("org is required")
-	}
-	if strings.TrimSpace(opts.Repo) == "" {
-		return nil, fmt.Errorf("repo is required")
+	normalizedOrg := strings.TrimSpace(opts.Org)
+	normalizedRepo := strings.TrimSpace(opts.Repo)
+	normalizedJobName := strings.TrimSpace(opts.JobName)
+	if (normalizedOrg == "") != (normalizedRepo == "") {
+		return nil, fmt.Errorf("org and repo must both be set or both be empty")
 	}
 
 	pageSize := opts.PageSize
@@ -159,7 +160,7 @@ func (c *HTTPClient) ListJobRuns(ctx context.Context, opts ListJobRunsOptions) (
 		pageSize = 1000
 	}
 
-	filterJSON, err := buildJobRunsFilter(opts.Org, opts.Repo, opts.Since)
+	filterJSON, err := buildJobRunsFilter(normalizedOrg, normalizedRepo, normalizedJobName, opts.Since)
 	if err != nil {
 		return nil, fmt.Errorf("build job runs filter: %w", err)
 	}
@@ -297,10 +298,23 @@ type filterModel struct {
 	LinkOperator string       `json:"linkOperator"`
 }
 
-func buildJobRunsFilter(org, repo string, since time.Time) (string, error) {
-	items := []filterItem{
-		{ColumnField: "pull_request_org", OperatorValue: "equals", Value: org},
-		{ColumnField: "pull_request_repo", OperatorValue: "equals", Value: repo},
+func buildJobRunsFilter(org, repo, jobName string, since time.Time) (string, error) {
+	if (org == "") != (repo == "") {
+		return "", fmt.Errorf("org and repo filters must both be set or both be empty")
+	}
+	items := make([]filterItem, 0, 4)
+	if org != "" {
+		items = append(items,
+			filterItem{ColumnField: "pull_request_org", OperatorValue: "equals", Value: org},
+			filterItem{ColumnField: "pull_request_repo", OperatorValue: "equals", Value: repo},
+		)
+	}
+	if jobName != "" {
+		items = append(items, filterItem{
+			ColumnField:   "job",
+			OperatorValue: "equals",
+			Value:         jobName,
+		})
 	}
 	if !since.IsZero() {
 		items = append(items, filterItem{

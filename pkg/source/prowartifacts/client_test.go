@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -150,6 +151,23 @@ func TestHTTPClientJunitPathsForEnvironment(t *testing.T) {
 				t.Fatalf("unexpected first path for env=%q: got=%q want=%q", tt.environment, paths[0], tt.wantFirst)
 			}
 		})
+	}
+}
+
+func TestHTTPClientJunitPathsForPeriodicEnvironmentsExcludeProvisionArtifacts(t *testing.T) {
+	t.Parallel()
+
+	client := NewHTTPClient("https://example.com/gcs")
+	for _, environment := range []string{"int", "stg", "prod"} {
+		paths := client.junitPathsForEnvironment(environment)
+		if len(paths) == 0 {
+			t.Fatalf("expected deterministic paths for env=%q", environment)
+		}
+		for _, p := range paths {
+			if strings.Contains(strings.ToLower(p), "provision") {
+				t.Fatalf("unexpected provision artifact path for env=%q: %q", environment, p)
+			}
+		}
 	}
 }
 

@@ -64,7 +64,10 @@ func TestFactsRawFailuresSyncOnceUsesRunOccurredAt(t *testing.T) {
 		t.Fatalf("upsert artifact failures: %v", err)
 	}
 
-	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
 	if err != nil {
 		t.Fatalf("create controller: %v", err)
 	}
@@ -140,7 +143,10 @@ func TestFactsRawFailuresSyncOnceMaterializesSyntheticNonArtifactRows(t *testing
 		t.Fatalf("upsert runs: %v", err)
 	}
 
-	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
 	if err != nil {
 		t.Fatalf("create controller: %v", err)
 	}
@@ -193,7 +199,10 @@ func TestFactsRawFailuresRunOnceUpgradesSyntheticRowToArtifactBacked(t *testing.
 		t.Fatalf("upsert runs: %v", err)
 	}
 
-	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
 	if err != nil {
 		t.Fatalf("create controller: %v", err)
 	}
@@ -257,7 +266,10 @@ func TestFactsRawFailuresRunOnceWithoutRunMetadata(t *testing.T) {
 		t.Fatalf("upsert artifact failures: %v", err)
 	}
 
-	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
 	if err != nil {
 		t.Fatalf("create controller: %v", err)
 	}
@@ -319,7 +331,10 @@ func TestFactsRawFailuresRunOnceSkipsAlreadyMaterializedRun(t *testing.T) {
 		t.Fatalf("upsert existing raw failure: %v", err)
 	}
 
-	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
 	if err != nil {
 		t.Fatalf("create controller: %v", err)
 	}
@@ -379,7 +394,10 @@ func TestFactsRawFailuresRunOnceRefreshesPRMergeSignals(t *testing.T) {
 		t.Fatalf("upsert artifact failures: %v", err)
 	}
 
-	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
 	if err != nil {
 		t.Fatalf("create controller: %v", err)
 	}
@@ -415,7 +433,7 @@ func TestFactsRawFailuresRunOnceRefreshesPRMergeSignals(t *testing.T) {
 	}
 }
 
-func TestFactsRawFailuresSyncOnceSkipsUnresolvedPROlderThanRetryWindow(t *testing.T) {
+func TestFactsRawFailuresSyncOnceSkipsClosedNotMergedPR(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -433,6 +451,7 @@ func TestFactsRawFailuresSyncOnceSkipsUnresolvedPROlderThanRetryWindow(t *testin
 			RunURL:         runURL,
 			JobName:        "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
 			PRNumber:       8001,
+			PRState:        "closed",
 			PRSHA:          "sha-8001",
 			FinalMergedSHA: "",
 			MergedPR:       false,
@@ -450,13 +469,16 @@ func TestFactsRawFailuresSyncOnceSkipsUnresolvedPROlderThanRetryWindow(t *testin
 			TestName:      "test-old-unresolved",
 			TestSuite:     "suite-old-unresolved",
 			SignatureID:   "sig-old-unresolved",
-			FailureText:   "this should be skipped by unresolved retry cutoff",
+			FailureText:   "this should be skipped by terminal closed-not-merged state",
 		},
 	}); err != nil {
 		t.Fatalf("upsert artifact failure: %v", err)
 	}
 
-	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{Store: store})
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
 	if err != nil {
 		t.Fatalf("create controller: %v", err)
 	}
@@ -469,7 +491,81 @@ func TestFactsRawFailuresSyncOnceSkipsUnresolvedPROlderThanRetryWindow(t *testin
 		t.Fatalf("list raw failure run keys: %v", err)
 	}
 	if len(keys) != 0 {
-		t.Fatalf("expected unresolved old PR run to be skipped, got keys=%v", keys)
+		t.Fatalf("expected closed-not-merged PR run to be skipped, got keys=%v", keys)
+	}
+}
+
+func TestFactsRawFailuresSyncOnceFiltersConfiguredEnvironments(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	devRunURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/9001/job/111"
+	intRunURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/periodic/job/222"
+	occurredAt := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      devRunURL,
+			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			OccurredAt:  occurredAt,
+		},
+		{
+			Environment: "int",
+			RunURL:      intRunURL,
+			JobName:     "periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel",
+			OccurredAt:  occurredAt,
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+	if err := store.UpsertArtifactFailures(ctx, []contracts.ArtifactFailureRecord{
+		{
+			Environment:   "dev",
+			ArtifactRowID: "dev-art-1",
+			RunURL:        devRunURL,
+			TestName:      "test-dev",
+			TestSuite:     "suite-dev",
+			SignatureID:   "sig-dev",
+			FailureText:   "dev failure",
+		},
+		{
+			Environment:   "int",
+			ArtifactRowID: "int-art-1",
+			RunURL:        intRunURL,
+			TestName:      "test-int",
+			TestSuite:     "suite-int",
+			SignatureID:   "sig-int",
+			FailureText:   "int failure",
+		},
+	}); err != nil {
+		t.Fatalf("upsert artifact failures: %v", err)
+	}
+
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"int"}),
+	})
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+	if err := controller.SyncOnce(ctx); err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+
+	keys, err := store.ListRawFailureRunKeys(ctx)
+	if err != nil {
+		t.Fatalf("list raw failure run keys: %v", err)
+	}
+	want := []string{"int|" + intRunURL}
+	if len(keys) != len(want) || keys[0] != want[0] {
+		t.Fatalf("unexpected raw failure run keys with env filtering: got=%v want=%v", keys, want)
 	}
 }
 

@@ -16,10 +16,12 @@ import (
 )
 
 const (
-	SourceSippyRunsControllerName    = "source.sippy.runs"
-	SourceProwFailuresControllerName = "source.prow.failures"
-	FactsRawFailuresControllerName   = "facts.raw-failures"
-	MetricsRollupDailyControllerName = "metrics.rollup.daily"
+	SourceSippyRunsControllerName          = "source.sippy.runs"
+	SourceGitHubPullRequestsControllerName = "source.github.pull-requests"
+	SourceProwFailuresControllerName       = "source.prow.failures"
+	FactsRunsControllerName                = "facts.runs"
+	FactsRawFailuresControllerName         = "facts.raw-failures"
+	MetricsRollupDailyControllerName       = "metrics.rollup.daily"
 )
 
 type Dependencies struct {
@@ -40,8 +42,12 @@ func NewByName(name string, logger logr.Logger, deps Dependencies) (Controller, 
 	switch name {
 	case SourceSippyRunsControllerName:
 		return NewSourceSippyRuns(logger, deps)
+	case SourceGitHubPullRequestsControllerName:
+		return NewSourceGitHubPullRequests(logger, deps)
 	case SourceProwFailuresControllerName:
 		return NewSourceProwFailures(logger, deps)
+	case FactsRunsControllerName:
+		return NewFactsRuns(logger, deps)
 	case FactsRawFailuresControllerName:
 		return NewFactsRawFailures(logger, deps)
 	case MetricsRollupDailyControllerName:

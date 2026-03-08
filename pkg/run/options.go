@@ -21,7 +21,9 @@ func DefaultOptions() *RawOptions {
 		NDJSONOptions: ndjsonoptions.DefaultOptions(),
 
 		SourceSippyRunsControllerThreads:    1,
+		SourceGitHubPullRequestsThreads:     1,
 		SourceProwFailuresControllerThreads: 1,
+		FactsRunsControllerThreads:          1,
 		FactsRawFailuresControllerThreads:   1,
 		MetricsRollupDailyControllerThreads: 1,
 	}
@@ -36,7 +38,9 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 	}
 
 	cmd.Flags().IntVar(&opts.SourceSippyRunsControllerThreads, "controllers.source.sippy.runs.threads", opts.SourceSippyRunsControllerThreads, "Number of threads for controller source.sippy.runs.")
+	cmd.Flags().IntVar(&opts.SourceGitHubPullRequestsThreads, "controllers.source.github.pull-requests.threads", opts.SourceGitHubPullRequestsThreads, "Number of threads for controller source.github.pull-requests.")
 	cmd.Flags().IntVar(&opts.SourceProwFailuresControllerThreads, "controllers.source.prow.failures.threads", opts.SourceProwFailuresControllerThreads, "Number of threads for controller source.prow.failures.")
+	cmd.Flags().IntVar(&opts.FactsRunsControllerThreads, "controllers.facts.runs.threads", opts.FactsRunsControllerThreads, "Number of threads for controller facts.runs.")
 	cmd.Flags().IntVar(&opts.FactsRawFailuresControllerThreads, "controllers.facts.raw-failures.threads", opts.FactsRawFailuresControllerThreads, "Number of threads for controller facts.raw-failures.")
 	cmd.Flags().IntVar(&opts.MetricsRollupDailyControllerThreads, "controllers.metrics.rollup.daily.threads", opts.MetricsRollupDailyControllerThreads, "Number of threads for controller metrics.rollup.daily.")
 	return nil
@@ -47,7 +51,9 @@ type RawOptions struct {
 	NDJSONOptions *ndjsonoptions.RawOptions
 
 	SourceSippyRunsControllerThreads    int
+	SourceGitHubPullRequestsThreads     int
 	SourceProwFailuresControllerThreads int
+	FactsRunsControllerThreads          int
 	FactsRawFailuresControllerThreads   int
 	MetricsRollupDailyControllerThreads int
 }
@@ -58,7 +64,9 @@ type validatedOptions struct {
 	NDJSONValidated *ndjsonoptions.ValidatedOptions
 
 	SourceSippyRunsControllerThreads    int
+	SourceGitHubPullRequestsThreads     int
 	SourceProwFailuresControllerThreads int
+	FactsRunsControllerThreads          int
 	FactsRawFailuresControllerThreads   int
 	MetricsRollupDailyControllerThreads int
 }
@@ -74,7 +82,9 @@ type completedOptions struct {
 	Store contracts.Store
 
 	SourceSippyRunsControllerThreads    int
+	SourceGitHubPullRequestsThreads     int
 	SourceProwFailuresControllerThreads int
+	FactsRunsControllerThreads          int
 	FactsRawFailuresControllerThreads   int
 	MetricsRollupDailyControllerThreads int
 }
@@ -96,8 +106,14 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 	if o.SourceSippyRunsControllerThreads <= 0 {
 		o.SourceSippyRunsControllerThreads = 1
 	}
+	if o.SourceGitHubPullRequestsThreads <= 0 {
+		o.SourceGitHubPullRequestsThreads = 1
+	}
 	if o.SourceProwFailuresControllerThreads <= 0 {
 		o.SourceProwFailuresControllerThreads = 1
+	}
+	if o.FactsRunsControllerThreads <= 0 {
+		o.FactsRunsControllerThreads = 1
 	}
 	if o.FactsRawFailuresControllerThreads <= 0 {
 		o.FactsRawFailuresControllerThreads = 1
@@ -112,7 +128,9 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 			SourceValidated:                     sourceValidated,
 			NDJSONValidated:                     ndjsonValidated,
 			SourceSippyRunsControllerThreads:    o.SourceSippyRunsControllerThreads,
+			SourceGitHubPullRequestsThreads:     o.SourceGitHubPullRequestsThreads,
 			SourceProwFailuresControllerThreads: o.SourceProwFailuresControllerThreads,
+			FactsRunsControllerThreads:          o.FactsRunsControllerThreads,
 			FactsRawFailuresControllerThreads:   o.FactsRawFailuresControllerThreads,
 			MetricsRollupDailyControllerThreads: o.MetricsRollupDailyControllerThreads,
 		},
@@ -140,7 +158,9 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 			NDJSON:                              ndjsonCompleted,
 			Store:                               store,
 			SourceSippyRunsControllerThreads:    o.SourceSippyRunsControllerThreads,
+			SourceGitHubPullRequestsThreads:     o.SourceGitHubPullRequestsThreads,
 			SourceProwFailuresControllerThreads: o.SourceProwFailuresControllerThreads,
+			FactsRunsControllerThreads:          o.FactsRunsControllerThreads,
 			FactsRawFailuresControllerThreads:   o.FactsRawFailuresControllerThreads,
 			MetricsRollupDailyControllerThreads: o.MetricsRollupDailyControllerThreads,
 		},
@@ -170,7 +190,15 @@ func (opts *Options) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	sourceGitHubPullRequestsController, err := controllers.NewSourceGitHubPullRequests(logger, deps)
+	if err != nil {
+		return err
+	}
 	sourceProwFailuresController, err := controllers.NewSourceProwFailures(logger, deps)
+	if err != nil {
+		return err
+	}
+	factsRunsController, err := controllers.NewFactsRuns(logger, deps)
 	if err != nil {
 		return err
 	}
@@ -192,8 +220,16 @@ func (opts *Options) Run(ctx context.Context) error {
 			threads:    opts.SourceSippyRunsControllerThreads,
 		},
 		{
+			controller: sourceGitHubPullRequestsController,
+			threads:    opts.SourceGitHubPullRequestsThreads,
+		},
+		{
 			controller: sourceProwFailuresController,
 			threads:    opts.SourceProwFailuresControllerThreads,
+		},
+		{
+			controller: factsRunsController,
+			threads:    opts.FactsRunsControllerThreads,
 		},
 		{
 			controller: factsRawFailuresController,

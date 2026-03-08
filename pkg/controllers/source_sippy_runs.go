@@ -21,8 +21,6 @@ const (
 	sourceSippyRunsReconcileInterval = 30 * time.Minute
 	sourceSippyRunsDefaultPageSize   = 1000
 	sourceSippyRunsReplayWindow      = 3 * time.Hour
-	sourceSippyRunsPRLookupMinLimit  = 100
-	sourceSippyRunsPRLookupMaxLimit  = 1000
 )
 
 // TODO: Wire this map via CLI flags/config file (same for deterministic JUnit path mapping).
@@ -193,6 +191,13 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 	if err != nil {
 		return err
 	}
+	usePRRepoFilter := supportsPRLookupForEnvironment(environment)
+	org := c.deps.Source.SippyOrg
+	repo := c.deps.Source.SippyRepo
+	if !usePRRepoFilter {
+		org = ""
+		repo = ""
+	}
 
 	checkpointTime, err := c.getCheckpointTime(ctx, environment)
 	if err != nil {
@@ -202,8 +207,9 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 
 	allRuns, err := c.sippyClient.ListJobRuns(ctx, sippysource.ListJobRunsOptions{
 		Release:  release,
-		Org:      c.deps.Source.SippyOrg,
-		Repo:     c.deps.Source.SippyRepo,
+		Org:      org,
+		Repo:     repo,
+		JobName:  jobName,
 		Since:    since,
 		PageSize: sourceSippyRunsDefaultPageSize,
 	})
@@ -228,23 +234,13 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 	}
 
 	now := time.Now().UTC()
-	unresolvedRuns, err := c.listUnresolvedRunsForEnvironment(ctx, environment, now)
-	if err != nil {
-		return err
-	}
-
-	neededPRNumbers := collectPRNumbers(failedRuns, unresolvedRuns)
-	mergedSHAsByPR, mergedLookupErr := c.loadMergedSHAsByPR(ctx, release, neededPRNumbers, now)
-	if mergedLookupErr != nil {
-		c.logger.Error(mergedLookupErr, "Failed merged PR lookup. Continuing without merged PR enrichment.", "environment", environment, "needed_prs", len(neededPRNumbers))
-		mergedSHAsByPR = map[int]string{}
-	}
-
-	runRecords := make([]contracts.RunRecord, 0, len(failedRuns)+len(unresolvedRuns))
-	refreshedUnresolved := refreshUnresolvedRunRecords(unresolvedRuns, mergedSHAsByPR)
-	runRecords = append(runRecords, refreshedUnresolved...)
+	runRecords := make([]contracts.RunRecord, 0, len(failedRuns))
 	for _, run := range failedRuns {
-		record := mapToRunRecord(environment, run, mergedSHAsByPR[run.PRNumber])
+		existing, found, err := c.store.GetRun(ctx, environment, run.RunURL)
+		if err != nil {
+			return fmt.Errorf("get existing run record for environment=%q run_url=%q: %w", environment, run.RunURL, err)
+		}
+		record := mapToRunRecord(environment, run, existing, found)
 		if record.RunURL == "" {
 			continue
 		}
@@ -277,8 +273,7 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 		"failed", len(failedRuns),
 		"hourly_buckets", len(hourlyCounts),
 		"upserted_runs", len(runRecords),
-		"refreshed_unresolved_runs", len(refreshedUnresolved),
-		"merged_prs_matched", len(mergedSHAsByPR),
+		"pr_lookup_enabled", false,
 		"since", since.Format(time.RFC3339),
 	)
 	return nil
@@ -304,12 +299,20 @@ func (c *sourceSippyRunsController) syncSingleRunByKey(ctx context.Context, key 
 	if err != nil {
 		return err
 	}
+	usePRRepoFilter := supportsPRLookupForEnvironment(environment)
+	org := c.deps.Source.SippyOrg
+	repo := c.deps.Source.SippyRepo
+	if !usePRRepoFilter {
+		org = ""
+		repo = ""
+	}
 
 	since := c.resolveSince(time.Time{})
 	allRuns, err := c.sippyClient.ListJobRuns(ctx, sippysource.ListJobRunsOptions{
 		Release:  release,
-		Org:      c.deps.Source.SippyOrg,
-		Repo:     c.deps.Source.SippyRepo,
+		Org:      org,
+		Repo:     repo,
+		JobName:  jobName,
 		Since:    since,
 		PageSize: sourceSippyRunsDefaultPageSize,
 	})
@@ -334,14 +337,12 @@ func (c *sourceSippyRunsController) syncSingleRunByKey(ctx context.Context, key 
 		return nil
 	}
 
-	neededPRNumbers := collectPRNumbersFromJobRuns(runs)
-	mergedSHAsByPR, mergedLookupErr := c.loadMergedSHAsByPR(ctx, release, neededPRNumbers, time.Now().UTC())
-	if mergedLookupErr != nil {
-		c.logger.Error(mergedLookupErr, "Failed merged PR lookup for single run. Continuing without merged PR enrichment.", "key", key)
-		mergedSHAsByPR = map[int]string{}
+	existing, foundExisting, err := c.store.GetRun(ctx, environment, runURL)
+	if err != nil {
+		return fmt.Errorf("get existing run metadata for key %q: %w", key, err)
 	}
 
-	record := mapToRunRecord(environment, targetRun, mergedSHAsByPR[targetRun.PRNumber])
+	record := mapToRunRecord(environment, targetRun, existing, foundExisting)
 	if err := c.store.UpsertRuns(ctx, []contracts.RunRecord{record}); err != nil {
 		return fmt.Errorf("upsert run %q: %w", runURL, err)
 	}
@@ -432,18 +433,33 @@ func filterRunsByJobName(runs []sippysource.JobRun, jobName string) []sippysourc
 	return filtered
 }
 
-func mapToRunRecord(environment string, run sippysource.JobRun, finalMergedSHA string) contracts.RunRecord {
+func mapToRunRecord(environment string, run sippysource.JobRun, existing contracts.RunRecord, existingFound bool) contracts.RunRecord {
 	normalizedPRSHA := strings.TrimSpace(run.PRSHA)
-	normalizedFinalMergedSHA := strings.TrimSpace(finalMergedSHA)
+	periodicMergedCodeEnvironment := !supportsPRLookupForEnvironment(environment)
 	record := contracts.RunRecord{
-		Environment:    normalizeEnvironment(environment),
-		RunURL:         strings.TrimSpace(run.RunURL),
-		JobName:        strings.TrimSpace(run.JobName),
-		PRNumber:       run.PRNumber,
-		PRSHA:          normalizedPRSHA,
-		FinalMergedSHA: normalizedFinalMergedSHA,
-		MergedPR:       run.PRNumber > 0 && normalizedFinalMergedSHA != "",
-		PostGoodCommit: run.Failed && normalizedPRSHA != "" && normalizedPRSHA == normalizedFinalMergedSHA,
+		Environment: normalizeEnvironment(environment),
+		RunURL:      strings.TrimSpace(run.RunURL),
+		JobName:     strings.TrimSpace(run.JobName),
+		PRNumber:    run.PRNumber,
+		PRSHA:       normalizedPRSHA,
+	}
+	if periodicMergedCodeEnvironment {
+		record.PRState = ""
+		record.FinalMergedSHA = ""
+		record.MergedPR = true
+		record.PostGoodCommit = true
+	} else {
+		if existingFound && existing.PRNumber == run.PRNumber {
+			record.PRState = strings.TrimSpace(existing.PRState)
+			record.FinalMergedSHA = strings.TrimSpace(existing.FinalMergedSHA)
+			record.MergedPR = existing.MergedPR
+			record.PostGoodCommit = existing.PostGoodCommit
+		} else {
+			record.PRState = ""
+			record.FinalMergedSHA = ""
+			record.MergedPR = false
+			record.PostGoodCommit = false
+		}
 	}
 	if !run.StartedAt.IsZero() {
 		record.OccurredAt = run.StartedAt.UTC().Format(time.RFC3339Nano)
@@ -451,29 +467,8 @@ func mapToRunRecord(environment string, run sippysource.JobRun, finalMergedSHA s
 	return record
 }
 
-func collectPRNumbers(failedRuns []sippysource.JobRun, unresolvedRuns []contracts.RunRecord) map[int]struct{} {
-	out := map[int]struct{}{}
-	for _, run := range failedRuns {
-		if run.PRNumber > 0 {
-			out[run.PRNumber] = struct{}{}
-		}
-	}
-	for _, run := range unresolvedRuns {
-		if run.PRNumber > 0 {
-			out[run.PRNumber] = struct{}{}
-		}
-	}
-	return out
-}
-
-func collectPRNumbersFromJobRuns(runs []sippysource.JobRun) map[int]struct{} {
-	out := map[int]struct{}{}
-	for _, run := range runs {
-		if run.PRNumber > 0 {
-			out[run.PRNumber] = struct{}{}
-		}
-	}
-	return out
+func supportsPRLookupForEnvironment(environment string) bool {
+	return normalizeEnvironment(environment) == "dev"
 }
 
 func findRunByURL(runs []sippysource.JobRun, runURL string) (sippysource.JobRun, bool) {
@@ -515,127 +510,6 @@ func dedupeRunRecords(rows []contracts.RunRecord) []contracts.RunRecord {
 		return out[i].RunURL < out[j].RunURL
 	})
 	return out
-}
-
-func refreshUnresolvedRunRecords(existing []contracts.RunRecord, mergedSHAsByPR map[int]string) []contracts.RunRecord {
-	refreshed := make([]contracts.RunRecord, 0)
-	for _, row := range existing {
-		mergedSHA := strings.TrimSpace(mergedSHAsByPR[row.PRNumber])
-		if mergedSHA == "" {
-			continue
-		}
-		if row.MergedPR && strings.TrimSpace(row.FinalMergedSHA) == mergedSHA {
-			continue
-		}
-
-		next := row
-		next.FinalMergedSHA = mergedSHA
-		next.MergedPR = true
-		next.PostGoodCommit = strings.TrimSpace(row.PRSHA) != "" && strings.TrimSpace(row.PRSHA) == mergedSHA
-		refreshed = append(refreshed, next)
-	}
-	return refreshed
-}
-
-func (c *sourceSippyRunsController) listUnresolvedRunsForEnvironment(ctx context.Context, environment string, now time.Time) ([]contracts.RunRecord, error) {
-	keys, err := c.store.ListRunKeys(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list run keys for unresolved run refresh: %w", err)
-	}
-
-	normalizedEnvironment := normalizeEnvironment(environment)
-	out := make([]contracts.RunRecord, 0)
-	retryWindow := unresolvedPRRetryWindow(c.deps.Source)
-
-	for _, key := range keys {
-		keyEnvironment, runURL, err := splitEnvironmentRunKey(key)
-		if err != nil {
-			continue
-		}
-		if keyEnvironment != normalizedEnvironment {
-			continue
-		}
-
-		row, found, err := c.store.GetRun(ctx, keyEnvironment, runURL)
-		if err != nil {
-			return nil, fmt.Errorf("get run metadata for unresolved refresh key %q: %w", key, err)
-		}
-		if !found {
-			continue
-		}
-		if !isRunWithinUnresolvedRetryWindow(row, retryWindow, now) {
-			continue
-		}
-		out = append(out, row)
-	}
-
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].OccurredAt != out[j].OccurredAt {
-			return out[i].OccurredAt < out[j].OccurredAt
-		}
-		return out[i].RunURL < out[j].RunURL
-	})
-	return out, nil
-}
-
-func (c *sourceSippyRunsController) loadMergedSHAsByPR(ctx context.Context, release string, neededPRNumbers map[int]struct{}, now time.Time) (map[int]string, error) {
-	result := map[int]string{}
-	if len(neededPRNumbers) == 0 {
-		return result, nil
-	}
-
-	retryWindow := unresolvedPRRetryWindow(c.deps.Source)
-	since := now.UTC().Add(-retryWindow)
-	limit := mergedPRLookupLimit(len(neededPRNumbers))
-
-	for {
-		rows, err := c.sippyClient.ListPullRequests(ctx, sippysource.ListPullRequestsOptions{
-			Release: release,
-			Org:     c.deps.Source.SippyOrg,
-			Repo:    c.deps.Source.SippyRepo,
-			Since:   since,
-			Limit:   limit,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("list pull requests from sippy: %w", err)
-		}
-
-		for _, row := range rows {
-			if _, needed := neededPRNumbers[row.Number]; !needed {
-				continue
-			}
-			sha := strings.TrimSpace(row.SHA)
-			if sha == "" {
-				continue
-			}
-			result[row.Number] = sha
-		}
-
-		if len(result) == len(neededPRNumbers) || len(rows) < limit || limit >= sourceSippyRunsPRLookupMaxLimit {
-			break
-		}
-		limit = nextMergedPRLookupLimit(limit)
-	}
-	return result, nil
-}
-
-func mergedPRLookupLimit(neededPRs int) int {
-	limit := neededPRs * 3
-	if limit < sourceSippyRunsPRLookupMinLimit {
-		limit = sourceSippyRunsPRLookupMinLimit
-	}
-	if limit > sourceSippyRunsPRLookupMaxLimit {
-		limit = sourceSippyRunsPRLookupMaxLimit
-	}
-	return limit
-}
-
-func nextMergedPRLookupLimit(current int) int {
-	next := current * 2
-	if next > sourceSippyRunsPRLookupMaxLimit {
-		next = sourceSippyRunsPRLookupMaxLimit
-	}
-	return next
 }
 
 func checkpointNameForEnvironment(environment string) string {

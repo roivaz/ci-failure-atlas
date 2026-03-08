@@ -1,0 +1,151 @@
+package weekly
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	storecontracts "ci-failure-atlas/pkg/store/contracts"
+	"ci-failure-atlas/pkg/store/ndjson"
+)
+
+func TestValidateOptionsRequiresStartDate(t *testing.T) {
+	t.Parallel()
+
+	_, err := validateOptions(Options{
+		OutputPath: "data/reports/weekly.html",
+		StartDate:  "",
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing --start-date") {
+		t.Fatalf("expected missing start-date validation error, got=%v", err)
+	}
+}
+
+func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
+		{Environment: "dev", Date: "2026-03-01", Metric: metricRunCount, Value: 10},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricFailureCount, Value: 4},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricFailureRowCount, Value: 6},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricFailedCIInfraRunCount, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricFailedProvisionRunCount, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricFailedE2ERunCount, Value: 2},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricCIInfraFailureCount, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricProvisionFailureCount, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricE2EFailureCount, Value: 2},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailureCount, Value: 2},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedE2EJobs, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodCIInfraFailureCount, Value: 0},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodProvisionFailureCount, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodE2EFailureCount, Value: 1},
+		{Environment: "int", Date: "2026-03-01", Metric: metricRunCount, Value: 8},
+		{Environment: "int", Date: "2026-03-01", Metric: metricFailureCount, Value: 2},
+		{Environment: "int", Date: "2026-03-01", Metric: metricFailureRowCount, Value: 3},
+		{Environment: "int", Date: "2026-03-01", Metric: metricFailedCIInfraRunCount, Value: 2},
+		{Environment: "int", Date: "2026-03-01", Metric: metricFailedProvisionRunCount, Value: 0},
+		{Environment: "int", Date: "2026-03-01", Metric: metricFailedE2ERunCount, Value: 0},
+		{Environment: "int", Date: "2026-03-01", Metric: metricCIInfraFailureCount, Value: 2},
+		{Environment: "int", Date: "2026-03-01", Metric: metricProvisionFailureCount, Value: 0},
+		{Environment: "int", Date: "2026-03-01", Metric: metricE2EFailureCount, Value: 0},
+	}); err != nil {
+		t.Fatalf("seed metrics: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://run-dev-post-good-1",
+			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			OccurredAt:  "2026-03-01T10:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment:            "dev",
+			RowID:                  "dev-post-good-row-1",
+			RunURL:                 "https://run-dev-post-good-1",
+			NonArtifactBacked:      false,
+			TestName:               "Run pipeline step gather",
+			TestSuite:              "step graph",
+			MergedPR:               true,
+			PostGoodCommitFailures: 1,
+			SignatureID:            "sig-post-good-row-1",
+			OccurredAt:             "2026-03-01T10:00:00Z",
+			RawText:                "provision failed",
+			NormalizedText:         "provision failed",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	outputPath := filepath.Join(dataDir, "reports", "weekly.html")
+	if err := Generate(ctx, store, Options{
+		OutputPath: outputPath,
+		StartDate:  "2026-03-01",
+	}); err != nil {
+		t.Fatalf("generate weekly report: %v", err)
+	}
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read weekly report output: %v", err)
+	}
+	report := string(content)
+
+	requiredSnippets := []string{
+		"CI Weekly Metrics Report",
+		"Window: <strong>2026-03-01</strong> to <strong>2026-03-07</strong>",
+		"Environment: DEV",
+		"Environment: INT",
+		"Environment: STG",
+		"Environment: PROD",
+		"Failed Tests",
+		"Success Rate",
+		"E2E Jobs (good commits)",
+		"Failed E2E Jobs (good commits)",
+		"Failed Tests (good commits)",
+		"Success Rate (good commits)",
+		"Chart mode:",
+		"Absolute counts",
+		"100% stacked percentages",
+		"Daily Run Outcomes (stacked by run-level lane)",
+		"Daily Run Outcomes for Good PRs (stacked by run-level lane)",
+		"Successful runs (good PR semantics)",
+		"mode-count",
+		"mode-percent",
+		"segment-label",
+		"60.0%",
+		"20.0%",
+		"S:6",
+		"S:9",
+		"P:1",
+		"E2E:2",
+		"CI:1",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(report, snippet) {
+			t.Fatalf("expected report to contain %q", snippet)
+		}
+	}
+	forbiddenSnippets := []string{
+		"<table>",
+		"Success rate uses (E2E Jobs - Failed E2E Jobs)",
+	}
+	for _, snippet := range forbiddenSnippets {
+		if strings.Contains(report, snippet) {
+			t.Fatalf("expected report to not contain %q", snippet)
+		}
+	}
+}

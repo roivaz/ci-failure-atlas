@@ -11,11 +11,24 @@ type RunRecord struct {
 	RunURL         string `json:"run_url"`
 	JobName        string `json:"job_name"`
 	PRNumber       int    `json:"pr_number"`
+	PRState        string `json:"pr_state"`
 	PRSHA          string `json:"pr_sha"`
 	FinalMergedSHA string `json:"final_merged_sha"`
 	MergedPR       bool   `json:"merged_pr"`
 	PostGoodCommit bool   `json:"post_good_commit"`
 	OccurredAt     string `json:"occurred_at"`
+}
+
+type PullRequestRecord struct {
+	PRNumber       int    `json:"pr_number"`
+	State          string `json:"state"`
+	Merged         bool   `json:"merged"`
+	HeadSHA        string `json:"head_sha"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	MergedAt       string `json:"merged_at"`
+	ClosedAt       string `json:"closed_at"`
+	UpdatedAt      string `json:"updated_at"`
+	LastCheckedAt  string `json:"last_checked_at"`
 }
 
 type ArtifactFailureRecord struct {
@@ -87,6 +100,12 @@ type RunStore interface {
 	GetRun(ctx context.Context, environment string, runURL string) (RunRecord, bool, error)
 }
 
+type PullRequestStore interface {
+	UpsertPullRequests(ctx context.Context, rows []PullRequestRecord) error
+	ListPullRequests(ctx context.Context) ([]PullRequestRecord, error)
+	GetPullRequest(ctx context.Context, prNumber int) (PullRequestRecord, bool, error)
+}
+
 type ArtifactFailureStore interface {
 	UpsertArtifactFailures(ctx context.Context, rows []ArtifactFailureRecord) error
 	ListArtifactRunKeys(ctx context.Context) ([]string, error)
@@ -141,6 +160,7 @@ type SemanticStore interface {
 
 type Store interface {
 	RunStore
+	PullRequestStore
 	ArtifactFailureStore
 	RawFailureStore
 	MetricsStore

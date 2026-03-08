@@ -24,6 +24,7 @@ const (
 	stateDirectory    = "state"
 
 	runsFilename             = "runs.ndjson"
+	pullRequestsFilename     = "pull_requests.ndjson"
 	artifactFailuresFilename = "artifact_failures.ndjson"
 	rawFailuresFilename      = "raw_failures.ndjson"
 	metricsDailyFilename     = "metrics_daily.ndjson"
@@ -185,6 +186,102 @@ func (s *Store) GetRun(ctx context.Context, environment string, runURL string) (
 		}
 	}
 	return contracts.RunRecord{}, false, nil
+}
+
+func (s *Store) UpsertPullRequests(ctx context.Context, rows []contracts.PullRequestRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.pullRequestsPath()
+	existing, err := readNDJSON[contracts.PullRequestRecord](path)
+	if err != nil {
+		return err
+	}
+
+	mergedByNumber := map[int]contracts.PullRequestRecord{}
+	for _, row := range existing {
+		normalized := normalizePullRequestRecord(row)
+		if normalized.PRNumber <= 0 {
+			continue
+		}
+		mergedByNumber[normalized.PRNumber] = normalized
+	}
+	for _, row := range rows {
+		normalized := normalizePullRequestRecord(row)
+		if normalized.PRNumber <= 0 {
+			return fmt.Errorf("pull request record missing pr_number")
+		}
+		mergedByNumber[normalized.PRNumber] = normalized
+	}
+
+	merged := make([]contracts.PullRequestRecord, 0, len(mergedByNumber))
+	for _, row := range mergedByNumber {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].PRNumber < merged[j].PRNumber
+	})
+
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListPullRequests(ctx context.Context) ([]contracts.PullRequestRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.PullRequestRecord](s.pullRequestsPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.PullRequestRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizePullRequestRecord(row)
+		if normalized.PRNumber <= 0 {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].PRNumber < filtered[j].PRNumber
+	})
+	return filtered, nil
+}
+
+func (s *Store) GetPullRequest(ctx context.Context, prNumber int) (contracts.PullRequestRecord, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return contracts.PullRequestRecord{}, false, err
+	}
+	if prNumber <= 0 {
+		return contracts.PullRequestRecord{}, false, fmt.Errorf("pull request lookup requires positive pr_number")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.PullRequestRecord](s.pullRequestsPath())
+	if err != nil {
+		return contracts.PullRequestRecord{}, false, err
+	}
+
+	for _, row := range rows {
+		normalized := normalizePullRequestRecord(row)
+		if normalized.PRNumber == prNumber {
+			return normalized, true, nil
+		}
+	}
+	return contracts.PullRequestRecord{}, false, nil
 }
 
 func (s *Store) UpsertArtifactFailures(ctx context.Context, rows []contracts.ArtifactFailureRecord) error {
@@ -1381,6 +1478,10 @@ func (s *Store) runsPath() string {
 	return filepath.Join(s.dataDirectory, factsDirectory, runsFilename)
 }
 
+func (s *Store) pullRequestsPath() string {
+	return filepath.Join(s.dataDirectory, factsDirectory, pullRequestsFilename)
+}
+
 func (s *Store) artifactFailuresPath() string {
 	return filepath.Join(s.dataDirectory, factsDirectory, artifactFailuresFilename)
 }
@@ -1430,16 +1531,51 @@ func normalizeRunRecord(row contracts.RunRecord) contracts.RunRecord {
 	if prNumber < 0 {
 		prNumber = 0
 	}
+	prState := strings.ToLower(strings.TrimSpace(row.PRState))
+	switch prState {
+	case "open", "closed":
+	default:
+		prState = ""
+	}
 	return contracts.RunRecord{
 		Environment:    normalizeEnvironment(row.Environment),
 		RunURL:         strings.TrimSpace(row.RunURL),
 		JobName:        strings.TrimSpace(row.JobName),
 		PRNumber:       prNumber,
+		PRState:        prState,
 		PRSHA:          strings.TrimSpace(row.PRSHA),
 		FinalMergedSHA: strings.TrimSpace(row.FinalMergedSHA),
 		MergedPR:       row.MergedPR,
 		PostGoodCommit: row.PostGoodCommit,
 		OccurredAt:     strings.TrimSpace(row.OccurredAt),
+	}
+}
+
+func normalizePullRequestRecord(row contracts.PullRequestRecord) contracts.PullRequestRecord {
+	prNumber := row.PRNumber
+	if prNumber < 0 {
+		prNumber = 0
+	}
+	state := strings.ToLower(strings.TrimSpace(row.State))
+	switch state {
+	case "open", "closed":
+	default:
+		state = ""
+	}
+	merged := row.Merged
+	if merged {
+		state = "closed"
+	}
+	return contracts.PullRequestRecord{
+		PRNumber:       prNumber,
+		State:          state,
+		Merged:         merged,
+		HeadSHA:        strings.TrimSpace(row.HeadSHA),
+		MergeCommitSHA: strings.TrimSpace(row.MergeCommitSHA),
+		MergedAt:       strings.TrimSpace(row.MergedAt),
+		ClosedAt:       strings.TrimSpace(row.ClosedAt),
+		UpdatedAt:      strings.TrimSpace(row.UpdatedAt),
+		LastCheckedAt:  strings.TrimSpace(row.LastCheckedAt),
 	}
 }
 

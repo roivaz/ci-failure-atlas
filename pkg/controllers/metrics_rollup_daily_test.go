@@ -137,36 +137,185 @@ func TestMetricsRollupDailyRunOnceComputesAllEnvAndDevPostGoodMetrics(t *testing
 	}
 
 	rows := mustReadMetricDailyRows(t, filepath.Join(dataDir, "facts", "metrics_daily.ndjson"))
-	if len(rows) != 14 {
-		t.Fatalf("unexpected metric row count: got=%d want=14", len(rows))
+	if len(rows) != 23 {
+		t.Fatalf("unexpected metric row count: got=%d want=23", len(rows))
 	}
 
 	devMetrics := toMetricMap(rows, "dev", "2026-03-05")
-	if len(devMetrics) != 9 {
-		t.Fatalf("unexpected dev metric count: got=%d want=9 metrics=%v", len(devMetrics), devMetrics)
+	if len(devMetrics) != 14 {
+		t.Fatalf("unexpected dev metric count: got=%d want=14 metrics=%v", len(devMetrics), devMetrics)
 	}
 	assertMetricValue(t, devMetrics, metricRunCount, 12)
 	assertMetricValue(t, devMetrics, metricFailureCount, 4)
+	assertMetricValue(t, devMetrics, metricFailureRowCount, 4)
+	assertMetricValue(t, devMetrics, metricFailedCIInfraRunCount, 2)
+	assertMetricValue(t, devMetrics, metricFailedProvisionRunCount, 1)
+	assertMetricValue(t, devMetrics, metricFailedE2ERunCount, 1)
 	assertMetricValue(t, devMetrics, metricCIInfraFailureCount, 2)
 	assertMetricValue(t, devMetrics, metricProvisionFailureCount, 1)
 	assertMetricValue(t, devMetrics, metricE2EFailureCount, 1)
 	assertMetricValue(t, devMetrics, metricPostGoodFailureCount, 2)
+	assertMetricValue(t, devMetrics, metricPostGoodFailedE2EJobs, 2)
 	assertMetricValue(t, devMetrics, metricPostGoodCIInfraFailureCount, 0)
 	assertMetricValue(t, devMetrics, metricPostGoodProvisionFailureCount, 1)
 	assertMetricValue(t, devMetrics, metricPostGoodE2EFailureCount, 1)
 
 	intMetrics := toMetricMap(rows, "int", "2026-03-05")
-	if len(intMetrics) != 5 {
-		t.Fatalf("unexpected int metric count: got=%d want=5 metrics=%v", len(intMetrics), intMetrics)
+	if len(intMetrics) != 9 {
+		t.Fatalf("unexpected int metric count: got=%d want=9 metrics=%v", len(intMetrics), intMetrics)
 	}
 	assertMetricValue(t, intMetrics, metricRunCount, 4)
 	assertMetricValue(t, intMetrics, metricFailureCount, 2)
+	assertMetricValue(t, intMetrics, metricFailureRowCount, 2)
+	assertMetricValue(t, intMetrics, metricFailedCIInfraRunCount, 1)
+	assertMetricValue(t, intMetrics, metricFailedProvisionRunCount, 0)
+	assertMetricValue(t, intMetrics, metricFailedE2ERunCount, 1)
 	assertMetricValue(t, intMetrics, metricCIInfraFailureCount, 1)
 	assertMetricValue(t, intMetrics, metricProvisionFailureCount, 0)
 	assertMetricValue(t, intMetrics, metricE2EFailureCount, 1)
 	if _, ok := intMetrics[metricPostGoodFailureCount]; ok {
 		t.Fatalf("expected non-dev env to not emit post-good metric %q", metricPostGoodFailureCount)
 	}
+}
+
+func TestMetricsRollupDailyRunOnceClassifiesFailedRunsWithDeterministicPrecedence(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
+		{Environment: "dev", Hour: "2026-03-09T10:00:00Z", TotalRuns: 3, FailedRuns: 2, SuccessfulRuns: 1},
+	}); err != nil {
+		t.Fatalf("upsert run counts hourly: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{Environment: "dev", RunURL: "https://run-dev-mixed", JobName: "pull-ci-Azure-ARO-HCP-main-e2e-parallel", OccurredAt: "2026-03-09T10:00:00Z"},
+		{Environment: "dev", RunURL: "https://run-dev-e2e-only", JobName: "pull-ci-Azure-ARO-HCP-main-e2e-parallel", OccurredAt: "2026-03-09T10:05:00Z"},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, []contracts.RawFailureRecord{
+		{
+			Environment:    "dev",
+			RowID:          "row-mixed-e2e",
+			RunURL:         "https://run-dev-mixed",
+			SignatureID:    "sig-mixed-e2e",
+			OccurredAt:     "2026-03-09T10:00:00Z",
+			RawText:        "test failed",
+			NormalizedText: "test failed",
+			TestName:       "should fail",
+			TestSuite:      "suite/parallel",
+		},
+		{
+			Environment:    "dev",
+			RowID:          "row-mixed-provision",
+			RunURL:         "https://run-dev-mixed",
+			SignatureID:    "sig-mixed-provision",
+			OccurredAt:     "2026-03-09T10:00:00Z",
+			RawText:        "provision failed",
+			NormalizedText: "provision failed",
+			TestName:       "Run pipeline step gather",
+			TestSuite:      "cluster setup",
+		},
+		{
+			Environment:    "dev",
+			RowID:          "row-e2e-only",
+			RunURL:         "https://run-dev-e2e-only",
+			SignatureID:    "sig-e2e-only",
+			OccurredAt:     "2026-03-09T10:05:00Z",
+			RawText:        "test failed",
+			NormalizedText: "test failed",
+			TestName:       "another test",
+			TestSuite:      "suite/parallel",
+		},
+	}); err != nil {
+		t.Fatalf("upsert raw failures: %v", err)
+	}
+
+	controller, err := newMetricsRollupDailyController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptionsForMetrics(t, []string{"dev"}),
+	})
+	if err != nil {
+		t.Fatalf("create metrics controller: %v", err)
+	}
+	if err := controller.RunOnce(ctx, "2026-03-09"); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	rows := mustReadMetricDailyRows(t, filepath.Join(dataDir, "facts", "metrics_daily.ndjson"))
+	devMetrics := toMetricMap(rows, "dev", "2026-03-09")
+	assertMetricValue(t, devMetrics, metricFailedProvisionRunCount, 1)
+	assertMetricValue(t, devMetrics, metricFailedE2ERunCount, 1)
+	assertMetricValue(t, devMetrics, metricFailedCIInfraRunCount, 0)
+}
+
+func TestMetricsRollupDailyRunOnceClassifiesSyntheticPeriodicE2EAsCIInfra(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
+		{Environment: "int", Hour: "2026-03-10T10:00:00Z", TotalRuns: 3, FailedRuns: 1, SuccessfulRuns: 2},
+	}); err != nil {
+		t.Fatalf("upsert run counts hourly: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "int",
+			RunURL:      "https://run-int-periodic-e2e",
+			JobName:     "periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel",
+			OccurredAt:  "2026-03-10T10:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, []contracts.RawFailureRecord{
+		{
+			Environment:       "int",
+			RowID:             "row-int-synthetic",
+			RunURL:            "https://run-int-periodic-e2e",
+			SignatureID:       "sig-int-synthetic",
+			OccurredAt:        "2026-03-10T10:00:00Z",
+			RawText:           "non-artifact-backed failure (no junit artifacts)",
+			NormalizedText:    "non-artifact-backed failure (no junit artifacts)",
+			TestName:          "unknown",
+			TestSuite:         "unknown",
+			NonArtifactBacked: true,
+		},
+	}); err != nil {
+		t.Fatalf("upsert raw failures: %v", err)
+	}
+
+	controller, err := newMetricsRollupDailyController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptionsForMetrics(t, []string{"int"}),
+	})
+	if err != nil {
+		t.Fatalf("create metrics controller: %v", err)
+	}
+	if err := controller.RunOnce(ctx, "2026-03-10"); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	rows := mustReadMetricDailyRows(t, filepath.Join(dataDir, "facts", "metrics_daily.ndjson"))
+	intMetrics := toMetricMap(rows, "int", "2026-03-10")
+	assertMetricValue(t, intMetrics, metricFailedCIInfraRunCount, 1)
+	assertMetricValue(t, intMetrics, metricFailedE2ERunCount, 0)
+	assertMetricValue(t, intMetrics, metricCIInfraFailureCount, 1)
+	assertMetricValue(t, intMetrics, metricE2EFailureCount, 0)
 }
 
 func TestMetricsRollupDailyRunOnceBackfillsWhenMetricSetIsPartial(t *testing.T) {
@@ -226,15 +375,20 @@ func TestMetricsRollupDailyRunOnceBackfillsWhenMetricSetIsPartial(t *testing.T) 
 
 	rows := mustReadMetricDailyRows(t, filepath.Join(dataDir, "facts", "metrics_daily.ndjson"))
 	devMetrics := toMetricMap(rows, "dev", "2026-03-07")
-	if len(devMetrics) != 9 {
-		t.Fatalf("unexpected dev metric count after backfill: got=%d want=9 metrics=%v", len(devMetrics), devMetrics)
+	if len(devMetrics) != 14 {
+		t.Fatalf("unexpected dev metric count after backfill: got=%d want=14 metrics=%v", len(devMetrics), devMetrics)
 	}
 	assertMetricValue(t, devMetrics, metricRunCount, 10)
-	assertMetricValue(t, devMetrics, metricFailureCount, 1)
+	assertMetricValue(t, devMetrics, metricFailureCount, 2)
+	assertMetricValue(t, devMetrics, metricFailureRowCount, 1)
+	assertMetricValue(t, devMetrics, metricFailedCIInfraRunCount, 1)
+	assertMetricValue(t, devMetrics, metricFailedProvisionRunCount, 0)
+	assertMetricValue(t, devMetrics, metricFailedE2ERunCount, 1)
 	assertMetricValue(t, devMetrics, metricCIInfraFailureCount, 0)
 	assertMetricValue(t, devMetrics, metricProvisionFailureCount, 0)
 	assertMetricValue(t, devMetrics, metricE2EFailureCount, 1)
 	assertMetricValue(t, devMetrics, metricPostGoodFailureCount, 0)
+	assertMetricValue(t, devMetrics, metricPostGoodFailedE2EJobs, 0)
 	assertMetricValue(t, devMetrics, metricPostGoodCIInfraFailureCount, 0)
 	assertMetricValue(t, devMetrics, metricPostGoodProvisionFailureCount, 0)
 	assertMetricValue(t, devMetrics, metricPostGoodE2EFailureCount, 0)
@@ -277,6 +431,10 @@ func TestMetricsRollupDailyRunOnceSkipsWhenRequiredSetAlreadyExists(t *testing.T
 	if err := store.UpsertMetricsDaily(ctx, []contracts.MetricDailyRecord{
 		{Environment: "int", Date: "2026-03-08", Metric: metricRunCount, Value: 321},
 		{Environment: "int", Date: "2026-03-08", Metric: metricFailureCount, Value: 123},
+		{Environment: "int", Date: "2026-03-08", Metric: metricFailureRowCount, Value: 111},
+		{Environment: "int", Date: "2026-03-08", Metric: metricFailedCIInfraRunCount, Value: 77},
+		{Environment: "int", Date: "2026-03-08", Metric: metricFailedProvisionRunCount, Value: 8},
+		{Environment: "int", Date: "2026-03-08", Metric: metricFailedE2ERunCount, Value: 38},
 		{Environment: "int", Date: "2026-03-08", Metric: metricCIInfraFailureCount, Value: 11},
 		{Environment: "int", Date: "2026-03-08", Metric: metricProvisionFailureCount, Value: 22},
 		{Environment: "int", Date: "2026-03-08", Metric: metricE2EFailureCount, Value: 90},
@@ -297,11 +455,15 @@ func TestMetricsRollupDailyRunOnceSkipsWhenRequiredSetAlreadyExists(t *testing.T
 
 	rows := mustReadMetricDailyRows(t, filepath.Join(dataDir, "facts", "metrics_daily.ndjson"))
 	intMetrics := toMetricMap(rows, "int", "2026-03-08")
-	if len(intMetrics) != 5 {
-		t.Fatalf("unexpected int metric count: got=%d want=5 metrics=%v", len(intMetrics), intMetrics)
+	if len(intMetrics) != 9 {
+		t.Fatalf("unexpected int metric count: got=%d want=9 metrics=%v", len(intMetrics), intMetrics)
 	}
 	assertMetricValue(t, intMetrics, metricRunCount, 321)
 	assertMetricValue(t, intMetrics, metricFailureCount, 123)
+	assertMetricValue(t, intMetrics, metricFailureRowCount, 111)
+	assertMetricValue(t, intMetrics, metricFailedCIInfraRunCount, 77)
+	assertMetricValue(t, intMetrics, metricFailedProvisionRunCount, 8)
+	assertMetricValue(t, intMetrics, metricFailedE2ERunCount, 38)
 	assertMetricValue(t, intMetrics, metricCIInfraFailureCount, 11)
 	assertMetricValue(t, intMetrics, metricProvisionFailureCount, 22)
 	assertMetricValue(t, intMetrics, metricE2EFailureCount, 90)

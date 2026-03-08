@@ -20,12 +20,15 @@ import (
 )
 
 const sourceProwFailuresReconcileInterval = 2 * time.Minute
+const sourceProwFailuresListFailuresTimeout = 45 * time.Second
 
 type sourceProwFailuresController struct {
-	logger            logr.Logger
-	reconcileInterval time.Duration
-	queue             workqueue.TypedRateLimitingInterface[string]
-	activeWindow      time.Duration
+	logger              logr.Logger
+	reconcileInterval   time.Duration
+	queue               workqueue.TypedRateLimitingInterface[string]
+	activeWindow        time.Duration
+	envSet              map[string]struct{}
+	listFailuresTimeout time.Duration
 
 	store      contracts.Store
 	prowClient prowartifacts.Client
@@ -44,9 +47,25 @@ func newSourceProwFailuresController(logger logr.Logger, deps Dependencies, clie
 	if deps.Source == nil {
 		return nil, fmt.Errorf("source.prow.failures: source options dependency is required")
 	}
+	if len(deps.Source.Environments) == 0 {
+		return nil, fmt.Errorf("source.prow.failures: no source environments configured")
+	}
 	if strings.TrimSpace(deps.Source.ProwArtifactsBaseURL) == "" {
 		return nil, fmt.Errorf("source.prow.failures: prow artifacts base URL is required")
 	}
+
+	envSet := make(map[string]struct{}, len(deps.Source.Environments))
+	for _, env := range deps.Source.Environments {
+		normalized := normalizeEnvironment(env)
+		if normalized == "" {
+			continue
+		}
+		envSet[normalized] = struct{}{}
+	}
+	if len(envSet) == 0 {
+		return nil, fmt.Errorf("source.prow.failures: no valid source environments configured")
+	}
+
 	if client == nil {
 		client = prowartifacts.NewHTTPClient(deps.Source.ProwArtifactsBaseURL)
 	}
@@ -59,10 +78,12 @@ func newSourceProwFailuresController(logger logr.Logger, deps Dependencies, clie
 				Name: SourceProwFailuresControllerName,
 			},
 		),
-		reconcileInterval: sourceProwFailuresReconcileInterval,
-		activeWindow:      activeReconcileWindow(deps.Source),
-		store:             deps.Store,
-		prowClient:        client,
+		reconcileInterval:   sourceProwFailuresReconcileInterval,
+		activeWindow:        activeReconcileWindow(deps.Source),
+		envSet:              envSet,
+		listFailuresTimeout: sourceProwFailuresListFailuresTimeout,
+		store:               deps.Store,
+		prowClient:          client,
 	}, nil
 }
 
@@ -94,7 +115,9 @@ func (c *sourceProwFailuresController) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, key := range keys {
+	c.logger.Info("Starting one full sync.", "keys", len(keys))
+	for i, key := range keys {
+		c.logger.Info("Processing run artifact sync.", "index", i+1, "total", len(keys), "key", key)
 		if err := c.processKey(ctx, key); err != nil {
 			return fmt.Errorf("failed processing key %q: %w", key, err)
 		}
@@ -152,6 +175,9 @@ func (c *sourceProwFailuresController) listKeys(ctx context.Context) ([]string, 
 		if err != nil {
 			continue
 		}
+		if !c.isEnvironmentEnabled(environment) {
+			continue
+		}
 		run, found, err := c.store.GetRun(ctx, environment, runURL)
 		if err != nil {
 			return nil, fmt.Errorf("get run metadata for key %q: %w", key, err)
@@ -165,6 +191,15 @@ func (c *sourceProwFailuresController) listKeys(ctx context.Context) ([]string, 
 		filtered = append(filtered, key)
 	}
 	return filtered, nil
+}
+
+func (c *sourceProwFailuresController) isEnvironmentEnabled(environment string) bool {
+	normalized := normalizeEnvironment(environment)
+	if normalized == "" {
+		return false
+	}
+	_, enabled := c.envSet[normalized]
+	return enabled
 }
 
 func (c *sourceProwFailuresController) processKey(ctx context.Context, key string) error {
@@ -182,9 +217,17 @@ func (c *sourceProwFailuresController) processKey(ctx context.Context, key strin
 		return nil
 	}
 
-	failures, err := c.prowClient.ListFailures(ctx, environment, runURL)
+	listCtx := ctx
+	cancel := func() {}
+	if c.listFailuresTimeout > 0 {
+		listCtx, cancel = context.WithTimeout(ctx, c.listFailuresTimeout)
+	}
+	defer cancel()
+
+	start := time.Now()
+	failures, err := c.prowClient.ListFailures(listCtx, environment, runURL)
 	if err != nil {
-		return fmt.Errorf("list failures for run %q: %w", runURL, err)
+		return fmt.Errorf("list failures for run %q after %s: %w", runURL, time.Since(start).Round(time.Millisecond), err)
 	}
 
 	records := buildArtifactFailureRecords(environment, runURL, failures)

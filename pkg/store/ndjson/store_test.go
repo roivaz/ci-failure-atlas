@@ -29,7 +29,7 @@ func TestUpsertRunsAndListRunKeys(t *testing.T) {
 	}
 
 	err = store.UpsertRuns(ctx, []contracts.RunRecord{
-		{Environment: "dev", RunURL: "https://run-a", JobName: "job-a-updated", PRNumber: 1, PRSHA: "sha-a", FinalMergedSHA: "sha-a", MergedPR: true, PostGoodCommit: true, OccurredAt: "2026-03-05T11:00:00Z"},
+		{Environment: "dev", RunURL: "https://run-a", JobName: "job-a-updated", PRNumber: 1, PRState: "closed", PRSHA: "sha-a", FinalMergedSHA: "sha-a", MergedPR: true, PostGoodCommit: true, OccurredAt: "2026-03-05T11:00:00Z"},
 	})
 	if err != nil {
 		t.Fatalf("upsert updated run: %v", err)
@@ -54,7 +54,7 @@ func TestUpsertRunsAndListRunKeys(t *testing.T) {
 	if run.JobName != "job-a-updated" || run.OccurredAt != "2026-03-05T11:00:00Z" {
 		t.Fatalf("unexpected run record: %+v", run)
 	}
-	if !run.MergedPR || !run.PostGoodCommit || run.FinalMergedSHA != "sha-a" || run.PRSHA != "sha-a" || run.PRNumber != 1 {
+	if !run.MergedPR || !run.PostGoodCommit || run.FinalMergedSHA != "sha-a" || run.PRSHA != "sha-a" || run.PRNumber != 1 || run.PRState != "closed" {
 		t.Fatalf("unexpected run merge metadata: %+v", run)
 	}
 
@@ -75,6 +75,94 @@ func TestUpsertRunsAndListRunKeys(t *testing.T) {
 	}
 	if rows[0].Environment != "dev" || rows[0].RunURL != "https://run-a" || rows[0].JobName != "job-a-updated" {
 		t.Fatalf("unexpected first run row: %+v", rows[0])
+	}
+}
+
+func TestUpsertPullRequestsAndGet(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	err = store.UpsertPullRequests(ctx, []contracts.PullRequestRecord{
+		{
+			PRNumber:       101,
+			State:          "OPEN",
+			Merged:         false,
+			HeadSHA:        "head-101-v1",
+			MergeCommitSHA: "",
+			MergedAt:       "",
+			ClosedAt:       "",
+			UpdatedAt:      "2026-03-07T10:00:00Z",
+			LastCheckedAt:  "2026-03-07T10:00:00Z",
+		},
+		{
+			PRNumber:       202,
+			State:          "closed",
+			Merged:         true,
+			HeadSHA:        "head-202-v1",
+			MergeCommitSHA: "merge-202",
+			MergedAt:       "2026-03-07T09:00:00Z",
+			ClosedAt:       "2026-03-07T09:00:00Z",
+			UpdatedAt:      "2026-03-07T09:00:00Z",
+			LastCheckedAt:  "2026-03-07T10:00:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert pull requests: %v", err)
+	}
+
+	err = store.UpsertPullRequests(ctx, []contracts.PullRequestRecord{
+		{
+			PRNumber:       101,
+			State:          "closed",
+			Merged:         false,
+			HeadSHA:        "head-101-v2",
+			MergeCommitSHA: "",
+			MergedAt:       "",
+			ClosedAt:       "2026-03-07T11:00:00Z",
+			UpdatedAt:      "2026-03-07T11:00:00Z",
+			LastCheckedAt:  "2026-03-07T11:00:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert updated pull request: %v", err)
+	}
+
+	allRows, err := store.ListPullRequests(ctx)
+	if err != nil {
+		t.Fatalf("list pull requests: %v", err)
+	}
+	if len(allRows) != 2 {
+		t.Fatalf("unexpected pull request row count: got=%d want=2", len(allRows))
+	}
+	if allRows[0].PRNumber != 101 || allRows[0].HeadSHA != "head-101-v2" || allRows[0].State != "closed" {
+		t.Fatalf("unexpected first pull request row: %+v", allRows[0])
+	}
+	if allRows[1].PRNumber != 202 || allRows[1].HeadSHA != "head-202-v1" || allRows[1].State != "closed" || !allRows[1].Merged {
+		t.Fatalf("unexpected second pull request row: %+v", allRows[1])
+	}
+
+	row, found, err := store.GetPullRequest(ctx, 202)
+	if err != nil {
+		t.Fatalf("get pull request: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected pull request 202 to be found")
+	}
+	if row.HeadSHA != "head-202-v1" || row.MergeCommitSHA != "merge-202" || !row.Merged {
+		t.Fatalf("unexpected pull request payload: %+v", row)
+	}
+
+	_, found, err = store.GetPullRequest(ctx, 999)
+	if err != nil {
+		t.Fatalf("get missing pull request: %v", err)
+	}
+	if found {
+		t.Fatalf("expected missing pull request to not be found")
 	}
 }
 

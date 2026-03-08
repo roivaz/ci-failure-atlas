@@ -60,10 +60,6 @@ func TestSourceSippyRunsSyncOnceUpsertsFailedRunsAndCheckpoint(t *testing.T) {
 				Failed:    true,
 			},
 		},
-		pullRequests: []sippysource.PullRequest{
-			{Number: 4242, SHA: "sha-4242", MergedAt: time.Date(2026, 1, 2, 6, 0, 0, 0, time.UTC)},
-			{Number: 4243, SHA: "sha-4243", MergedAt: time.Date(2026, 1, 2, 6, 0, 0, 0, time.UTC)},
-		},
 	}
 
 	controller, err := newSourceSippyRunsController(logr.Discard(), Dependencies{
@@ -84,8 +80,14 @@ func TestSourceSippyRunsSyncOnceUpsertsFailedRunsAndCheckpoint(t *testing.T) {
 	if fakeClient.calls[0].Release != "Presubmits" {
 		t.Fatalf("unexpected release: got=%q want=%q", fakeClient.calls[0].Release, "Presubmits")
 	}
-	if len(fakeClient.pullRequestCalls) != 1 {
-		t.Fatalf("expected 1 pull-request lookup call, got %d", len(fakeClient.pullRequestCalls))
+	if fakeClient.calls[0].JobName != devJobName {
+		t.Fatalf("unexpected job filter: got=%q want=%q", fakeClient.calls[0].JobName, devJobName)
+	}
+	if fakeClient.calls[0].Org == "" || fakeClient.calls[0].Repo == "" {
+		t.Fatalf("expected dev runs query to include org/repo filter, got=%+v", fakeClient.calls[0])
+	}
+	if len(fakeClient.pullRequestCalls) != 0 {
+		t.Fatalf("expected 0 pull-request lookup calls, got %d", len(fakeClient.pullRequestCalls))
 	}
 
 	keys, err := store.ListRunKeys(ctx)
@@ -105,8 +107,8 @@ func TestSourceSippyRunsSyncOnceUpsertsFailedRunsAndCheckpoint(t *testing.T) {
 	if !found {
 		t.Fatalf("expected run metadata for dev/job-a/1")
 	}
-	if !run.MergedPR || !run.PostGoodCommit || run.FinalMergedSHA != "sha-4242" {
-		t.Fatalf("unexpected run merge enrichment: %+v", run)
+	if run.MergedPR || run.PostGoodCommit || run.FinalMergedSHA != "" || run.PRState != "" {
+		t.Fatalf("unexpected run merge fields before facts.runs materialization: %+v", run)
 	}
 
 	hours, err := store.ListRunCountHourlyHours(ctx)
@@ -200,7 +202,7 @@ func TestSourceSippyRunsSyncOnceUsesCheckpointAsSince(t *testing.T) {
 	}
 }
 
-func TestSourceSippyRunsSyncOnceRefreshesUnresolvedRunMergeStatus(t *testing.T) {
+func TestSourceSippyRunsSyncOncePreservesExistingSignalsOnReplay(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -218,20 +220,27 @@ func TestSourceSippyRunsSyncOnceRefreshesUnresolvedRunMergeStatus(t *testing.T) 
 			RunURL:         runURL,
 			JobName:        "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
 			PRNumber:       5001,
+			PRState:        "closed",
 			PRSHA:          "sha-unresolved",
-			FinalMergedSHA: "",
-			MergedPR:       false,
-			PostGoodCommit: false,
+			FinalMergedSHA: "sha-unresolved",
+			MergedPR:       true,
+			PostGoodCommit: true,
 			OccurredAt:     occurredAt,
 		},
 	}); err != nil {
-		t.Fatalf("seed unresolved run: %v", err)
+		t.Fatalf("seed existing run: %v", err)
 	}
 
 	fakeClient := &fakeSippyClient{
-		runs: []sippysource.JobRun{},
-		pullRequests: []sippysource.PullRequest{
-			{Number: 5001, SHA: "sha-unresolved", MergedAt: time.Now().UTC()},
+		runs: []sippysource.JobRun{
+			{
+				RunURL:    runURL,
+				JobName:   "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+				PRNumber:  5001,
+				PRSHA:     "sha-unresolved",
+				StartedAt: time.Now().UTC(),
+				Failed:    true,
+			},
 		},
 	}
 	controller, err := newSourceSippyRunsController(logr.Discard(), Dependencies{
@@ -251,10 +260,85 @@ func TestSourceSippyRunsSyncOnceRefreshesUnresolvedRunMergeStatus(t *testing.T) 
 		t.Fatalf("get run metadata: %v", err)
 	}
 	if !found {
-		t.Fatalf("expected refreshed unresolved run to exist")
+		t.Fatalf("expected replayed run to exist")
 	}
-	if !run.MergedPR || run.FinalMergedSHA != "sha-unresolved" || !run.PostGoodCommit {
-		t.Fatalf("expected unresolved run to be refreshed with merged status, got=%+v", run)
+	if !run.MergedPR || run.FinalMergedSHA != "sha-unresolved" || !run.PostGoodCommit || run.PRState != "closed" {
+		t.Fatalf("expected existing merge signals to be preserved by source.sippy.runs replay, got=%+v", run)
+	}
+}
+
+func TestSourceSippyRunsSyncOncePeriodicEnvSkipsPRLookupAndMarksPostGood(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := ndjson.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	intJobName, err := sippyJobNameForEnvironment("int")
+	if err != nil {
+		t.Fatalf("resolve int job name: %v", err)
+	}
+
+	runURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/job-int/1"
+	fakeClient := &fakeSippyClient{
+		runs: []sippysource.JobRun{
+			{
+				RunURL:    runURL,
+				JobName:   intJobName,
+				PRNumber:  7777, // Intentionally set to prove no PR lookup is attempted for periodic envs.
+				PRSHA:     "sha-7777",
+				StartedAt: time.Date(2026, 1, 2, 6, 4, 5, 0, time.UTC),
+				Failed:    true,
+			},
+		},
+		pullRequests: []sippysource.PullRequest{
+			{Number: 7777, SHA: "sha-7777", MergedAt: time.Date(2026, 1, 2, 7, 0, 0, 0, time.UTC)},
+		},
+	}
+
+	controller, err := newSourceSippyRunsController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"int"}),
+	}, fakeClient)
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+
+	if err := controller.SyncOnce(ctx); err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+
+	if len(fakeClient.pullRequestCalls) != 0 {
+		t.Fatalf("expected 0 pull-request lookup calls for periodic env, got %d", len(fakeClient.pullRequestCalls))
+	}
+	if len(fakeClient.calls) != 1 {
+		t.Fatalf("expected 1 ListJobRuns call for periodic env, got %d", len(fakeClient.calls))
+	}
+	if fakeClient.calls[0].JobName != intJobName {
+		t.Fatalf("unexpected job filter for periodic env: got=%q want=%q", fakeClient.calls[0].JobName, intJobName)
+	}
+	if fakeClient.calls[0].Org != "" || fakeClient.calls[0].Repo != "" {
+		t.Fatalf("expected periodic env runs query to omit org/repo filter, got=%+v", fakeClient.calls[0])
+	}
+
+	run, found, err := store.GetRun(ctx, "int", runURL)
+	if err != nil {
+		t.Fatalf("get run metadata: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected run metadata for int/job-int/1")
+	}
+	if !run.PostGoodCommit {
+		t.Fatalf("expected periodic env runs to be marked post-good, got=%+v", run)
+	}
+	if !run.MergedPR {
+		t.Fatalf("expected periodic env runs to be treated as merged-code signal, got=%+v", run)
+	}
+	if run.FinalMergedSHA != "" {
+		t.Fatalf("expected no merged SHA lookup for periodic env, got=%q", run.FinalMergedSHA)
 	}
 }
 

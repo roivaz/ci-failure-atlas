@@ -7,6 +7,24 @@ import (
 	"time"
 )
 
+func TestDefaultOptionsSetsEnvironmentReleases(t *testing.T) {
+	t.Parallel()
+
+	raw := DefaultOptions()
+	if raw.SippyReleaseDev != "Presubmits" {
+		t.Fatalf("unexpected dev release default: got=%q want=%q", raw.SippyReleaseDev, "Presubmits")
+	}
+	if raw.SippyReleaseInt != "aro-integration" {
+		t.Fatalf("unexpected int release default: got=%q want=%q", raw.SippyReleaseInt, "aro-integration")
+	}
+	if raw.SippyReleaseStg != "aro-stage" {
+		t.Fatalf("unexpected stg release default: got=%q want=%q", raw.SippyReleaseStg, "aro-stage")
+	}
+	if raw.SippyReleaseProd != "aro-production" {
+		t.Fatalf("unexpected prod release default: got=%q want=%q", raw.SippyReleaseProd, "aro-production")
+	}
+}
+
 func TestValidateAndCompleteEnvironments(t *testing.T) {
 	t.Parallel()
 

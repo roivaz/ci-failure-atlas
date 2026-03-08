@@ -30,6 +30,7 @@ type factsRawFailuresController struct {
 	queue                   workqueue.TypedRateLimitingInterface[string]
 	activeWindow            time.Duration
 	unresolvedPRRetryWindow time.Duration
+	envSet                  map[string]struct{}
 
 	store contracts.Store
 }
@@ -44,6 +45,24 @@ func newFactsRawFailuresController(logger logr.Logger, deps Dependencies) (*fact
 	if deps.Store == nil {
 		return nil, fmt.Errorf("facts.raw-failures: store dependency is required")
 	}
+	if deps.Source == nil {
+		return nil, fmt.Errorf("facts.raw-failures: source options dependency is required")
+	}
+	if len(deps.Source.Environments) == 0 {
+		return nil, fmt.Errorf("facts.raw-failures: no source environments configured")
+	}
+
+	envSet := make(map[string]struct{}, len(deps.Source.Environments))
+	for _, env := range deps.Source.Environments {
+		normalized := normalizeEnvironment(env)
+		if normalized == "" {
+			continue
+		}
+		envSet[normalized] = struct{}{}
+	}
+	if len(envSet) == 0 {
+		return nil, fmt.Errorf("facts.raw-failures: no valid source environments configured")
+	}
 
 	return &factsRawFailuresController{
 		logger: logger.WithValues("controller", FactsRawFailuresControllerName),
@@ -56,6 +75,7 @@ func newFactsRawFailuresController(logger logr.Logger, deps Dependencies) (*fact
 		reconcileInterval:       factsRawFailuresReconcileInterval,
 		activeWindow:            activeReconcileWindow(deps.Source),
 		unresolvedPRRetryWindow: unresolvedPRRetryWindow(deps.Source),
+		envSet:                  envSet,
 		store:                   deps.Store,
 	}, nil
 }
@@ -171,6 +191,9 @@ func (c *factsRawFailuresController) listKeys(ctx context.Context) ([]string, er
 		if err != nil {
 			continue
 		}
+		if !c.isEnvironmentEnabled(environment) {
+			continue
+		}
 		run, found, err := c.store.GetRun(ctx, environment, runURL)
 		if err != nil {
 			return nil, fmt.Errorf("get run metadata for key %q: %w", key, err)
@@ -184,12 +207,22 @@ func (c *factsRawFailuresController) listKeys(ctx context.Context) ([]string, er
 		if !isRunWithinActiveWindow(run, c.activeWindow, now) {
 			continue
 		}
-		if run.PRNumber > 0 && !run.MergedPR && !isRunWithinUnresolvedRetryWindow(run, c.unresolvedPRRetryWindow, now) {
+		if run.PRNumber > 0 && !run.MergedPR && strings.EqualFold(strings.TrimSpace(run.PRState), "closed") {
+			// Closed and not merged is a terminal state for post-good reconciliation.
 			continue
 		}
 		filtered = append(filtered, key)
 	}
 	return filtered, nil
+}
+
+func (c *factsRawFailuresController) isEnvironmentEnabled(environment string) bool {
+	normalized := normalizeEnvironment(environment)
+	if normalized == "" {
+		return false
+	}
+	_, enabled := c.envSet[normalized]
+	return enabled
 }
 
 func (c *factsRawFailuresController) processKey(ctx context.Context, key string) error {
