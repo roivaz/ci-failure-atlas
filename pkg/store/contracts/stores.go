@@ -174,6 +174,9 @@ type SemanticStore interface {
 	UpsertTestClusters(ctx context.Context, rows []semanticcontracts.TestClusterRecord) error
 	ListTestClusters(ctx context.Context) ([]semanticcontracts.TestClusterRecord, error)
 
+	UpsertGlobalClusters(ctx context.Context, rows []semanticcontracts.GlobalClusterRecord) error
+	ListGlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error)
+
 	UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.ReviewItemRecord) error
 	ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error)
 }

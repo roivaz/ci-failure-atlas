@@ -19,10 +19,12 @@ import (
 )
 
 type Options struct {
-	OutputPath string
-	TopTests   int
-	RecentRuns int
-	MinRuns    int
+	OutputPath         string
+	TopTests           int
+	RecentRuns         int
+	MinRuns            int
+	Environments       []string
+	SplitByEnvironment bool
 }
 
 type reference struct {
@@ -67,6 +69,7 @@ type rawFailureRecord struct {
 }
 
 type reviewItem struct {
+	Environment            string   `json:"environment"`
 	SchemaVersion          string   `json:"schema_version"`
 	ReviewItemID           string   `json:"review_item_id"`
 	Phase                  string   `json:"phase"`
@@ -125,10 +128,11 @@ func Run(ctx context.Context, args []string) error {
 
 func DefaultOptions() Options {
 	return Options{
-		OutputPath: "data/reports/test-failure-summary.md",
-		TopTests:   0,
-		RecentRuns: 4,
-		MinRuns:    0,
+		OutputPath:         "data/reports/test-failure-summary.md",
+		TopTests:           0,
+		RecentRuns:         4,
+		MinRuns:            0,
+		SplitByEnvironment: false,
 	}
 }
 
@@ -147,18 +151,74 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	if err != nil {
 		return fmt.Errorf("list test clusters: %w", err)
 	}
-	testClusters := toReportTestClusters(storedClusters)
-
-	metadataByFull, metadataByNoSuite, fullErrorsByReference, err := loadRawMetadataFromStore(ctx, store, testClusters)
-	if err != nil {
-		return fmt.Errorf("load raw failure metadata: %w", err)
-	}
 	reviewItems, err := loadReviewItemsFromStore(ctx, store)
 	if err != nil {
 		return fmt.Errorf("read review queue: %w", err)
 	}
-	reviewIndex := buildReviewSignalIndex(reviewItems)
+	if validated.SplitByEnvironment {
+		targetEnvs := resolveTestSummaryTargetEnvironments(validated.Environments, storedClusters, reviewItems)
+		if len(targetEnvs) == 0 {
+			targetEnvs = []string{"unknown"}
+		}
+		for _, environment := range targetEnvs {
+			filteredStoredClusters := filterStoredTestClustersByEnvironment(storedClusters, environment)
+			testClusters := toReportTestClusters(filteredStoredClusters)
+			metadataByFull, metadataByNoSuite, fullErrorsByReference, err := loadRawMetadataFromStore(ctx, store, testClusters)
+			if err != nil {
+				return fmt.Errorf("load raw failure metadata for environment %q: %w", environment, err)
+			}
+			filteredReviewItems := filterReviewItemsByEnvironment(reviewItems, environment)
+			reviewIndex := buildReviewSignalIndex(filteredReviewItems)
+			report := buildMarkdown(
+				testClusters,
+				metadataByFull,
+				metadataByNoSuite,
+				fullErrorsByReference,
+				reviewIndex,
+				"store:test_clusters",
+				"store:raw_failures",
+				time.Now().UTC(),
+				validated.TopTests,
+				validated.RecentRuns,
+				validated.MinRuns,
+			)
+			outputPath := outputPathForEnvironment(validated.OutputPath, environment)
+			if err := writeTestSummary(outputPath, report); err != nil {
+				return err
+			}
+			logger.Info(
+				"Wrote per-test summary markdown.",
+				"output", outputPath,
+				"environment", environment,
+				"testClusters", len(testClusters),
+				"metadataByFull", len(metadataByFull),
+				"metadataByNoSuite", len(metadataByNoSuite),
+				"fullErrorReferences", len(fullErrorsByReference),
+				"reviewItems", len(filteredReviewItems),
+				"topTests", validated.TopTests,
+				"recentRuns", validated.RecentRuns,
+				"minRuns", validated.MinRuns,
+			)
+		}
+		return nil
+	}
 
+	filteredStoredClusters := storedClusters
+	filteredReviewItems := reviewItems
+	if len(validated.Environments) > 0 {
+		envSet := make(map[string]struct{}, len(validated.Environments))
+		for _, environment := range validated.Environments {
+			envSet[normalizeReportEnvironment(environment)] = struct{}{}
+		}
+		filteredStoredClusters = filterStoredTestClustersByEnvironmentSet(storedClusters, envSet)
+		filteredReviewItems = filterReviewItemsByEnvironmentSet(reviewItems, envSet)
+	}
+	testClusters := toReportTestClusters(filteredStoredClusters)
+	metadataByFull, metadataByNoSuite, fullErrorsByReference, err := loadRawMetadataFromStore(ctx, store, testClusters)
+	if err != nil {
+		return fmt.Errorf("load raw failure metadata: %w", err)
+	}
+	reviewIndex := buildReviewSignalIndex(filteredReviewItems)
 	report := buildMarkdown(
 		testClusters,
 		metadataByFull,
@@ -172,12 +232,8 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		validated.RecentRuns,
 		validated.MinRuns,
 	)
-
-	if err := os.MkdirAll(filepath.Dir(validated.OutputPath), 0o755); err != nil {
-		return fmt.Errorf("create test summary output directory: %w", err)
-	}
-	if err := os.WriteFile(validated.OutputPath, []byte(report), 0o644); err != nil {
-		return fmt.Errorf("write test summary markdown: %w", err)
+	if err := writeTestSummary(validated.OutputPath, report); err != nil {
+		return err
 	}
 
 	logger.Info(
@@ -187,7 +243,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		"metadataByFull", len(metadataByFull),
 		"metadataByNoSuite", len(metadataByNoSuite),
 		"fullErrorReferences", len(fullErrorsByReference),
-		"reviewItems", len(reviewItems),
+		"reviewItems", len(filteredReviewItems),
 		"topTests", validated.TopTests,
 		"recentRuns", validated.RecentRuns,
 		"minRuns", validated.MinRuns,
@@ -197,15 +253,21 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 
 func parse(args []string) (Options, error) {
 	opts := DefaultOptions()
+	sourceEnvs := strings.Join(opts.Environments, ",")
 
 	fs := flag.NewFlagSet("test-summary", flag.ContinueOnError)
 	fs.StringVar(&opts.OutputPath, "output", opts.OutputPath, "path to output markdown summary")
 	fs.IntVar(&opts.TopTests, "top", opts.TopTests, "max number of tests to render (0 renders all)")
 	fs.IntVar(&opts.RecentRuns, "recent", opts.RecentRuns, "recent failing runs to render per signature")
 	fs.IntVar(&opts.MinRuns, "min-runs", opts.MinRuns, "minimum observed runs required to include a test in report (0 disables filter)")
+	fs.StringVar(&sourceEnvs, "source.envs", sourceEnvs, "environments to include (comma-separated, e.g. dev,int,stg,prod)")
+	fs.BoolVar(&opts.SplitByEnvironment, "split-by-env", opts.SplitByEnvironment, "write one output file per environment using <output>.<env>.<ext>")
 
 	if err := fs.Parse(args); err != nil {
 		return Options{}, err
+	}
+	if strings.TrimSpace(sourceEnvs) != "" {
+		opts.Environments = strings.Split(sourceEnvs, ",")
 	}
 	return validateOptions(opts)
 }
@@ -223,6 +285,7 @@ func validateOptions(opts Options) (Options, error) {
 	if opts.MinRuns < 0 {
 		return Options{}, errors.New("--min-runs must be >= 0")
 	}
+	opts.Environments = normalizeReportEnvironments(opts.Environments)
 	return opts, nil
 }
 
@@ -273,6 +336,7 @@ func loadReviewItemsFromStore(ctx context.Context, store storecontracts.Store) (
 	out := make([]reviewItem, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, reviewItem{
+			Environment:            strings.TrimSpace(row.Environment),
 			SchemaVersion:          strings.TrimSpace(row.SchemaVersion),
 			ReviewItemID:           strings.TrimSpace(row.ReviewItemID),
 			Phase:                  strings.TrimSpace(row.Phase),
@@ -282,6 +346,133 @@ func loadReviewItemsFromStore(ctx context.Context, store storecontracts.Store) (
 		})
 	}
 	return out, nil
+}
+
+func writeTestSummary(outputPath string, report string) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("create test summary output directory: %w", err)
+	}
+	if err := os.WriteFile(outputPath, []byte(report), 0o644); err != nil {
+		return fmt.Errorf("write test summary markdown: %w", err)
+	}
+	return nil
+}
+
+func normalizeReportEnvironments(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	set := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeReportEnvironment(value)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := set[normalized]; exists {
+			continue
+		}
+		set[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeReportEnvironment(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func resolveTestSummaryTargetEnvironments(
+	configured []string,
+	testClusters []semanticcontracts.TestClusterRecord,
+	reviewItems []reviewItem,
+) []string {
+	normalizedConfigured := normalizeReportEnvironments(configured)
+	if len(normalizedConfigured) > 0 {
+		return normalizedConfigured
+	}
+	set := map[string]struct{}{}
+	for _, row := range testClusters {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		set[environment] = struct{}{}
+	}
+	for _, row := range reviewItems {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		set[environment] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for environment := range set {
+		out = append(out, environment)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func outputPathForEnvironment(outputPath, environment string) string {
+	base := strings.TrimSpace(outputPath)
+	env := normalizeReportEnvironment(environment)
+	if base == "" || env == "" {
+		return base
+	}
+	ext := filepath.Ext(base)
+	baseWithoutExt := strings.TrimSuffix(base, ext)
+	if strings.HasSuffix(baseWithoutExt, "."+env) {
+		return base
+	}
+	if ext == "" {
+		return base + "." + env
+	}
+	return baseWithoutExt + "." + env + ext
+}
+
+func filterStoredTestClustersByEnvironment(rows []semanticcontracts.TestClusterRecord, environment string) []semanticcontracts.TestClusterRecord {
+	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
+	return filterStoredTestClustersByEnvironmentSet(rows, envSet)
+}
+
+func filterStoredTestClustersByEnvironmentSet(rows []semanticcontracts.TestClusterRecord, envSet map[string]struct{}) []semanticcontracts.TestClusterRecord {
+	if len(envSet) == 0 {
+		return append([]semanticcontracts.TestClusterRecord(nil), rows...)
+	}
+	out := make([]semanticcontracts.TestClusterRecord, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := envSet[environment]; !ok {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func filterReviewItemsByEnvironment(rows []reviewItem, environment string) []reviewItem {
+	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
+	return filterReviewItemsByEnvironmentSet(rows, envSet)
+}
+
+func filterReviewItemsByEnvironmentSet(rows []reviewItem, envSet map[string]struct{}) []reviewItem {
+	if len(envSet) == 0 {
+		return append([]reviewItem(nil), rows...)
+	}
+	out := make([]reviewItem, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := envSet[environment]; !ok {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 func loadRawMetadataFromStore(

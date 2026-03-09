@@ -128,8 +128,8 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"segment-label",
 		"60.0%",
 		"20.0%",
+		"85.71%",
 		"S:6",
-		"S:9",
 		"P:1",
 		"E2E:2",
 		"CI:1",
@@ -147,5 +147,8 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		if strings.Contains(report, snippet) {
 			t.Fatalf("expected report to not contain %q", snippet)
 		}
+	}
+	if strings.Contains(report, "S:9") {
+		t.Fatalf("expected post-good successful runs to not exceed baseline success count; report=%q", report)
 	}
 }

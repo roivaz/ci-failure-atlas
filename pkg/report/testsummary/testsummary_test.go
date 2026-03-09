@@ -1,9 +1,18 @@
 package testsummary
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-logr/logr"
+
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	storecontracts "ci-failure-atlas/pkg/store/contracts"
+	"ci-failure-atlas/pkg/store/ndjson"
 )
 
 func TestBuildMarkdownHighlightsSignalsAndWarnings(t *testing.T) {
@@ -446,5 +455,147 @@ func TestClusterDailyDensitySparklineAnchorsToGeneratedAtWindow(t *testing.T) {
 	}
 	if got, want := formatCounts(counts), "0,0,0,0"; got != want {
 		t.Fatalf("unexpected counts: got %q want %q", got, want)
+	}
+}
+
+func TestGenerateWritesPerEnvironmentFilesWhenSplitEnabled(t *testing.T) {
+	t.Parallel()
+
+	ctx := logr.NewContext(context.Background(), logr.Discard())
+	store, err := ndjson.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertTestClusters(ctx, []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase1ClusterID:         "cluster-dev",
+			Lane:                    "e2e",
+			JobName:                 "job-dev",
+			TestName:                "dev test",
+			TestSuite:               "suite-dev",
+			CanonicalEvidencePhrase: "dev failure phrase",
+			SearchQueryPhrase:       "dev query",
+			SupportCount:            1,
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      "https://prow.example/run/dev-1",
+					OccurredAt:  "2026-03-05T10:00:00Z",
+					SignatureID: "sig-dev",
+				},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "int",
+			Phase1ClusterID:         "cluster-int",
+			Lane:                    "e2e",
+			JobName:                 "job-int",
+			TestName:                "int test",
+			TestSuite:               "suite-int",
+			CanonicalEvidencePhrase: "int failure phrase",
+			SearchQueryPhrase:       "int query",
+			SupportCount:            1,
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      "https://prow.example/run/int-1",
+					OccurredAt:  "2026-03-05T11:00:00Z",
+					SignatureID: "sig-int",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed test clusters: %v", err)
+	}
+
+	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example/run/dev-1",
+			JobName:     "job-dev",
+			OccurredAt:  "2026-03-05T10:00:00Z",
+		},
+		{
+			Environment: "int",
+			RunURL:      "https://prow.example/run/int-1",
+			JobName:     "job-int",
+			OccurredAt:  "2026-03-05T11:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+
+	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment: "dev",
+			RowID:       "dev-row-1",
+			RunURL:      "https://prow.example/run/dev-1",
+			SignatureID: "sig-dev",
+			RawText:     "full dev error",
+		},
+		{
+			Environment: "int",
+			RowID:       "int-row-1",
+			RunURL:      "https://prow.example/run/int-1",
+			SignatureID: "sig-int",
+			RawText:     "full int error",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	if err := store.UpsertReviewQueue(ctx, []semanticcontracts.ReviewItemRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			Environment:   "dev",
+			ReviewItemID:  "review-dev",
+			Phase:         "phase1",
+			Reason:        "dev-review",
+		},
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			Environment:   "int",
+			ReviewItemID:  "review-int",
+			Phase:         "phase1",
+			Reason:        "int-review",
+		},
+	}); err != nil {
+		t.Fatalf("seed review queue: %v", err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "test-failure-summary.md")
+	opts := DefaultOptions()
+	opts.OutputPath = outputPath
+	opts.SplitByEnvironment = true
+	opts.Environments = []string{"dev", "int"}
+
+	if err := Generate(ctx, store, opts); err != nil {
+		t.Fatalf("generate test summary: %v", err)
+	}
+
+	devPath := filepath.Join(filepath.Dir(outputPath), "test-failure-summary.dev.md")
+	intPath := filepath.Join(filepath.Dir(outputPath), "test-failure-summary.int.md")
+	devReport, err := os.ReadFile(devPath)
+	if err != nil {
+		t.Fatalf("read dev report: %v", err)
+	}
+	intReport, err := os.ReadFile(intPath)
+	if err != nil {
+		t.Fatalf("read int report: %v", err)
+	}
+	if !strings.Contains(string(devReport), "## 1. dev test") {
+		t.Fatalf("expected dev report to include dev test: %q", string(devReport))
+	}
+	if strings.Contains(string(devReport), "## 1. int test") || strings.Contains(string(devReport), "int test") {
+		t.Fatalf("did not expect dev report to include int test: %q", string(devReport))
+	}
+	if !strings.Contains(string(intReport), "## 1. int test") {
+		t.Fatalf("expected int report to include int test: %q", string(intReport))
+	}
+	if strings.Contains(string(intReport), "## 1. dev test") || strings.Contains(string(intReport), "dev test") {
+		t.Fatalf("did not expect int report to include dev test: %q", string(intReport))
 	}
 }

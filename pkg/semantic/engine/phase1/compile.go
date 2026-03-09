@@ -13,6 +13,7 @@ import (
 var rePlaceholderToken = regexp.MustCompile(`<[^>]+>`)
 
 type clusterAccumulator struct {
+	Environment         string
 	GroupKey            string
 	LocalClusterKey     string
 	Lane                string
@@ -65,7 +66,7 @@ func Compile(
 			continue
 		}
 
-		derivedGroupKey := buildGroupKey(row.Lane, row.JobName, row.TestName)
+		derivedGroupKey := buildGroupKey(row.Environment, row.Lane, row.JobName, row.TestName)
 		assignmentGroupKey := strings.TrimSpace(assignment.GroupKey)
 		if assignmentGroupKey == "" {
 			assignmentGroupKey = derivedGroupKey
@@ -91,6 +92,7 @@ func Compile(
 		acc, exists := accumulators[accKey]
 		if !exists {
 			acc = &clusterAccumulator{
+				Environment:         defaultKeyPart(row.Environment, "unknown"),
 				GroupKey:            assignmentGroupKey,
 				LocalClusterKey:     localClusterKey,
 				Lane:                defaultKeyPart(row.Lane, "unknown"),
@@ -168,7 +170,7 @@ func Compile(
 		}
 
 		memberSignatures := sortedKeys(acc.MemberSignatures)
-		clusterIDBase := fingerprint(acc.Lane + "|" + acc.JobName + "|" + acc.TestName + "|" + strings.Join(memberSignatures, ","))
+		clusterIDBase := fingerprint(acc.Environment + "|" + acc.Lane + "|" + acc.JobName + "|" + acc.TestName + "|" + strings.Join(memberSignatures, ","))
 		clusterID := clusterIDBase
 		clusterIDCounts[clusterIDBase]++
 		if clusterIDCounts[clusterIDBase] > 1 {
@@ -206,6 +208,7 @@ func Compile(
 
 		cluster := semanticcontracts.TestClusterRecord{
 			SchemaVersion:                semanticcontracts.SchemaVersionV1,
+			Environment:                  acc.Environment,
 			Phase1ClusterID:              clusterID,
 			Lane:                         acc.Lane,
 			JobName:                      acc.JobName,
@@ -251,9 +254,10 @@ func Compile(
 func buildReviewItem(cluster semanticcontracts.TestClusterRecord, reason string) semanticcontracts.ReviewItemRecord {
 	sourceIDs := []string{cluster.Phase1ClusterID}
 	memberSignatures := append([]string(nil), cluster.MemberSignatureIDs...)
-	reviewID := fingerprint("phase1|" + reason + "|" + strings.Join(sourceIDs, ",") + "|" + strings.Join(memberSignatures, ","))
+	reviewID := fingerprint(strings.TrimSpace(cluster.Environment) + "|phase1|" + reason + "|" + strings.Join(sourceIDs, ",") + "|" + strings.Join(memberSignatures, ","))
 	return semanticcontracts.ReviewItemRecord{
 		SchemaVersion:                        semanticcontracts.SchemaVersionV1,
+		Environment:                          strings.TrimSpace(cluster.Environment),
 		ReviewItemID:                         reviewID,
 		Phase:                                "phase1",
 		Reason:                               reason,

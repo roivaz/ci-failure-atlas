@@ -13,16 +13,21 @@ func BuildWorkset(rawFailures []storecontracts.RawFailureRecord, runs []storecon
 	runsByKey := map[string]storecontracts.RunRecord{}
 	for _, run := range runs {
 		normalized := storecontracts.RunRecord{
-			Environment: strings.ToLower(strings.TrimSpace(run.Environment)),
-			RunURL:      strings.TrimSpace(run.RunURL),
-			JobName:     strings.TrimSpace(run.JobName),
-			PRNumber:    run.PRNumber,
-			OccurredAt:  strings.TrimSpace(run.OccurredAt),
+			Environment:    strings.ToLower(strings.TrimSpace(run.Environment)),
+			RunURL:         strings.TrimSpace(run.RunURL),
+			JobName:        strings.TrimSpace(run.JobName),
+			PRNumber:       run.PRNumber,
+			PRState:        strings.TrimSpace(run.PRState),
+			PRSHA:          strings.TrimSpace(run.PRSHA),
+			FinalMergedSHA: strings.TrimSpace(run.FinalMergedSHA),
+			MergedPR:       run.MergedPR,
+			PostGoodCommit: run.PostGoodCommit,
+			OccurredAt:     strings.TrimSpace(run.OccurredAt),
 		}
 		if normalized.Environment == "" || normalized.RunURL == "" {
 			continue
 		}
-		runsByKey[normalized.Environment+"|"+normalized.RunURL] = run
+		runsByKey[normalized.Environment+"|"+normalized.RunURL] = normalized
 	}
 
 	workset := make([]semanticcontracts.Phase1WorksetRecord, 0, len(rawFailures))
@@ -62,11 +67,16 @@ func BuildWorkset(rawFailures []storecontracts.RawFailureRecord, runs []storecon
 			}
 			signatureID = fingerprint(base)
 		}
+		rowID := strings.TrimSpace(row.RowID)
+		if rowID == "" {
+			rowID = buildRowIDWithEnvironment(environment, runURL, signatureID, occurredAt)
+		}
 
 		workset = append(workset, semanticcontracts.Phase1WorksetRecord{
 			SchemaVersion:  semanticcontracts.SchemaVersionV1,
-			RowID:          buildRowID(runURL, signatureID, occurredAt),
-			GroupKey:       buildGroupKey(lane, defaultKeyPart(jobName, "unknown"), defaultKeyPart(testName, "unknown")),
+			Environment:    environment,
+			RowID:          rowID,
+			GroupKey:       buildGroupKey(environment, lane, defaultKeyPart(jobName, "unknown"), defaultKeyPart(testName, "unknown")),
 			Lane:           defaultKeyPart(lane, "unknown"),
 			JobName:        defaultKeyPart(jobName, "unknown"),
 			TestName:       defaultKeyPart(testName, "unknown"),

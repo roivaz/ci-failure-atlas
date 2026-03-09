@@ -92,6 +92,7 @@ func Normalize(workset []semanticcontracts.Phase1WorksetRecord) []semanticcontra
 		evidence := extractEvidence(row.RawText)
 		out = append(out, semanticcontracts.Phase1NormalizedRecord{
 			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             strings.TrimSpace(row.Environment),
 			RowID:                   row.RowID,
 			GroupKey:                row.GroupKey,
 			Lane:                    row.Lane,

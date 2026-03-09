@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ci-failure-atlas/pkg/ndjsonoptions"
+	reportsummary "ci-failure-atlas/pkg/report/summary"
 	reporttestsummary "ci-failure-atlas/pkg/report/testsummary"
 	reportweekly "ci-failure-atlas/pkg/report/weekly"
 	"ci-failure-atlas/pkg/store/ndjson"
@@ -18,6 +19,40 @@ func NewReportCommand() (*cobra.Command, error) {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+
+	summaryOpts := reportsummary.DefaultOptions()
+	summaryNDJSONOpts := ndjsonoptions.DefaultOptions()
+	summaryCmd := &cobra.Command{
+		Use:   "summary",
+		Short: "Generate triage summary report.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			validated, err := summaryNDJSONOpts.Validate()
+			if err != nil {
+				return err
+			}
+			completed, err := validated.Complete(cmd.Context())
+			if err != nil {
+				return err
+			}
+			store, err := ndjson.New(completed.DataDirectory)
+			if err != nil {
+				return fmt.Errorf("create NDJSON store: %w", err)
+			}
+			defer func() {
+				_ = store.Close()
+			}()
+
+			return reportsummary.Generate(cmd.Context(), store, summaryOpts)
+		},
+	}
+	if err := ndjsonoptions.BindNDJSONOptions(summaryNDJSONOpts, summaryCmd); err != nil {
+		return nil, fmt.Errorf("bind NDJSON options for report summary: %w", err)
+	}
+	summaryCmd.Flags().StringVar(&summaryOpts.OutputPath, "output", summaryOpts.OutputPath, "path to output markdown summary")
+	summaryCmd.Flags().IntVar(&summaryOpts.Top, "top", summaryOpts.Top, "number of top rows to include in sections")
+	summaryCmd.Flags().Float64Var(&summaryOpts.MinPercent, "min-percent", summaryOpts.MinPercent, "minimum percent threshold for including rows")
+	summaryCmd.Flags().StringSliceVar(&summaryOpts.Environments, "source.envs", summaryOpts.Environments, "environments to include (e.g. dev,int,stg,prod)")
+	summaryCmd.Flags().BoolVar(&summaryOpts.SplitByEnvironment, "split-by-env", summaryOpts.SplitByEnvironment, "write one output file per environment using <output>.<env>.<ext>")
 
 	testSummaryOpts := reporttestsummary.DefaultOptions()
 	testSummaryNDJSONOpts := ndjsonoptions.DefaultOptions()
@@ -51,6 +86,8 @@ func NewReportCommand() (*cobra.Command, error) {
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.TopTests, "top", testSummaryOpts.TopTests, "max number of tests to render (0 = all)")
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.RecentRuns, "recent", testSummaryOpts.RecentRuns, "recent failing runs to render per signature")
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.MinRuns, "min-runs", testSummaryOpts.MinRuns, "minimum runs threshold for including a test")
+	testSummaryCmd.Flags().StringSliceVar(&testSummaryOpts.Environments, "source.envs", testSummaryOpts.Environments, "environments to include (e.g. dev,int,stg,prod)")
+	testSummaryCmd.Flags().BoolVar(&testSummaryOpts.SplitByEnvironment, "split-by-env", testSummaryOpts.SplitByEnvironment, "write one output file per environment using <output>.<env>.<ext>")
 
 	weeklyOpts := reportweekly.DefaultOptions()
 	weeklyNDJSONOpts := ndjsonoptions.DefaultOptions()
@@ -86,13 +123,7 @@ func NewReportCommand() (*cobra.Command, error) {
 	}
 
 	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "summary",
-			Short: "Generate triage summary report.",
-			RunE: func(_ *cobra.Command, _ []string) error {
-				return fmt.Errorf("report summary not implemented yet (pending global cross-test merge phase)")
-			},
-		},
+		summaryCmd,
 		testSummaryCmd,
 		weeklyCmd,
 	)

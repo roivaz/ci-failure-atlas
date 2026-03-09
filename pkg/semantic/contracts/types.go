@@ -4,6 +4,7 @@ const SchemaVersionV1 = "v1"
 
 type Phase1WorksetRecord struct {
 	SchemaVersion  string `json:"schema_version"`
+	Environment    string `json:"environment"`
 	RowID          string `json:"row_id"`
 	GroupKey       string `json:"group_key"`
 	Lane           string `json:"lane"`
@@ -21,6 +22,7 @@ type Phase1WorksetRecord struct {
 
 type Phase1NormalizedRecord struct {
 	SchemaVersion           string `json:"schema_version"`
+	Environment             string `json:"environment"`
 	RowID                   string `json:"row_id"`
 	GroupKey                string `json:"group_key"`
 	Lane                    string `json:"lane"`
@@ -43,6 +45,7 @@ type Phase1NormalizedRecord struct {
 
 type Phase1AssignmentRecord struct {
 	SchemaVersion                    string   `json:"schema_version"`
+	Environment                      string   `json:"environment"`
 	RowID                            string   `json:"row_id"`
 	GroupKey                         string   `json:"group_key"`
 	Phase1LocalClusterKey            string   `json:"phase1_local_cluster_key"`
@@ -63,6 +66,7 @@ type ReferenceRecord struct {
 
 type TestClusterRecord struct {
 	SchemaVersion                string            `json:"schema_version"`
+	Environment                  string            `json:"environment"`
 	Phase1ClusterID              string            `json:"phase1_cluster_id"`
 	Lane                         string            `json:"lane"`
 	JobName                      string            `json:"job_name"`
@@ -79,8 +83,34 @@ type TestClusterRecord struct {
 	References                   []ReferenceRecord `json:"references"`
 }
 
+type ContributingTestRecord struct {
+	Lane         string `json:"lane"`
+	JobName      string `json:"job_name"`
+	TestName     string `json:"test_name"`
+	SupportCount int    `json:"support_count"`
+}
+
+type GlobalClusterRecord struct {
+	SchemaVersion                string                   `json:"schema_version"`
+	Environment                  string                   `json:"environment"`
+	Phase2ClusterID              string                   `json:"phase2_cluster_id"`
+	CanonicalEvidencePhrase      string                   `json:"canonical_evidence_phrase"`
+	SearchQueryPhrase            string                   `json:"search_query_phrase"`
+	SearchQuerySourceRunURL      string                   `json:"search_query_source_run_url"`
+	SearchQuerySourceSignatureID string                   `json:"search_query_source_signature_id"`
+	SupportCount                 int                      `json:"support_count"`
+	SeenPostGoodCommit           bool                     `json:"seen_post_good_commit"`
+	PostGoodCommitCount          int                      `json:"post_good_commit_count"`
+	ContributingTestsCount       int                      `json:"contributing_tests_count"`
+	ContributingTests            []ContributingTestRecord `json:"contributing_tests"`
+	MemberPhase1ClusterIDs       []string                 `json:"member_phase1_cluster_ids"`
+	MemberSignatureIDs           []string                 `json:"member_signature_ids"`
+	References                   []ReferenceRecord        `json:"references"`
+}
+
 type ReviewItemRecord struct {
 	SchemaVersion                        string            `json:"schema_version"`
+	Environment                          string            `json:"environment"`
 	ReviewItemID                         string            `json:"review_item_id"`
 	Phase                                string            `json:"phase"`
 	Reason                               string            `json:"reason"`

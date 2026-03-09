@@ -57,7 +57,7 @@ func TestPhase1BehavioralParityWithPythonFixture(t *testing.T) {
 		workset = append(workset, semanticcontracts.Phase1WorksetRecord{
 			SchemaVersion: semanticcontracts.SchemaVersionV1,
 			RowID:         buildRowID(row.RunURL, row.Signature, row.OccurredAt),
-			GroupKey:      buildGroupKey(row.Lane, row.JobName, row.TestName),
+			GroupKey:      buildGroupKey("", row.Lane, row.JobName, row.TestName),
 			Lane:          row.Lane,
 			JobName:       row.JobName,
 			TestName:      row.TestName,
@@ -180,7 +180,7 @@ func TestPhase1BehavioralParityWithPythonFixture(t *testing.T) {
 
 	goByGroup := map[string][]map[string]struct{}{}
 	for _, cluster := range goClusters {
-		groupKey := buildGroupKey(cluster.Lane, cluster.JobName, cluster.TestName)
+		groupKey := buildGroupKey("", cluster.Lane, cluster.JobName, cluster.TestName)
 		rowIDs := map[string]struct{}{}
 		for _, ref := range cluster.References {
 			rowIDs[buildRowID(ref.RunURL, ref.SignatureID, ref.OccurredAt)] = struct{}{}

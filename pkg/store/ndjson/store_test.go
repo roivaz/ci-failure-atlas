@@ -896,6 +896,53 @@ func TestUpsertAndListSemanticPhase1Artifacts(t *testing.T) {
 		t.Fatalf("upsert test clusters: %v", err)
 	}
 
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:                semanticcontracts.SchemaVersionV1,
+			Phase2ClusterID:              "global-2",
+			CanonicalEvidencePhrase:      "failure b",
+			SearchQueryPhrase:            "failure b",
+			SearchQuerySourceRunURL:      "https://run-b",
+			SearchQuerySourceSignatureID: "sig-b",
+			SupportCount:                 1,
+			SeenPostGoodCommit:           true,
+			PostGoodCommitCount:          1,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{
+					Lane:         "e2e",
+					JobName:      "job",
+					TestName:     "test",
+					SupportCount: 1,
+				},
+			},
+			MemberPhase1ClusterIDs: []string{"cluster-2"},
+			MemberSignatureIDs:     []string{"sig-b"},
+		},
+		{
+			SchemaVersion:                semanticcontracts.SchemaVersionV1,
+			Phase2ClusterID:              "global-1",
+			CanonicalEvidencePhrase:      "failure a",
+			SearchQueryPhrase:            "failure a",
+			SearchQuerySourceRunURL:      "https://run-a",
+			SearchQuerySourceSignatureID: "sig-a",
+			SupportCount:                 2,
+			SeenPostGoodCommit:           true,
+			PostGoodCommitCount:          0,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{
+					Lane:         "e2e",
+					JobName:      "job",
+					TestName:     "test",
+					SupportCount: 2,
+				},
+			},
+			MemberPhase1ClusterIDs: []string{"cluster-1"},
+			MemberSignatureIDs:     []string{"sig-a"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert global clusters: %v", err)
+	}
+
 	if err := store.UpsertReviewQueue(ctx, []semanticcontracts.ReviewItemRecord{
 		{
 			SchemaVersion:                        semanticcontracts.SchemaVersionV1,
@@ -962,6 +1009,20 @@ func TestUpsertAndListSemanticPhase1Artifacts(t *testing.T) {
 	}
 	if clusterRows[0].Phase1ClusterID != "cluster-1" || clusterRows[0].SupportCount != 2 {
 		t.Fatalf("unexpected test cluster ordering/content: %+v", clusterRows)
+	}
+
+	globalRows, err := store.ListGlobalClusters(ctx)
+	if err != nil {
+		t.Fatalf("list global clusters: %v", err)
+	}
+	if len(globalRows) != 2 {
+		t.Fatalf("unexpected global cluster count: got=%d want=2", len(globalRows))
+	}
+	if globalRows[0].Phase2ClusterID != "global-1" || globalRows[0].SupportCount != 2 {
+		t.Fatalf("unexpected global cluster ordering/content: %+v", globalRows)
+	}
+	if globalRows[0].ContributingTestsCount != 1 || globalRows[0].ContributingTests[0].SupportCount != 2 {
+		t.Fatalf("unexpected global cluster contributing test content: %+v", globalRows[0])
 	}
 
 	reviewRows, err := store.ListReviewQueue(ctx)

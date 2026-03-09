@@ -34,6 +34,7 @@ const (
 	phase1NormalizedFilename = "phase1_normalized.ndjson"
 	phase1AssignmentsFile    = "phase1_assignments.ndjson"
 	testClustersFilename     = "test_clusters.ndjson"
+	globalClustersFilename   = "global_clusters.ndjson"
 	reviewQueueFilename      = "review_queue.ndjson"
 	checkpointsFilename      = "checkpoints.ndjson"
 	deadLettersFilename      = "dead_letters.ndjson"
@@ -1244,7 +1245,7 @@ func (s *Store) ListPhase1Workset(ctx context.Context) ([]semanticcontracts.Phas
 	filtered := make([]semanticcontracts.Phase1WorksetRecord, 0, len(rows))
 	for _, row := range rows {
 		normalized := normalizePhase1WorksetRecord(row)
-		if normalized.RowID == "" {
+		if phase1WorksetKey(normalized) == "" {
 			continue
 		}
 		filtered = append(filtered, normalized)
@@ -1275,7 +1276,7 @@ func (s *Store) UpsertPhase1Normalized(ctx context.Context, rows []semanticcontr
 	mergedByKey := map[string]semanticcontracts.Phase1NormalizedRecord{}
 	for _, row := range existing {
 		normalized := normalizePhase1NormalizedRecord(row)
-		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{RowID: normalized.RowID})
+		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{Environment: normalized.Environment, RowID: normalized.RowID})
 		if key == "" {
 			continue
 		}
@@ -1283,7 +1284,7 @@ func (s *Store) UpsertPhase1Normalized(ctx context.Context, rows []semanticcontr
 	}
 	for _, row := range rows {
 		normalized := normalizePhase1NormalizedRecord(row)
-		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{RowID: normalized.RowID})
+		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{Environment: normalized.Environment, RowID: normalized.RowID})
 		if key == "" {
 			return fmt.Errorf("phase1 normalized record missing row_id")
 		}
@@ -1295,6 +1296,9 @@ func (s *Store) UpsertPhase1Normalized(ctx context.Context, rows []semanticcontr
 		merged = append(merged, row)
 	}
 	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Environment != merged[j].Environment {
+			return merged[i].Environment < merged[j].Environment
+		}
 		if merged[i].Lane != merged[j].Lane {
 			return merged[i].Lane < merged[j].Lane
 		}
@@ -1335,12 +1339,15 @@ func (s *Store) ListPhase1Normalized(ctx context.Context) ([]semanticcontracts.P
 	filtered := make([]semanticcontracts.Phase1NormalizedRecord, 0, len(rows))
 	for _, row := range rows {
 		normalized := normalizePhase1NormalizedRecord(row)
-		if normalized.RowID == "" {
+		if phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{Environment: normalized.Environment, RowID: normalized.RowID}) == "" {
 			continue
 		}
 		filtered = append(filtered, normalized)
 	}
 	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Environment != filtered[j].Environment {
+			return filtered[i].Environment < filtered[j].Environment
+		}
 		if filtered[i].GroupKey != filtered[j].GroupKey {
 			return filtered[i].GroupKey < filtered[j].GroupKey
 		}
@@ -1372,7 +1379,7 @@ func (s *Store) UpsertPhase1Assignments(ctx context.Context, rows []semanticcont
 	mergedByKey := map[string]semanticcontracts.Phase1AssignmentRecord{}
 	for _, row := range existing {
 		normalized := normalizePhase1AssignmentRecord(row)
-		key := strings.TrimSpace(normalized.RowID)
+		key := phase1AssignmentKey(normalized)
 		if key == "" {
 			continue
 		}
@@ -1380,9 +1387,9 @@ func (s *Store) UpsertPhase1Assignments(ctx context.Context, rows []semanticcont
 	}
 	for _, row := range rows {
 		normalized := normalizePhase1AssignmentRecord(row)
-		key := strings.TrimSpace(normalized.RowID)
+		key := phase1AssignmentKey(normalized)
 		if key == "" {
-			return fmt.Errorf("phase1 assignment record missing row_id")
+			return fmt.Errorf("phase1 assignment record missing environment and/or row_id")
 		}
 		mergedByKey[key] = normalized
 	}
@@ -1392,6 +1399,9 @@ func (s *Store) UpsertPhase1Assignments(ctx context.Context, rows []semanticcont
 		merged = append(merged, row)
 	}
 	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Environment != merged[j].Environment {
+			return merged[i].Environment < merged[j].Environment
+		}
 		if merged[i].GroupKey != merged[j].GroupKey {
 			return merged[i].GroupKey < merged[j].GroupKey
 		}
@@ -1420,12 +1430,15 @@ func (s *Store) ListPhase1Assignments(ctx context.Context) ([]semanticcontracts.
 	filtered := make([]semanticcontracts.Phase1AssignmentRecord, 0, len(rows))
 	for _, row := range rows {
 		normalized := normalizePhase1AssignmentRecord(row)
-		if normalized.RowID == "" {
+		if phase1AssignmentKey(normalized) == "" {
 			continue
 		}
 		filtered = append(filtered, normalized)
 	}
 	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Environment != filtered[j].Environment {
+			return filtered[i].Environment < filtered[j].Environment
+		}
 		if filtered[i].GroupKey != filtered[j].GroupKey {
 			return filtered[i].GroupKey < filtered[j].GroupKey
 		}
@@ -1457,7 +1470,7 @@ func (s *Store) UpsertTestClusters(ctx context.Context, rows []semanticcontracts
 	mergedByKey := map[string]semanticcontracts.TestClusterRecord{}
 	for _, row := range existing {
 		normalized := normalizeTestClusterRecord(row)
-		key := strings.TrimSpace(normalized.Phase1ClusterID)
+		key := phase1ClusterKey(normalized)
 		if key == "" {
 			continue
 		}
@@ -1465,9 +1478,9 @@ func (s *Store) UpsertTestClusters(ctx context.Context, rows []semanticcontracts
 	}
 	for _, row := range rows {
 		normalized := normalizeTestClusterRecord(row)
-		key := strings.TrimSpace(normalized.Phase1ClusterID)
+		key := phase1ClusterKey(normalized)
 		if key == "" {
-			return fmt.Errorf("test cluster record missing phase1_cluster_id")
+			return fmt.Errorf("test cluster record missing environment and/or phase1_cluster_id")
 		}
 		mergedByKey[key] = normalized
 	}
@@ -1497,13 +1510,102 @@ func (s *Store) ListTestClusters(ctx context.Context) ([]semanticcontracts.TestC
 	filtered := make([]semanticcontracts.TestClusterRecord, 0, len(rows))
 	for _, row := range rows {
 		normalized := normalizeTestClusterRecord(row)
-		if normalized.Phase1ClusterID == "" {
+		if phase1ClusterKey(normalized) == "" {
 			continue
 		}
 		filtered = append(filtered, normalized)
 	}
 	sort.Slice(filtered, func(i, j int) bool {
 		return testClusterLess(filtered[i], filtered[j])
+	})
+	return filtered, nil
+}
+
+func (s *Store) UpsertGlobalClusters(ctx context.Context, rows []semanticcontracts.GlobalClusterRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.globalClustersPath()
+	existing, err := readNDJSON[semanticcontracts.GlobalClusterRecord](path)
+	if err != nil {
+		return err
+	}
+
+	mergedByKey := map[string]semanticcontracts.GlobalClusterRecord{}
+	for _, row := range existing {
+		normalized := normalizeGlobalClusterRecord(row)
+		key := globalClusterKey(normalized)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, row := range rows {
+		normalized := normalizeGlobalClusterRecord(row)
+		key := globalClusterKey(normalized)
+		if key == "" {
+			return fmt.Errorf("global cluster record missing phase2_cluster_id")
+		}
+		mergedByKey[key] = normalized
+	}
+
+	merged := make([]semanticcontracts.GlobalClusterRecord, 0, len(mergedByKey))
+	for _, row := range mergedByKey {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].SupportCount != merged[j].SupportCount {
+			return merged[i].SupportCount > merged[j].SupportCount
+		}
+		if merged[i].ContributingTestsCount != merged[j].ContributingTestsCount {
+			return merged[i].ContributingTestsCount > merged[j].ContributingTestsCount
+		}
+		if merged[i].Environment != merged[j].Environment {
+			return merged[i].Environment < merged[j].Environment
+		}
+		return merged[i].Phase2ClusterID < merged[j].Phase2ClusterID
+	})
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListGlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[semanticcontracts.GlobalClusterRecord](s.globalClustersPath())
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]semanticcontracts.GlobalClusterRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizeGlobalClusterRecord(row)
+		if globalClusterKey(normalized) == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].SupportCount != filtered[j].SupportCount {
+			return filtered[i].SupportCount > filtered[j].SupportCount
+		}
+		if filtered[i].ContributingTestsCount != filtered[j].ContributingTestsCount {
+			return filtered[i].ContributingTestsCount > filtered[j].ContributingTestsCount
+		}
+		if filtered[i].Environment != filtered[j].Environment {
+			return filtered[i].Environment < filtered[j].Environment
+		}
+		return filtered[i].Phase2ClusterID < filtered[j].Phase2ClusterID
 	})
 	return filtered, nil
 }
@@ -1528,7 +1630,7 @@ func (s *Store) UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.
 	mergedByKey := map[string]semanticcontracts.ReviewItemRecord{}
 	for _, row := range existing {
 		normalized := normalizeReviewItemRecord(row)
-		key := strings.TrimSpace(normalized.ReviewItemID)
+		key := reviewItemKey(normalized)
 		if key == "" {
 			continue
 		}
@@ -1536,9 +1638,9 @@ func (s *Store) UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.
 	}
 	for _, row := range rows {
 		normalized := normalizeReviewItemRecord(row)
-		key := strings.TrimSpace(normalized.ReviewItemID)
+		key := reviewItemKey(normalized)
 		if key == "" {
-			return fmt.Errorf("review item record missing review_item_id")
+			return fmt.Errorf("review item record missing environment and/or review_item_id")
 		}
 		mergedByKey[key] = normalized
 	}
@@ -1548,6 +1650,9 @@ func (s *Store) UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.
 		merged = append(merged, row)
 	}
 	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Environment != merged[j].Environment {
+			return merged[i].Environment < merged[j].Environment
+		}
 		if merged[i].Phase != merged[j].Phase {
 			return merged[i].Phase < merged[j].Phase
 		}
@@ -1574,12 +1679,15 @@ func (s *Store) ListReviewQueue(ctx context.Context) ([]semanticcontracts.Review
 	filtered := make([]semanticcontracts.ReviewItemRecord, 0, len(rows))
 	for _, row := range rows {
 		normalized := normalizeReviewItemRecord(row)
-		if normalized.ReviewItemID == "" {
+		if reviewItemKey(normalized) == "" {
 			continue
 		}
 		filtered = append(filtered, normalized)
 	}
 	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Environment != filtered[j].Environment {
+			return filtered[i].Environment < filtered[j].Environment
+		}
 		if filtered[i].Phase != filtered[j].Phase {
 			return filtered[i].Phase < filtered[j].Phase
 		}
@@ -1633,6 +1741,10 @@ func (s *Store) phase1AssignmentsPath() string {
 
 func (s *Store) testClustersPath() string {
 	return filepath.Join(s.dataDirectory, semanticDirectory, testClustersFilename)
+}
+
+func (s *Store) globalClustersPath() string {
+	return filepath.Join(s.dataDirectory, semanticDirectory, globalClustersFilename)
 }
 
 func (s *Store) reviewQueuePath() string {
@@ -1804,6 +1916,7 @@ func normalizePhase1WorksetRecord(row semanticcontracts.Phase1WorksetRecord) sem
 	}
 	return semanticcontracts.Phase1WorksetRecord{
 		SchemaVersion:  strings.TrimSpace(row.SchemaVersion),
+		Environment:    normalizeSemanticEnvironment(row.Environment),
 		RowID:          strings.TrimSpace(row.RowID),
 		GroupKey:       strings.TrimSpace(row.GroupKey),
 		Lane:           strings.TrimSpace(row.Lane),
@@ -1827,6 +1940,7 @@ func normalizePhase1NormalizedRecord(row semanticcontracts.Phase1NormalizedRecor
 	}
 	return semanticcontracts.Phase1NormalizedRecord{
 		SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
+		Environment:             normalizeSemanticEnvironment(row.Environment),
 		RowID:                   strings.TrimSpace(row.RowID),
 		GroupKey:                strings.TrimSpace(row.GroupKey),
 		Lane:                    strings.TrimSpace(row.Lane),
@@ -1851,6 +1965,7 @@ func normalizePhase1NormalizedRecord(row semanticcontracts.Phase1NormalizedRecor
 func normalizePhase1AssignmentRecord(row semanticcontracts.Phase1AssignmentRecord) semanticcontracts.Phase1AssignmentRecord {
 	return semanticcontracts.Phase1AssignmentRecord{
 		SchemaVersion:                    strings.TrimSpace(row.SchemaVersion),
+		Environment:                      normalizeSemanticEnvironment(row.Environment),
 		RowID:                            strings.TrimSpace(row.RowID),
 		GroupKey:                         strings.TrimSpace(row.GroupKey),
 		Phase1LocalClusterKey:            strings.TrimSpace(row.Phase1LocalClusterKey),
@@ -1914,6 +2029,7 @@ func normalizeTestClusterRecord(row semanticcontracts.TestClusterRecord) semanti
 	}
 	return semanticcontracts.TestClusterRecord{
 		SchemaVersion:                strings.TrimSpace(row.SchemaVersion),
+		Environment:                  normalizeSemanticEnvironment(row.Environment),
 		Phase1ClusterID:              strings.TrimSpace(row.Phase1ClusterID),
 		Lane:                         strings.TrimSpace(row.Lane),
 		JobName:                      strings.TrimSpace(row.JobName),
@@ -1931,9 +2047,86 @@ func normalizeTestClusterRecord(row semanticcontracts.TestClusterRecord) semanti
 	}
 }
 
+func normalizeContributingTests(rows []semanticcontracts.ContributingTestRecord) []semanticcontracts.ContributingTestRecord {
+	if len(rows) == 0 {
+		return nil
+	}
+	merged := map[string]semanticcontracts.ContributingTestRecord{}
+	for _, row := range rows {
+		lane := strings.TrimSpace(row.Lane)
+		jobName := strings.TrimSpace(row.JobName)
+		testName := strings.TrimSpace(row.TestName)
+		if lane == "" && jobName == "" && testName == "" {
+			continue
+		}
+		supportCount := row.SupportCount
+		if supportCount < 0 {
+			supportCount = 0
+		}
+		key := lane + "|" + jobName + "|" + testName
+		existing := merged[key]
+		if existing.Lane == "" {
+			existing.Lane = lane
+		}
+		if existing.JobName == "" {
+			existing.JobName = jobName
+		}
+		if existing.TestName == "" {
+			existing.TestName = testName
+		}
+		existing.SupportCount += supportCount
+		merged[key] = existing
+	}
+
+	out := make([]semanticcontracts.ContributingTestRecord, 0, len(merged))
+	for _, row := range merged {
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Lane != out[j].Lane {
+			return out[i].Lane < out[j].Lane
+		}
+		if out[i].JobName != out[j].JobName {
+			return out[i].JobName < out[j].JobName
+		}
+		return out[i].TestName < out[j].TestName
+	})
+	return out
+}
+
+func normalizeGlobalClusterRecord(row semanticcontracts.GlobalClusterRecord) semanticcontracts.GlobalClusterRecord {
+	supportCount := row.SupportCount
+	if supportCount < 0 {
+		supportCount = 0
+	}
+	postGoodCommitCount := row.PostGoodCommitCount
+	if postGoodCommitCount < 0 {
+		postGoodCommitCount = 0
+	}
+	contributingTests := normalizeContributingTests(row.ContributingTests)
+	return semanticcontracts.GlobalClusterRecord{
+		SchemaVersion:                strings.TrimSpace(row.SchemaVersion),
+		Environment:                  normalizeSemanticEnvironment(row.Environment),
+		Phase2ClusterID:              strings.TrimSpace(row.Phase2ClusterID),
+		CanonicalEvidencePhrase:      strings.TrimSpace(row.CanonicalEvidencePhrase),
+		SearchQueryPhrase:            strings.TrimSpace(row.SearchQueryPhrase),
+		SearchQuerySourceRunURL:      strings.TrimSpace(row.SearchQuerySourceRunURL),
+		SearchQuerySourceSignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
+		SupportCount:                 supportCount,
+		SeenPostGoodCommit:           row.SeenPostGoodCommit || postGoodCommitCount > 0,
+		PostGoodCommitCount:          postGoodCommitCount,
+		ContributingTestsCount:       len(contributingTests),
+		ContributingTests:            contributingTests,
+		MemberPhase1ClusterIDs:       normalizeStringSlice(row.MemberPhase1ClusterIDs),
+		MemberSignatureIDs:           normalizeStringSlice(row.MemberSignatureIDs),
+		References:                   normalizeReferenceSlice(row.References),
+	}
+}
+
 func normalizeReviewItemRecord(row semanticcontracts.ReviewItemRecord) semanticcontracts.ReviewItemRecord {
 	return semanticcontracts.ReviewItemRecord{
 		SchemaVersion:                        strings.TrimSpace(row.SchemaVersion),
+		Environment:                          normalizeSemanticEnvironment(row.Environment),
 		ReviewItemID:                         strings.TrimSpace(row.ReviewItemID),
 		Phase:                                strings.TrimSpace(row.Phase),
 		Reason:                               strings.TrimSpace(row.Reason),
@@ -1981,6 +2174,15 @@ func metricDailyKey(row contracts.MetricDailyRecord) string {
 	return row.Environment + "|" + row.Date + "|" + row.Metric
 }
 
+func globalClusterKey(row semanticcontracts.GlobalClusterRecord) string {
+	environment := normalizeSemanticEnvironment(row.Environment)
+	clusterID := strings.TrimSpace(row.Phase2ClusterID)
+	if environment == "" || clusterID == "" {
+		return ""
+	}
+	return environment + "|" + clusterID
+}
+
 func testMetadataDailyKey(row contracts.TestMetadataDailyRecord) string {
 	if row.Environment == "" || row.Date == "" || row.Period == "" || row.TestName == "" {
 		return ""
@@ -2010,10 +2212,45 @@ func rawFailureKey(row contracts.RawFailureRecord) string {
 }
 
 func phase1WorksetKey(row semanticcontracts.Phase1WorksetRecord) string {
-	return strings.TrimSpace(row.RowID)
+	environment := normalizeSemanticEnvironment(row.Environment)
+	rowID := strings.TrimSpace(row.RowID)
+	if environment == "" || rowID == "" {
+		return ""
+	}
+	return environment + "|" + rowID
+}
+
+func phase1AssignmentKey(row semanticcontracts.Phase1AssignmentRecord) string {
+	environment := normalizeSemanticEnvironment(row.Environment)
+	rowID := strings.TrimSpace(row.RowID)
+	if environment == "" || rowID == "" {
+		return ""
+	}
+	return environment + "|" + rowID
+}
+
+func phase1ClusterKey(row semanticcontracts.TestClusterRecord) string {
+	environment := normalizeSemanticEnvironment(row.Environment)
+	clusterID := strings.TrimSpace(row.Phase1ClusterID)
+	if environment == "" || clusterID == "" {
+		return ""
+	}
+	return environment + "|" + clusterID
+}
+
+func reviewItemKey(row semanticcontracts.ReviewItemRecord) string {
+	environment := normalizeSemanticEnvironment(row.Environment)
+	reviewID := strings.TrimSpace(row.ReviewItemID)
+	if environment == "" || reviewID == "" {
+		return ""
+	}
+	return environment + "|" + reviewID
 }
 
 func phase1WorksetLess(a semanticcontracts.Phase1WorksetRecord, b semanticcontracts.Phase1WorksetRecord) bool {
+	if a.Environment != b.Environment {
+		return a.Environment < b.Environment
+	}
 	if a.Lane != b.Lane {
 		return a.Lane < b.Lane
 	}
@@ -2036,6 +2273,9 @@ func phase1WorksetLess(a semanticcontracts.Phase1WorksetRecord, b semanticcontra
 }
 
 func testClusterLess(a semanticcontracts.TestClusterRecord, b semanticcontracts.TestClusterRecord) bool {
+	if a.Environment != b.Environment {
+		return a.Environment < b.Environment
+	}
 	if a.Lane != b.Lane {
 		return a.Lane < b.Lane
 	}
@@ -2053,6 +2293,14 @@ func testClusterLess(a semanticcontracts.TestClusterRecord, b semanticcontracts.
 
 func normalizeEnvironment(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeSemanticEnvironment(value string) string {
+	normalized := normalizeEnvironment(value)
+	if normalized == "" {
+		return "unknown"
+	}
+	return normalized
 }
 
 func normalizeDate(value string) (string, error) {

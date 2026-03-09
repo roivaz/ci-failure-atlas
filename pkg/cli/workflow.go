@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	workflowphase1 "ci-failure-atlas/pkg/workflow/phase1"
+	workflowphase2 "ci-failure-atlas/pkg/workflow/phase2"
 )
 
 func NewWorkflowCommand() (*cobra.Command, error) {
@@ -37,8 +38,28 @@ func NewWorkflowCommand() (*cobra.Command, error) {
 	}
 	cmd.AddCommand(phase1Cmd)
 
+	phase2Opts := workflowphase2.DefaultOptions()
+	phase2Cmd := &cobra.Command{
+		Use:   "phase2",
+		Short: "Run semantic phase2 workflow.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			validated, err := phase2Opts.Validate()
+			if err != nil {
+				return err
+			}
+			completed, err := validated.Complete(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return completed.Run(cmd.Context())
+		},
+	}
+	if err := workflowphase2.BindOptions(phase2Opts, phase2Cmd); err != nil {
+		return nil, fmt.Errorf("failed to bind workflow phase2 options: %w", err)
+	}
+	cmd.AddCommand(phase2Cmd)
+
 	for _, sub := range []string{
-		"phase2",
 		"validate",
 		"canary",
 		"promote-rules",

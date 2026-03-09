@@ -68,6 +68,7 @@ type counts struct {
 }
 
 type runOutcomes struct {
+	TotalRuns           int
 	SuccessfulRuns      int
 	CIInfraFailedRuns   int
 	ProvisionFailedRuns int
@@ -298,11 +299,12 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 		b.WriteString(cardHTML("Success Rate", fmt.Sprintf("%.2f%%", successPct(report.Totals.RunCount, report.Totals.FailureCount))))
 		b.WriteString("    </div>\n")
 		if report.Environment == "dev" {
+			postGoodTotals := summarizePostGoodRunOutcomes(report.Days)
 			b.WriteString("    <div class=\"cards cards-post-good\">\n")
-			b.WriteString(cardHTML("E2E Jobs (good commits)", report.Totals.RunCount))
-			b.WriteString(cardHTML("Failed E2E Jobs (good commits)", report.Totals.PostGoodFailedE2EJobs))
+			b.WriteString(cardHTML("E2E Jobs (good commits)", postGoodTotals.TotalRuns))
+			b.WriteString(cardHTML("Failed E2E Jobs (good commits)", postGoodTotals.FailedRuns))
 			b.WriteString(cardHTML("Failed Tests (good commits)", report.Totals.PostGoodFailureCount))
-			b.WriteString(cardHTML("Success Rate (good commits)", fmt.Sprintf("%.2f%%", successPct(report.Totals.RunCount, report.Totals.PostGoodFailedE2EJobs))))
+			b.WriteString(cardHTML("Success Rate (good commits)", fmt.Sprintf("%.2f%%", successPct(postGoodTotals.TotalRuns, postGoodTotals.FailedRuns))))
 			b.WriteString("    </div>\n")
 		}
 		b.WriteString("    <h3 class=\"chart-title\">Daily Run Outcomes (stacked by run-level lane)</h3>\n")
@@ -361,7 +363,7 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 				ciInfraFailedRuns := day.PostGoodRunOutcomes.CIInfraFailedRuns
 				provisionFailedRuns := day.PostGoodRunOutcomes.ProvisionFailedRuns
 				e2eFailedRuns := day.PostGoodRunOutcomes.E2EFailedRuns
-				totalRuns := day.Counts.RunCount
+				totalRuns := day.PostGoodRunOutcomes.TotalRuns
 				b.WriteString("      <div class=\"outcome-row\">")
 				b.WriteString(fmt.Sprintf("<div class=\"outcome-date\">%s</div>", html.EscapeString(day.Date)))
 				if totalRuns <= 0 {
@@ -497,8 +499,7 @@ func collectPostGoodRunOutcomes(
 		}
 	}
 
-	// Keep consistency with existing "Success Rate (good commits)" semantics:
-	// post_good_failed_e2e_jobs is the total post-good failed run denominator.
+	// post_good_failed_e2e_jobs is the post-good failed-run denominator.
 	postGoodFailedRuns := day.PostGoodFailedE2EJobs
 	accountedFailedRuns := ciInfraFailedRuns + provisionFailedRuns + e2eFailedRuns
 	if postGoodFailedRuns < accountedFailedRuns {
@@ -507,17 +508,38 @@ func collectPostGoodRunOutcomes(
 	if postGoodFailedRuns > accountedFailedRuns {
 		ciInfraFailedRuns += postGoodFailedRuns - accountedFailedRuns
 	}
-
-	successfulRuns := day.RunCount - postGoodFailedRuns
+	// Use regular successful runs as the baseline. The post-good panel excludes
+	// non-post-good failures instead of reclassifying them as successes.
+	successfulRuns := day.RunCount - day.FailureCount
 	if successfulRuns < 0 {
 		successfulRuns = 0
 	}
+	totalRuns := successfulRuns + postGoodFailedRuns
 
+	out.TotalRuns = totalRuns
 	out.SuccessfulRuns = successfulRuns
 	out.CIInfraFailedRuns = ciInfraFailedRuns
 	out.ProvisionFailedRuns = provisionFailedRuns
 	out.E2EFailedRuns = e2eFailedRuns
 	return out, nil
+}
+
+type runOutcomesTotals struct {
+	TotalRuns      int
+	FailedRuns     int
+	SuccessfulRuns int
+}
+
+func summarizePostGoodRunOutcomes(days []dayReport) runOutcomesTotals {
+	out := runOutcomesTotals{}
+	for _, day := range days {
+		out.TotalRuns += day.PostGoodRunOutcomes.TotalRuns
+		out.SuccessfulRuns += day.PostGoodRunOutcomes.SuccessfulRuns
+		out.FailedRuns += day.PostGoodRunOutcomes.CIInfraFailedRuns +
+			day.PostGoodRunOutcomes.ProvisionFailedRuns +
+			day.PostGoodRunOutcomes.E2EFailedRuns
+	}
+	return out
 }
 
 func classifyPostGoodRunLane(

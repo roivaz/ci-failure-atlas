@@ -2,19 +2,38 @@ package summary
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/go-logr/logr"
+
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
 type Options struct {
-	GlobalPath string
-	TestPath   string
-	ReviewPath string
-	OutputPath string
-	Top        int
-	MinPercent float64
+	GlobalPath         string
+	TestPath           string
+	ReviewPath         string
+	OutputPath         string
+	Top                int
+	MinPercent         float64
+	Environments       []string
+	SplitByEnvironment bool
+}
+
+func DefaultOptions() Options {
+	return Options{
+		OutputPath:         "data/reports/triage-summary.md",
+		Top:                10,
+		MinPercent:         1.0,
+		SplitByEnvironment: false,
+	}
 }
 
 type reference struct {
@@ -74,7 +93,366 @@ type reviewItem struct {
 func Run(ctx context.Context, args []string) error {
 	_ = ctx
 	_ = args
-	return fmt.Errorf("report summary not implemented yet (pending global cross-test merge phase)")
+	return fmt.Errorf("report summary Run(args) is not wired; use Generate with an injected store")
+}
+
+func Generate(ctx context.Context, store storecontracts.Store, opts Options) error {
+	validated, err := validateOptions(opts)
+	if err != nil {
+		return err
+	}
+	if store == nil {
+		return errors.New("store is required")
+	}
+
+	logger := loggerFromContext(ctx).WithValues("component", "report.summary")
+
+	globalRows, err := store.ListGlobalClusters(ctx)
+	if err != nil {
+		return fmt.Errorf("list global clusters: %w", err)
+	}
+	testRows, err := store.ListTestClusters(ctx)
+	if err != nil {
+		return fmt.Errorf("list test clusters: %w", err)
+	}
+	reviewRows, err := store.ListReviewQueue(ctx)
+	if err != nil {
+		return fmt.Errorf("list review queue: %w", err)
+	}
+
+	report := buildMarkdown(
+		toReportGlobalClusters(globalRows),
+		toReportTestClusters(testRows),
+		toReportReviewItems(reviewRows),
+		validated.Top,
+		validated.MinPercent,
+	)
+	if validated.SplitByEnvironment {
+		targetEnvs := resolveSummaryTargetEnvironments(validated.Environments, globalRows, testRows, reviewRows)
+		if len(targetEnvs) == 0 {
+			targetEnvs = []string{"unknown"}
+		}
+		for _, environment := range targetEnvs {
+			filteredGlobalRows := filterGlobalClustersByEnvironment(globalRows, environment)
+			filteredTestRows := filterTestClustersByEnvironment(testRows, environment)
+			filteredReviewRows := filterReviewItemsByEnvironment(reviewRows, environment)
+			report := buildMarkdown(
+				toReportGlobalClusters(filteredGlobalRows),
+				toReportTestClusters(filteredTestRows),
+				toReportReviewItems(filteredReviewRows),
+				validated.Top,
+				validated.MinPercent,
+			)
+			outputPath := outputPathForEnvironment(validated.OutputPath, environment)
+			if err := writeSummary(outputPath, report); err != nil {
+				return err
+			}
+			logger.Info(
+				"Wrote triage summary markdown.",
+				"output", outputPath,
+				"environment", environment,
+				"globalClusters", len(filteredGlobalRows),
+				"testClusters", len(filteredTestRows),
+				"reviewItems", len(filteredReviewRows),
+				"top", validated.Top,
+				"minPercent", validated.MinPercent,
+			)
+		}
+		return nil
+	}
+	filteredGlobalRows := globalRows
+	filteredTestRows := testRows
+	filteredReviewRows := reviewRows
+	if len(validated.Environments) > 0 {
+		envSet := make(map[string]struct{}, len(validated.Environments))
+		for _, environment := range validated.Environments {
+			envSet[normalizeReportEnvironment(environment)] = struct{}{}
+		}
+		filteredGlobalRows = filterGlobalClustersByEnvironmentSet(globalRows, envSet)
+		filteredTestRows = filterTestClustersByEnvironmentSet(testRows, envSet)
+		filteredReviewRows = filterReviewItemsByEnvironmentSet(reviewRows, envSet)
+		report = buildMarkdown(
+			toReportGlobalClusters(filteredGlobalRows),
+			toReportTestClusters(filteredTestRows),
+			toReportReviewItems(filteredReviewRows),
+			validated.Top,
+			validated.MinPercent,
+		)
+	}
+	if err := writeSummary(validated.OutputPath, report); err != nil {
+		return err
+	}
+	logger.Info(
+		"Wrote triage summary markdown.",
+		"output", validated.OutputPath,
+		"globalClusters", len(filteredGlobalRows),
+		"testClusters", len(filteredTestRows),
+		"reviewItems", len(filteredReviewRows),
+		"top", validated.Top,
+		"minPercent", validated.MinPercent,
+	)
+	return nil
+}
+
+func validateOptions(opts Options) (Options, error) {
+	if strings.TrimSpace(opts.OutputPath) == "" {
+		return Options{}, errors.New("missing --output path")
+	}
+	if opts.Top <= 0 {
+		return Options{}, errors.New("--top must be > 0")
+	}
+	if opts.MinPercent < 0 {
+		return Options{}, errors.New("--min-percent must be >= 0")
+	}
+	opts.Environments = normalizeReportEnvironments(opts.Environments)
+	return opts, nil
+}
+
+func writeSummary(outputPath string, report string) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("create summary output directory: %w", err)
+	}
+	if err := os.WriteFile(outputPath, []byte(report), 0o644); err != nil {
+		return fmt.Errorf("write summary markdown: %w", err)
+	}
+	return nil
+}
+
+func normalizeReportEnvironments(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	set := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeReportEnvironment(value)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := set[normalized]; exists {
+			continue
+		}
+		set[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeReportEnvironment(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func resolveSummaryTargetEnvironments(
+	configured []string,
+	globalRows []semanticcontracts.GlobalClusterRecord,
+	testRows []semanticcontracts.TestClusterRecord,
+	reviewRows []semanticcontracts.ReviewItemRecord,
+) []string {
+	normalizedConfigured := normalizeReportEnvironments(configured)
+	if len(normalizedConfigured) > 0 {
+		return normalizedConfigured
+	}
+	set := map[string]struct{}{}
+	for _, row := range globalRows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		set[environment] = struct{}{}
+	}
+	for _, row := range testRows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		set[environment] = struct{}{}
+	}
+	for _, row := range reviewRows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		set[environment] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for environment := range set {
+		out = append(out, environment)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func outputPathForEnvironment(outputPath, environment string) string {
+	base := strings.TrimSpace(outputPath)
+	env := normalizeReportEnvironment(environment)
+	if base == "" || env == "" {
+		return base
+	}
+	ext := filepath.Ext(base)
+	baseWithoutExt := strings.TrimSuffix(base, ext)
+	if strings.HasSuffix(baseWithoutExt, "."+env) {
+		return base
+	}
+	if ext == "" {
+		return base + "." + env
+	}
+	return baseWithoutExt + "." + env + ext
+}
+
+func filterGlobalClustersByEnvironment(rows []semanticcontracts.GlobalClusterRecord, environment string) []semanticcontracts.GlobalClusterRecord {
+	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
+	return filterGlobalClustersByEnvironmentSet(rows, envSet)
+}
+
+func filterGlobalClustersByEnvironmentSet(rows []semanticcontracts.GlobalClusterRecord, envSet map[string]struct{}) []semanticcontracts.GlobalClusterRecord {
+	if len(envSet) == 0 {
+		return append([]semanticcontracts.GlobalClusterRecord(nil), rows...)
+	}
+	out := make([]semanticcontracts.GlobalClusterRecord, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := envSet[environment]; !ok {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func filterTestClustersByEnvironment(rows []semanticcontracts.TestClusterRecord, environment string) []semanticcontracts.TestClusterRecord {
+	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
+	return filterTestClustersByEnvironmentSet(rows, envSet)
+}
+
+func filterTestClustersByEnvironmentSet(rows []semanticcontracts.TestClusterRecord, envSet map[string]struct{}) []semanticcontracts.TestClusterRecord {
+	if len(envSet) == 0 {
+		return append([]semanticcontracts.TestClusterRecord(nil), rows...)
+	}
+	out := make([]semanticcontracts.TestClusterRecord, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := envSet[environment]; !ok {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func filterReviewItemsByEnvironment(rows []semanticcontracts.ReviewItemRecord, environment string) []semanticcontracts.ReviewItemRecord {
+	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
+	return filterReviewItemsByEnvironmentSet(rows, envSet)
+}
+
+func filterReviewItemsByEnvironmentSet(rows []semanticcontracts.ReviewItemRecord, envSet map[string]struct{}) []semanticcontracts.ReviewItemRecord {
+	if len(envSet) == 0 {
+		return append([]semanticcontracts.ReviewItemRecord(nil), rows...)
+	}
+	out := make([]semanticcontracts.ReviewItemRecord, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := envSet[environment]; !ok {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func toReportGlobalClusters(rows []semanticcontracts.GlobalClusterRecord) []globalCluster {
+	out := make([]globalCluster, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, globalCluster{
+			SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
+			Phase2ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
+			CanonicalEvidencePhrase: strings.TrimSpace(row.CanonicalEvidencePhrase),
+			SearchQueryPhrase:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:            row.SupportCount,
+			SeenPostGoodCommit:      row.SeenPostGoodCommit,
+			PostGoodCommitCount:     row.PostGoodCommitCount,
+			ContributingTestsCount:  row.ContributingTestsCount,
+			ContributingTests:       toReportContributingTests(row.ContributingTests),
+			MemberPhase1ClusterIDs:  append([]string(nil), row.MemberPhase1ClusterIDs...),
+			MemberSignatureIDs:      append([]string(nil), row.MemberSignatureIDs...),
+			References:              toReportReferences(row.References),
+		})
+	}
+	return out
+}
+
+func toReportContributingTests(rows []semanticcontracts.ContributingTestRecord) []contributingTest {
+	out := make([]contributingTest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, contributingTest{
+			Lane:         strings.TrimSpace(row.Lane),
+			JobName:      strings.TrimSpace(row.JobName),
+			TestName:     strings.TrimSpace(row.TestName),
+			SupportCount: row.SupportCount,
+		})
+	}
+	return out
+}
+
+func toReportTestClusters(rows []semanticcontracts.TestClusterRecord) []testCluster {
+	out := make([]testCluster, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, testCluster{
+			SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
+			Phase1ClusterID:         strings.TrimSpace(row.Phase1ClusterID),
+			Lane:                    strings.TrimSpace(row.Lane),
+			JobName:                 strings.TrimSpace(row.JobName),
+			TestName:                strings.TrimSpace(row.TestName),
+			TestSuite:               strings.TrimSpace(row.TestSuite),
+			CanonicalEvidencePhrase: strings.TrimSpace(row.CanonicalEvidencePhrase),
+			SearchQueryPhrase:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:            row.SupportCount,
+			SeenPostGoodCommit:      row.SeenPostGoodCommit,
+			PostGoodCommitCount:     row.PostGoodCommitCount,
+			MemberSignatureIDs:      append([]string(nil), row.MemberSignatureIDs...),
+			References:              toReportReferences(row.References),
+		})
+	}
+	return out
+}
+
+func toReportReferences(rows []semanticcontracts.ReferenceRecord) []reference {
+	out := make([]reference, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, reference{
+			RunURL:         strings.TrimSpace(row.RunURL),
+			OccurredAt:     strings.TrimSpace(row.OccurredAt),
+			SignatureID:    strings.TrimSpace(row.SignatureID),
+			PRNumber:       row.PRNumber,
+			PostGoodCommit: row.PostGoodCommit,
+			RawTextExcerpt: strings.TrimSpace(row.RawTextExcerpt),
+		})
+	}
+	return out
+}
+
+func toReportReviewItems(rows []semanticcontracts.ReviewItemRecord) []reviewItem {
+	out := make([]reviewItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, reviewItem{
+			SchemaVersion: strings.TrimSpace(row.SchemaVersion),
+			ReviewItemID:  strings.TrimSpace(row.ReviewItemID),
+			Phase:         strings.TrimSpace(row.Phase),
+			Reason:        strings.TrimSpace(row.Reason),
+		})
+	}
+	return out
+}
+
+func loggerFromContext(ctx context.Context) logr.Logger {
+	logger, err := logr.FromContext(ctx)
+	if err != nil {
+		return logr.Discard()
+	}
+	return logger
 }
 
 func buildMarkdown(globalClusters []globalCluster, testClusters []testCluster, reviewItems []reviewItem, top int, minPercent float64) string {

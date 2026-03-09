@@ -8,18 +8,20 @@ import (
 )
 
 type testKey struct {
-	lane    string
-	jobName string
-	test    string
+	environment string
+	lane        string
+	jobName     string
+	test        string
 }
 
 func Classify(rows []semanticcontracts.Phase1NormalizedRecord) []semanticcontracts.Phase1AssignmentRecord {
 	byTest := map[testKey][]semanticcontracts.Phase1NormalizedRecord{}
 	for _, row := range rows {
 		key := testKey{
-			lane:    defaultKeyPart(row.Lane, "unknown"),
-			jobName: defaultKeyPart(row.JobName, "unknown"),
-			test:    defaultKeyPart(row.TestName, "unknown"),
+			environment: defaultKeyPart(row.Environment, "unknown"),
+			lane:        defaultKeyPart(row.Lane, "unknown"),
+			jobName:     defaultKeyPart(row.JobName, "unknown"),
+			test:        defaultKeyPart(row.TestName, "unknown"),
 		}
 		byTest[key] = append(byTest[key], row)
 	}
@@ -132,10 +134,11 @@ func Classify(rows []semanticcontracts.Phase1NormalizedRecord) []semanticcontrac
 			for _, row := range clusterRows {
 				groupKey := strings.TrimSpace(row.GroupKey)
 				if groupKey == "" {
-					groupKey = buildGroupKey(row.Lane, row.JobName, row.TestName)
+					groupKey = buildGroupKey(row.Environment, row.Lane, row.JobName, row.TestName)
 				}
 				assignments = append(assignments, semanticcontracts.Phase1AssignmentRecord{
 					SchemaVersion:                    semanticcontracts.SchemaVersionV1,
+					Environment:                      strings.TrimSpace(row.Environment),
 					RowID:                            row.RowID,
 					GroupKey:                         groupKey,
 					Phase1LocalClusterKey:            localKey,
