@@ -25,6 +25,7 @@ const (
 	metricCIInfraFailureCount           = "ci_infra_failure_count"
 	metricProvisionFailureCount         = "provision_failure_count"
 	metricE2EFailureCount               = "e2e_failure_count"
+	metricPostGoodRunCount              = "post_good_run_count"
 	metricPostGoodFailureCount          = "post_good_failure_count"
 	metricPostGoodFailedE2EJobs         = "post_good_failed_e2e_jobs"
 	metricPostGoodCIInfraFailureCount   = "post_good_ci_infra_failure_count"
@@ -60,6 +61,7 @@ type counts struct {
 	CIInfraFailureCount           int
 	ProvisionFailureCount         int
 	E2EFailureCount               int
+	PostGoodRunCount              int
 	PostGoodFailureCount          int
 	PostGoodFailedE2EJobs         int
 	PostGoodCIInfraFailureCount   int
@@ -199,6 +201,8 @@ func collectCounts(rows []storecontracts.MetricDailyRecord) counts {
 			out.ProvisionFailureCount = value
 		case metricE2EFailureCount:
 			out.E2EFailureCount = value
+		case metricPostGoodRunCount:
+			out.PostGoodRunCount = value
 		case metricPostGoodFailureCount:
 			out.PostGoodFailureCount = value
 		case metricPostGoodFailedE2EJobs:
@@ -225,6 +229,7 @@ func addCounts(a counts, b counts) counts {
 		CIInfraFailureCount:           a.CIInfraFailureCount + b.CIInfraFailureCount,
 		ProvisionFailureCount:         a.ProvisionFailureCount + b.ProvisionFailureCount,
 		E2EFailureCount:               a.E2EFailureCount + b.E2EFailureCount,
+		PostGoodRunCount:              a.PostGoodRunCount + b.PostGoodRunCount,
 		PostGoodFailureCount:          a.PostGoodFailureCount + b.PostGoodFailureCount,
 		PostGoodFailedE2EJobs:         a.PostGoodFailedE2EJobs + b.PostGoodFailedE2EJobs,
 		PostGoodCIInfraFailureCount:   a.PostGoodCIInfraFailureCount + b.PostGoodCIInfraFailureCount,
@@ -471,11 +476,15 @@ func collectPostGoodRunOutcomes(
 	runCache := map[string]storecontracts.RunRecord{}
 	runFoundCache := map[string]bool{}
 	for _, row := range rawRows {
-		if row.PostGoodCommitFailures <= 0 {
-			continue
-		}
 		runURL := strings.TrimSpace(row.RunURL)
 		if runURL == "" {
+			continue
+		}
+		postGoodRun, err := isPostGoodRun(ctx, store, environment, runURL, runCache, runFoundCache)
+		if err != nil {
+			return runOutcomes{}, err
+		}
+		if !postGoodRun {
 			continue
 		}
 		lane, err := classifyPostGoodRunLane(ctx, store, environment, row, runCache, runFoundCache)
@@ -508,13 +517,14 @@ func collectPostGoodRunOutcomes(
 	if postGoodFailedRuns > accountedFailedRuns {
 		ciInfraFailedRuns += postGoodFailedRuns - accountedFailedRuns
 	}
-	// Use regular successful runs as the baseline. The post-good panel excludes
-	// non-post-good failures instead of reclassifying them as successes.
-	successfulRuns := day.RunCount - day.FailureCount
+	totalRuns := day.PostGoodRunCount
+	if totalRuns < postGoodFailedRuns {
+		totalRuns = postGoodFailedRuns
+	}
+	successfulRuns := totalRuns - postGoodFailedRuns
 	if successfulRuns < 0 {
 		successfulRuns = 0
 	}
-	totalRuns := successfulRuns + postGoodFailedRuns
 
 	out.TotalRuns = totalRuns
 	out.SuccessfulRuns = successfulRuns
@@ -522,6 +532,36 @@ func collectPostGoodRunOutcomes(
 	out.ProvisionFailedRuns = provisionFailedRuns
 	out.E2EFailedRuns = e2eFailedRuns
 	return out, nil
+}
+
+func isPostGoodRun(
+	ctx context.Context,
+	store storecontracts.Store,
+	environment string,
+	runURL string,
+	runCache map[string]storecontracts.RunRecord,
+	runFoundCache map[string]bool,
+) (bool, error) {
+	normalizedRunURL := strings.TrimSpace(runURL)
+	if normalizedRunURL == "" {
+		return false, nil
+	}
+	if cachedFound, ok := runFoundCache[normalizedRunURL]; ok {
+		if !cachedFound {
+			return false, nil
+		}
+		return runCache[normalizedRunURL].PostGoodCommit, nil
+	}
+	run, found, err := store.GetRun(ctx, environment, normalizedRunURL)
+	if err != nil {
+		return false, err
+	}
+	runFoundCache[normalizedRunURL] = found
+	if !found {
+		return false, nil
+	}
+	runCache[normalizedRunURL] = run
+	return run.PostGoodCommit, nil
 }
 
 type runOutcomesTotals struct {

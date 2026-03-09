@@ -211,7 +211,6 @@ Initial NDJSON layout:
 data/
   facts/
     runs.ndjson
-    run_counts_hourly.ndjson
     artifact_failures.ndjson
     raw_failures.ndjson
     metrics_daily.ndjson
@@ -285,8 +284,8 @@ These are generated from fresh facts + semantic outputs, not from ad-hoc snapsho
 
 Current v1 daily rollup metrics:
 
-- `total_runs`, `failed_runs`, `successful_runs`, `run_failure_rate` (from `run_counts_hourly`)
-- `raw_failure_rows` (from `raw_failures`)
+- `run_count`, `failure_count`, `failure_rate` (from `runs`)
+- `failure_row_count` and lane breakdowns (from `raw_failures`)
 
 ## 13) Initial Implementation Slices
 

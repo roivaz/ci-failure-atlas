@@ -16,6 +16,7 @@ type RunRecord struct {
 	FinalMergedSHA string `json:"final_merged_sha"`
 	MergedPR       bool   `json:"merged_pr"`
 	PostGoodCommit bool   `json:"post_good_commit"`
+	Failed         bool   `json:"failed"`
 	OccurredAt     string `json:"occurred_at"`
 }
 
@@ -54,10 +55,6 @@ type RawFailureRecord struct {
 	NonArtifactBacked bool   `json:"non_artifact_backed"`
 	TestName          string `json:"test_name"`
 	TestSuite         string `json:"test_suite"`
-	MergedPR          bool   `json:"merged_pr"`
-	// PostGoodCommitFailures is a row-level contribution to the aggregate
-	// post-good-commit failure count. It is either 0 or 1 in v1.
-	PostGoodCommitFailures int `json:"post_good_commit_failures"`
 	// SignatureID is the deterministic failure fingerprint:
 	// sha256(normalized failure text).
 	SignatureID    string `json:"signature_id"`
@@ -88,14 +85,6 @@ type TestMetadataDailyRecord struct {
 	IngestedAt             string  `json:"ingested_at"`
 }
 
-type RunCountHourlyRecord struct {
-	Environment    string `json:"environment"`
-	Hour           string `json:"hour"`
-	TotalRuns      int    `json:"total_runs"`
-	FailedRuns     int    `json:"failed_runs"`
-	SuccessfulRuns int    `json:"successful_runs"`
-}
-
 type CheckpointRecord struct {
 	Name      string `json:"name"`
 	Value     string `json:"value"`
@@ -112,6 +101,8 @@ type DeadLetterRecord struct {
 type RunStore interface {
 	UpsertRuns(ctx context.Context, runs []RunRecord) error
 	ListRunKeys(ctx context.Context) ([]string, error)
+	ListRunDates(ctx context.Context) ([]string, error)
+	ListRunsByDate(ctx context.Context, environment string, date string) ([]RunRecord, error)
 	GetRun(ctx context.Context, environment string, runURL string) (RunRecord, bool, error)
 }
 
@@ -143,12 +134,6 @@ type MetricsStore interface {
 type TestMetadataDailyStore interface {
 	UpsertTestMetadataDaily(ctx context.Context, rows []TestMetadataDailyRecord) error
 	ListTestMetadataDailyByDate(ctx context.Context, environment string, date string) ([]TestMetadataDailyRecord, error)
-}
-
-type RunCountHourlyStore interface {
-	UpsertRunCountsHourly(ctx context.Context, rows []RunCountHourlyRecord) error
-	ListRunCountHourlyHours(ctx context.Context) ([]string, error)
-	ListRunCountsHourlyByDate(ctx context.Context, environment string, date string) ([]RunCountHourlyRecord, error)
 }
 
 type CheckpointStore interface {
@@ -188,7 +173,6 @@ type Store interface {
 	RawFailureStore
 	MetricsStore
 	TestMetadataDailyStore
-	RunCountHourlyStore
 	CheckpointStore
 	DeadLetterStore
 	SemanticStore

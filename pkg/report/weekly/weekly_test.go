@@ -44,6 +44,7 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		{Environment: "dev", Date: "2026-03-01", Metric: metricCIInfraFailureCount, Value: 1},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricProvisionFailureCount, Value: 1},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricE2EFailureCount, Value: 2},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodRunCount, Value: 7},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailureCount, Value: 2},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedE2EJobs, Value: 1},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodCIInfraFailureCount, Value: 0},
@@ -63,28 +64,28 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 	}
 	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
 		{
-			Environment: "dev",
-			RunURL:      "https://run-dev-post-good-1",
-			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-			OccurredAt:  "2026-03-01T10:00:00Z",
+			Environment:    "dev",
+			RunURL:         "https://run-dev-post-good-1",
+			JobName:        "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			PostGoodCommit: true,
+			Failed:         true,
+			OccurredAt:     "2026-03-01T10:00:00Z",
 		},
 	}); err != nil {
 		t.Fatalf("seed runs: %v", err)
 	}
 	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
 		{
-			Environment:            "dev",
-			RowID:                  "dev-post-good-row-1",
-			RunURL:                 "https://run-dev-post-good-1",
-			NonArtifactBacked:      false,
-			TestName:               "Run pipeline step gather",
-			TestSuite:              "step graph",
-			MergedPR:               true,
-			PostGoodCommitFailures: 1,
-			SignatureID:            "sig-post-good-row-1",
-			OccurredAt:             "2026-03-01T10:00:00Z",
-			RawText:                "provision failed",
-			NormalizedText:         "provision failed",
+			Environment:       "dev",
+			RowID:             "dev-post-good-row-1",
+			RunURL:            "https://run-dev-post-good-1",
+			NonArtifactBacked: false,
+			TestName:          "Run pipeline step gather",
+			TestSuite:         "step graph",
+			SignatureID:       "sig-post-good-row-1",
+			OccurredAt:        "2026-03-01T10:00:00Z",
+			RawText:           "provision failed",
+			NormalizedText:    "provision failed",
 		},
 	}); err != nil {
 		t.Fatalf("seed raw failures: %v", err)

@@ -218,12 +218,6 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 	}
 
 	runs := filterRunsByJobName(allRuns, jobName)
-	hourlyCounts := buildHourlyRunCounts(environment, runs)
-	if len(hourlyCounts) > 0 {
-		if err := c.store.UpsertRunCountsHourly(ctx, hourlyCounts); err != nil {
-			return fmt.Errorf("upsert %d hourly run-count records for environment %q: %w", len(hourlyCounts), environment, err)
-		}
-	}
 
 	failedRuns := make([]sippysource.JobRun, 0, len(runs))
 	for _, run := range runs {
@@ -234,8 +228,8 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 	}
 
 	now := time.Now().UTC()
-	runRecords := make([]contracts.RunRecord, 0, len(failedRuns))
-	for _, run := range failedRuns {
+	runRecords := make([]contracts.RunRecord, 0, len(runs))
+	for _, run := range runs {
 		existing, found, err := c.store.GetRun(ctx, environment, run.RunURL)
 		if err != nil {
 			return fmt.Errorf("get existing run record for environment=%q run_url=%q: %w", environment, run.RunURL, err)
@@ -271,7 +265,6 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 		"fetched_total", len(allRuns),
 		"fetched_job_matched", len(runs),
 		"failed", len(failedRuns),
-		"hourly_buckets", len(hourlyCounts),
 		"upserted_runs", len(runRecords),
 		"pr_lookup_enabled", false,
 		"since", since.Format(time.RFC3339),
@@ -324,17 +317,6 @@ func (c *sourceSippyRunsController) syncSingleRunByKey(ctx context.Context, key 
 	targetRun, found := findRunByURL(runs, runURL)
 	if !found {
 		return fmt.Errorf("run not found in lookback window for key %q (job=%q)", key, jobName)
-	}
-
-	if !targetRun.StartedAt.IsZero() {
-		if err := c.store.UpsertRunCountsHourly(ctx, buildHourlyRunCountsForHour(environment, runs, targetRun.StartedAt)); err != nil {
-			return fmt.Errorf("upsert run-count hourly for key %q: %w", key, err)
-		}
-	}
-
-	if !targetRun.Failed {
-		c.logger.Info("Skipping run because it is not failed.", "key", key, "run_url", runURL)
-		return nil
 	}
 
 	existing, foundExisting, err := c.store.GetRun(ctx, environment, runURL)
@@ -442,6 +424,7 @@ func mapToRunRecord(environment string, run sippysource.JobRun, existing contrac
 		JobName:     strings.TrimSpace(run.JobName),
 		PRNumber:    run.PRNumber,
 		PRSHA:       normalizedPRSHA,
+		Failed:      run.Failed,
 	}
 	if periodicMergedCodeEnvironment {
 		record.PRState = ""
@@ -514,60 +497,6 @@ func dedupeRunRecords(rows []contracts.RunRecord) []contracts.RunRecord {
 
 func checkpointNameForEnvironment(environment string) string {
 	return SourceSippyRunsControllerName + "." + normalizeEnvironment(environment)
-}
-
-func buildHourlyRunCounts(environment string, runs []sippysource.JobRun) []contracts.RunCountHourlyRecord {
-	return buildHourlyRunCountsFiltered(environment, runs, time.Time{})
-}
-
-func buildHourlyRunCountsForHour(environment string, runs []sippysource.JobRun, hour time.Time) []contracts.RunCountHourlyRecord {
-	return buildHourlyRunCountsFiltered(environment, runs, hour.UTC().Truncate(time.Hour))
-}
-
-func buildHourlyRunCountsFiltered(environment string, runs []sippysource.JobRun, onlyHour time.Time) []contracts.RunCountHourlyRecord {
-	normalizedEnv := normalizeEnvironment(environment)
-	if normalizedEnv == "" {
-		return []contracts.RunCountHourlyRecord{}
-	}
-
-	filterHour := onlyHour.UTC().Truncate(time.Hour)
-	useFilter := !onlyHour.IsZero()
-
-	byHour := map[string]contracts.RunCountHourlyRecord{}
-	for _, run := range runs {
-		if run.StartedAt.IsZero() {
-			continue
-		}
-		hour := run.StartedAt.UTC().Truncate(time.Hour)
-		if useFilter && !hour.Equal(filterHour) {
-			continue
-		}
-		hourKey := hour.Format(time.RFC3339)
-
-		count := byHour[hourKey]
-		if count.Environment == "" {
-			count = contracts.RunCountHourlyRecord{
-				Environment: normalizedEnv,
-				Hour:        hourKey,
-			}
-		}
-		count.TotalRuns++
-		if run.Failed {
-			count.FailedRuns++
-		} else {
-			count.SuccessfulRuns++
-		}
-		byHour[hourKey] = count
-	}
-
-	out := make([]contracts.RunCountHourlyRecord, 0, len(byHour))
-	for _, row := range byHour {
-		out = append(out, row)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Hour < out[j].Hour
-	})
-	return out
 }
 
 func normalizeEnvironment(environment string) string {

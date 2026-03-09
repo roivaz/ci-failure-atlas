@@ -37,6 +37,7 @@ func TestSourceProwFailuresSyncOnceUpsertsArtifactRows(t *testing.T) {
 			Environment: "dev",
 			RunURL:      runURL,
 			JobName:     "job",
+			Failed:      true,
 			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
 		},
 	}); err != nil {
@@ -175,12 +176,14 @@ func TestSourceProwFailuresSyncOnceSkipsRunsOutsideActiveWindow(t *testing.T) {
 			Environment: "dev",
 			RunURL:      recentRunURL,
 			JobName:     "job",
+			Failed:      true,
 			OccurredAt:  time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
 		},
 		{
 			Environment: "dev",
 			RunURL:      oldRunURL,
 			JobName:     "job",
+			Failed:      true,
 			OccurredAt:  time.Now().UTC().Add(-21 * 24 * time.Hour).Format(time.RFC3339),
 		},
 	}); err != nil {
@@ -244,12 +247,14 @@ func TestSourceProwFailuresSyncOnceFiltersConfiguredEnvironments(t *testing.T) {
 			Environment: "dev",
 			RunURL:      devRunURL,
 			JobName:     "job-dev",
+			Failed:      true,
 			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
 		},
 		{
 			Environment: "int",
 			RunURL:      intRunURL,
 			JobName:     "job-int",
+			Failed:      true,
 			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
 		},
 	}); err != nil {
@@ -322,6 +327,7 @@ func TestSourceProwFailuresRunOnceTimesOutSlowListFailures(t *testing.T) {
 			Environment: "dev",
 			RunURL:      runURL,
 			JobName:     "job-dev",
+			Failed:      true,
 			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
 		},
 	}); err != nil {

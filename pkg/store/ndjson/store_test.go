@@ -293,16 +293,16 @@ func TestUpsertRawFailuresAndListRunKeys(t *testing.T) {
 	}
 
 	err = store.UpsertRawFailures(ctx, []contracts.RawFailureRecord{
-		{Environment: "dev", RowID: "row-2", RunURL: "https://run-b", TestName: "test-b", TestSuite: "suite-dev", MergedPR: false, PostGoodCommitFailures: 0, SignatureID: "sig-b", OccurredAt: "2026-03-05T10:00:00Z", RawText: "raw-b", NormalizedText: "norm-b"},
-		{Environment: "dev", RowID: "row-1", RunURL: "https://run-a", TestName: "test-a", TestSuite: "suite-dev", MergedPR: false, PostGoodCommitFailures: 0, SignatureID: "sig-a", OccurredAt: "2026-03-05T09:00:00Z", RawText: "raw-a", NormalizedText: "norm-a"},
-		{Environment: "int", RowID: "row-1", RunURL: "https://run-a", NonArtifactBacked: true, TestName: "test-a-int", TestSuite: "suite-int", MergedPR: true, PostGoodCommitFailures: 1, SignatureID: "sig-a-int", OccurredAt: "2026-03-05T07:00:00Z", RawText: "raw-a-int", NormalizedText: "norm-a-int"},
+		{Environment: "dev", RowID: "row-2", RunURL: "https://run-b", TestName: "test-b", TestSuite: "suite-dev", SignatureID: "sig-b", OccurredAt: "2026-03-05T10:00:00Z", RawText: "raw-b", NormalizedText: "norm-b"},
+		{Environment: "dev", RowID: "row-1", RunURL: "https://run-a", TestName: "test-a", TestSuite: "suite-dev", SignatureID: "sig-a", OccurredAt: "2026-03-05T09:00:00Z", RawText: "raw-a", NormalizedText: "norm-a"},
+		{Environment: "int", RowID: "row-1", RunURL: "https://run-a", NonArtifactBacked: true, TestName: "test-a-int", TestSuite: "suite-int", SignatureID: "sig-a-int", OccurredAt: "2026-03-05T07:00:00Z", RawText: "raw-a-int", NormalizedText: "norm-a-int"},
 	})
 	if err != nil {
 		t.Fatalf("upsert initial raw failures: %v", err)
 	}
 
 	err = store.UpsertRawFailures(ctx, []contracts.RawFailureRecord{
-		{Environment: "dev", RowID: "row-1", RunURL: "https://run-a", TestName: "test-a-updated", TestSuite: "suite-dev-updated", MergedPR: true, PostGoodCommitFailures: 1, SignatureID: "sig-a", OccurredAt: "2026-03-05T11:00:00Z", RawText: "raw-a-updated", NormalizedText: "norm-a-updated"},
+		{Environment: "dev", RowID: "row-1", RunURL: "https://run-a", TestName: "test-a-updated", TestSuite: "suite-dev-updated", SignatureID: "sig-a", OccurredAt: "2026-03-05T11:00:00Z", RawText: "raw-a-updated", NormalizedText: "norm-a-updated"},
 	})
 	if err != nil {
 		t.Fatalf("upsert updated raw failure: %v", err)
@@ -338,10 +338,6 @@ func TestUpsertRawFailuresAndListRunKeys(t *testing.T) {
 	if devRowsByRun[0].RowID != "row-1" || devRowsByRun[0].NormalizedText != "norm-a-updated" {
 		t.Fatalf("unexpected dev raw failure row for run-a: %+v", devRowsByRun[0])
 	}
-	if !devRowsByRun[0].MergedPR || devRowsByRun[0].PostGoodCommitFailures != 1 {
-		t.Fatalf("expected updated merge metadata on dev/run-a row, got=%+v", devRowsByRun[0])
-	}
-
 	rows, err := readNDJSON[contracts.RawFailureRecord](filepath.Join(store.dataDirectory, factsDirectory, rawFailuresFilename))
 	if err != nil {
 		t.Fatalf("read raw failures file: %v", err)
@@ -358,9 +354,6 @@ func TestUpsertRawFailuresAndListRunKeys(t *testing.T) {
 			}
 			if row.TestName != "test-a-updated" || row.TestSuite != "suite-dev-updated" {
 				t.Fatalf("expected updated test metadata for dev/row-1, got=%+v", row)
-			}
-			if !row.MergedPR || row.PostGoodCommitFailures != 1 {
-				t.Fatalf("expected updated merge metadata for dev/row-1, got=%+v", row)
 			}
 		}
 		if row.Environment == "int" && row.RowID == "row-1" && !row.NonArtifactBacked {
@@ -615,7 +608,7 @@ func TestUpsertTestMetadataDailyReplacesTouchedEnvironmentDatePeriodSet(t *testi
 	}
 }
 
-func TestUpsertRunCountsHourlyAndListHours(t *testing.T) {
+func TestListRunDatesAndListRunsByDate(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -624,61 +617,42 @@ func TestUpsertRunCountsHourlyAndListHours(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 
-	err = store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
-		{Environment: "dev", Hour: "2026-03-05T10:00:00Z", TotalRuns: 7, FailedRuns: 2, SuccessfulRuns: 5},
-		{Environment: "dev", Hour: "2026-03-05T09:00:00Z", TotalRuns: 5, FailedRuns: 1, SuccessfulRuns: 4},
-		{Environment: "int", Hour: "2026-03-05T10:00:00Z", TotalRuns: 3, FailedRuns: 0, SuccessfulRuns: 3},
+	err = store.UpsertRuns(ctx, []contracts.RunRecord{
+		{Environment: "dev", RunURL: "https://dev-run-2", JobName: "job-dev", Failed: true, OccurredAt: "2026-03-05T10:00:00Z"},
+		{Environment: "dev", RunURL: "https://dev-run-1", JobName: "job-dev", Failed: false, OccurredAt: "2026-03-05T09:00:00Z"},
+		{Environment: "int", RunURL: "https://int-run-1", JobName: "job-int", Failed: false, OccurredAt: "2026-03-05T10:00:00Z"},
+		{Environment: "dev", RunURL: "https://dev-run-3", JobName: "job-dev", Failed: true, OccurredAt: "2026-03-06T01:00:00Z"},
 	})
 	if err != nil {
-		t.Fatalf("upsert initial run counts hourly: %v", err)
+		t.Fatalf("upsert initial runs: %v", err)
 	}
 
-	err = store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
-		{Environment: "dev", Hour: "2026-03-05T10:10:00Z", TotalRuns: 8, FailedRuns: 3, SuccessfulRuns: 5},
-	})
+	dates, err := store.ListRunDates(ctx)
 	if err != nil {
-		t.Fatalf("upsert updated run count hourly: %v", err)
+		t.Fatalf("list run dates: %v", err)
+	}
+	wantDates := []string{"2026-03-05", "2026-03-06"}
+	if !reflect.DeepEqual(dates, wantDates) {
+		t.Fatalf("date list mismatch: got=%v want=%v", dates, wantDates)
 	}
 
-	hours, err := store.ListRunCountHourlyHours(ctx)
+	devRowsByDate, err := store.ListRunsByDate(ctx, "dev", "2026-03-05")
 	if err != nil {
-		t.Fatalf("list run count hours: %v", err)
-	}
-	wantHours := []string{"2026-03-05T09:00:00Z", "2026-03-05T10:00:00Z"}
-	if !reflect.DeepEqual(hours, wantHours) {
-		t.Fatalf("hour list mismatch: got=%v want=%v", hours, wantHours)
-	}
-
-	devRowsByDate, err := store.ListRunCountsHourlyByDate(ctx, "dev", "2026-03-05")
-	if err != nil {
-		t.Fatalf("list run counts hourly by date: %v", err)
+		t.Fatalf("list runs by date: %v", err)
 	}
 	if len(devRowsByDate) != 2 {
-		t.Fatalf("unexpected dev run-count rows by date count: got=%d want=2", len(devRowsByDate))
+		t.Fatalf("unexpected dev run rows by date count: got=%d want=2", len(devRowsByDate))
 	}
-	if devRowsByDate[0].Hour != "2026-03-05T09:00:00Z" || devRowsByDate[1].Hour != "2026-03-05T10:00:00Z" {
-		t.Fatalf("unexpected dev run-count rows by date ordering/content: %+v", devRowsByDate)
+	if devRowsByDate[0].RunURL != "https://dev-run-1" || devRowsByDate[1].RunURL != "https://dev-run-2" {
+		t.Fatalf("unexpected dev run rows by date ordering/content: %+v", devRowsByDate)
 	}
 
-	rows, err := readNDJSON[contracts.RunCountHourlyRecord](filepath.Join(store.dataDirectory, factsDirectory, runCountsHourlyFilename))
+	rows, err := readNDJSON[contracts.RunRecord](filepath.Join(store.dataDirectory, factsDirectory, runsFilename))
 	if err != nil {
-		t.Fatalf("read run counts hourly file: %v", err)
+		t.Fatalf("read runs file: %v", err)
 	}
-	if len(rows) != 3 {
-		t.Fatalf("unexpected run count hourly row count: got=%d want=3", len(rows))
-	}
-
-	var devUpdatedFound bool
-	for _, row := range rows {
-		if row.Environment == "dev" && row.Hour == "2026-03-05T10:00:00Z" {
-			devUpdatedFound = true
-			if row.TotalRuns != 8 || row.FailedRuns != 3 || row.SuccessfulRuns != 5 {
-				t.Fatalf("unexpected updated dev run count row: %+v", row)
-			}
-		}
-	}
-	if !devUpdatedFound {
-		t.Fatalf("updated run count row for dev/2026-03-05T10:00:00Z not found")
+	if len(rows) != 4 {
+		t.Fatalf("unexpected run row count: got=%d want=4", len(rows))
 	}
 }
 
@@ -1070,18 +1044,6 @@ func TestUpsertRequiresEnvironment(t *testing.T) {
 		t.Fatalf("expected UpsertRawFailures to fail without environment")
 	}
 
-	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
-		{Hour: "2026-03-05T10:00:00Z", TotalRuns: 1, FailedRuns: 1, SuccessfulRuns: 0},
-	}); err == nil {
-		t.Fatalf("expected UpsertRunCountsHourly to fail without environment")
-	}
-
-	if err := store.UpsertRunCountsHourly(ctx, []contracts.RunCountHourlyRecord{
-		{Environment: "dev", Hour: "2026-03-05T10:00:00Z", TotalRuns: 1, FailedRuns: 0, SuccessfulRuns: 0},
-	}); err == nil {
-		t.Fatalf("expected UpsertRunCountsHourly to fail on inconsistent counters")
-	}
-
 	if err := store.UpsertTestMetadataDaily(ctx, []contracts.TestMetadataDailyRecord{
 		{
 			Date:                   "2026-03-05",
@@ -1104,12 +1066,12 @@ func TestUpsertRequiresEnvironment(t *testing.T) {
 		t.Fatalf("expected ListArtifactFailuresByRun to fail without environment")
 	}
 
-	if _, err := store.ListRunCountsHourlyByDate(ctx, "", "2026-03-05"); err == nil {
-		t.Fatalf("expected ListRunCountsHourlyByDate to fail without environment")
+	if _, err := store.ListRunsByDate(ctx, "", "2026-03-05"); err == nil {
+		t.Fatalf("expected ListRunsByDate to fail without environment")
 	}
 
-	if _, err := store.ListRunCountsHourlyByDate(ctx, "dev", "20260305"); err == nil {
-		t.Fatalf("expected ListRunCountsHourlyByDate to fail with invalid date")
+	if _, err := store.ListRunsByDate(ctx, "dev", "20260305"); err == nil {
+		t.Fatalf("expected ListRunsByDate to fail with invalid date")
 	}
 
 	if _, err := store.ListRawFailuresByDate(ctx, "", "2026-03-05"); err == nil {

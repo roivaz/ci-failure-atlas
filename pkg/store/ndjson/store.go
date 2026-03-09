@@ -29,7 +29,6 @@ const (
 	rawFailuresFilename      = "raw_failures.ndjson"
 	metricsDailyFilename     = "metrics_daily.ndjson"
 	testMetadataDailyFile    = "test_metadata_daily.ndjson"
-	runCountsHourlyFilename  = "run_counts_hourly.ndjson"
 	phase1WorksetFilename    = "phase1_workset.ndjson"
 	phase1NormalizedFilename = "phase1_normalized.ndjson"
 	phase1AssignmentsFile    = "phase1_assignments.ndjson"
@@ -158,6 +157,85 @@ func (s *Store) ListRunKeys(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+func (s *Store) ListRunDates(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RunRecord](s.runsPath())
+	if err != nil {
+		return nil, err
+	}
+
+	dateSet := map[string]struct{}{}
+	for _, row := range rows {
+		normalized := normalizeRunRecord(row)
+		if normalized.Environment == "" || normalized.RunURL == "" {
+			continue
+		}
+		date, ok := dateFromTimestamp(normalized.OccurredAt)
+		if !ok {
+			continue
+		}
+		dateSet[date] = struct{}{}
+	}
+	out := make([]string, 0, len(dateSet))
+	for date := range dateSet {
+		out = append(out, date)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (s *Store) ListRunsByDate(ctx context.Context, environment string, date string) ([]contracts.RunRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	lookupEnv := normalizeEnvironment(environment)
+	if lookupEnv == "" {
+		return nil, fmt.Errorf("run lookup requires environment")
+	}
+	lookupDate, err := normalizeDate(date)
+	if err != nil {
+		return nil, fmt.Errorf("run lookup requires valid date (YYYY-MM-DD): %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RunRecord](s.runsPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.RunRecord, 0)
+	for _, row := range rows {
+		normalized := normalizeRunRecord(row)
+		if normalized.Environment != lookupEnv {
+			continue
+		}
+		runDate, ok := dateFromTimestamp(normalized.OccurredAt)
+		if !ok || runDate != lookupDate {
+			continue
+		}
+		if normalized.RunURL == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].OccurredAt != filtered[j].OccurredAt {
+			return filtered[i].OccurredAt < filtered[j].OccurredAt
+		}
+		return filtered[i].RunURL < filtered[j].RunURL
+	})
+	return filtered, nil
 }
 
 func (s *Store) GetRun(ctx context.Context, environment string, runURL string) (contracts.RunRecord, bool, error) {
@@ -644,134 +722,6 @@ func (s *Store) ListRawFailuresByDate(ctx context.Context, environment string, d
 			return filtered[i].RowID < filtered[j].RowID
 		}
 		return filtered[i].SignatureID < filtered[j].SignatureID
-	})
-
-	return filtered, nil
-}
-
-func (s *Store) UpsertRunCountsHourly(ctx context.Context, rows []contracts.RunCountHourlyRecord) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	path := s.runCountsHourlyPath()
-	existing, err := readNDJSON[contracts.RunCountHourlyRecord](path)
-	if err != nil {
-		return err
-	}
-
-	mergedByKey := map[string]contracts.RunCountHourlyRecord{}
-	for _, row := range existing {
-		normalized := normalizeRunCountHourlyRecord(row)
-		key := runCountHourlyKey(normalized)
-		if key == "" {
-			continue
-		}
-		mergedByKey[key] = normalized
-	}
-	for _, row := range rows {
-		normalized := normalizeRunCountHourlyRecord(row)
-		key := runCountHourlyKey(normalized)
-		if key == "" {
-			return fmt.Errorf("run count hourly record missing environment and/or hour")
-		}
-		if normalized.TotalRuns < 0 || normalized.FailedRuns < 0 || normalized.SuccessfulRuns < 0 {
-			return fmt.Errorf("run count hourly record has negative counters for key %q", key)
-		}
-		if normalized.TotalRuns != normalized.FailedRuns+normalized.SuccessfulRuns {
-			return fmt.Errorf("run count hourly record has inconsistent counters for key %q", key)
-		}
-		mergedByKey[key] = normalized
-	}
-
-	merged := make([]contracts.RunCountHourlyRecord, 0, len(mergedByKey))
-	for _, row := range mergedByKey {
-		merged = append(merged, row)
-	}
-	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].Environment != merged[j].Environment {
-			return merged[i].Environment < merged[j].Environment
-		}
-		return merged[i].Hour < merged[j].Hour
-	})
-
-	return writeNDJSON(path, merged)
-}
-
-func (s *Store) ListRunCountHourlyHours(ctx context.Context) ([]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rows, err := readNDJSON[contracts.RunCountHourlyRecord](s.runCountsHourlyPath())
-	if err != nil {
-		return nil, err
-	}
-
-	hoursSet := map[string]struct{}{}
-	for _, row := range rows {
-		hour := normalizeRunCountHourlyRecord(row).Hour
-		if hour == "" {
-			continue
-		}
-		hoursSet[hour] = struct{}{}
-	}
-	hours := make([]string, 0, len(hoursSet))
-	for hour := range hoursSet {
-		hours = append(hours, hour)
-	}
-	sort.Strings(hours)
-	return hours, nil
-}
-
-func (s *Store) ListRunCountsHourlyByDate(ctx context.Context, environment string, date string) ([]contracts.RunCountHourlyRecord, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	lookupEnv := normalizeEnvironment(environment)
-	if lookupEnv == "" {
-		return nil, fmt.Errorf("run count hourly lookup requires environment")
-	}
-	lookupDate, err := normalizeDate(date)
-	if err != nil {
-		return nil, fmt.Errorf("run count hourly lookup requires valid date (YYYY-MM-DD): %w", err)
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rows, err := readNDJSON[contracts.RunCountHourlyRecord](s.runCountsHourlyPath())
-	if err != nil {
-		return nil, err
-	}
-
-	filtered := make([]contracts.RunCountHourlyRecord, 0)
-	for _, row := range rows {
-		normalized := normalizeRunCountHourlyRecord(row)
-		if normalized.Environment != lookupEnv {
-			continue
-		}
-		if rowDate, ok := dateFromTimestamp(normalized.Hour); !ok || rowDate != lookupDate {
-			continue
-		}
-		if normalized.Hour == "" {
-			continue
-		}
-		filtered = append(filtered, normalized)
-	}
-
-	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].Hour < filtered[j].Hour
 	})
 
 	return filtered, nil
@@ -1723,10 +1673,6 @@ func (s *Store) testMetadataDailyPath() string {
 	return filepath.Join(s.dataDirectory, factsDirectory, testMetadataDailyFile)
 }
 
-func (s *Store) runCountsHourlyPath() string {
-	return filepath.Join(s.dataDirectory, factsDirectory, runCountsHourlyFilename)
-}
-
 func (s *Store) phase1WorksetPath() string {
 	return filepath.Join(s.dataDirectory, semanticDirectory, phase1WorksetFilename)
 }
@@ -1780,6 +1726,7 @@ func normalizeRunRecord(row contracts.RunRecord) contracts.RunRecord {
 		FinalMergedSHA: strings.TrimSpace(row.FinalMergedSHA),
 		MergedPR:       row.MergedPR,
 		PostGoodCommit: row.PostGoodCommit,
+		Failed:         row.Failed,
 		OccurredAt:     strings.TrimSpace(row.OccurredAt),
 	}
 }
@@ -1825,23 +1772,17 @@ func normalizeArtifactFailureRecord(row contracts.ArtifactFailureRecord) contrac
 }
 
 func normalizeRawFailureRecord(row contracts.RawFailureRecord) contracts.RawFailureRecord {
-	postGoodCommitFailures := row.PostGoodCommitFailures
-	if postGoodCommitFailures < 0 {
-		postGoodCommitFailures = 0
-	}
 	return contracts.RawFailureRecord{
-		Environment:            normalizeEnvironment(row.Environment),
-		RowID:                  strings.TrimSpace(row.RowID),
-		RunURL:                 strings.TrimSpace(row.RunURL),
-		NonArtifactBacked:      row.NonArtifactBacked,
-		TestName:               strings.TrimSpace(row.TestName),
-		TestSuite:              strings.TrimSpace(row.TestSuite),
-		MergedPR:               row.MergedPR,
-		PostGoodCommitFailures: postGoodCommitFailures,
-		SignatureID:            strings.TrimSpace(row.SignatureID),
-		OccurredAt:             strings.TrimSpace(row.OccurredAt),
-		RawText:                strings.TrimSpace(row.RawText),
-		NormalizedText:         strings.TrimSpace(row.NormalizedText),
+		Environment:       normalizeEnvironment(row.Environment),
+		RowID:             strings.TrimSpace(row.RowID),
+		RunURL:            strings.TrimSpace(row.RunURL),
+		NonArtifactBacked: row.NonArtifactBacked,
+		TestName:          strings.TrimSpace(row.TestName),
+		TestSuite:         strings.TrimSpace(row.TestSuite),
+		SignatureID:       strings.TrimSpace(row.SignatureID),
+		OccurredAt:        strings.TrimSpace(row.OccurredAt),
+		RawText:           strings.TrimSpace(row.RawText),
+		NormalizedText:    strings.TrimSpace(row.NormalizedText),
 	}
 }
 
@@ -1872,23 +1813,6 @@ func normalizeTestMetadataDailyRecord(row contracts.TestMetadataDailyRecord) con
 		PreviousRuns:           row.PreviousRuns,
 		NetImprovement:         row.NetImprovement,
 		IngestedAt:             strings.TrimSpace(row.IngestedAt),
-	}
-}
-
-func normalizeRunCountHourlyRecord(row contracts.RunCountHourlyRecord) contracts.RunCountHourlyRecord {
-	hour := strings.TrimSpace(row.Hour)
-	if ts, err := time.Parse(time.RFC3339Nano, hour); err == nil {
-		hour = ts.UTC().Truncate(time.Hour).Format(time.RFC3339)
-	} else if ts, err := time.Parse(time.RFC3339, hour); err == nil {
-		hour = ts.UTC().Truncate(time.Hour).Format(time.RFC3339)
-	}
-
-	return contracts.RunCountHourlyRecord{
-		Environment:    normalizeEnvironment(row.Environment),
-		Hour:           hour,
-		TotalRuns:      row.TotalRuns,
-		FailedRuns:     row.FailedRuns,
-		SuccessfulRuns: row.SuccessfulRuns,
 	}
 }
 
@@ -2188,13 +2112,6 @@ func testMetadataDailyKey(row contracts.TestMetadataDailyRecord) string {
 		return ""
 	}
 	return row.Environment + "|" + row.Date + "|" + row.Period + "|" + row.TestSuite + "|" + row.TestName
-}
-
-func runCountHourlyKey(row contracts.RunCountHourlyRecord) string {
-	if row.Environment == "" || row.Hour == "" {
-		return ""
-	}
-	return row.Environment + "|" + row.Hour
 }
 
 func runRecordKey(row contracts.RunRecord) string {

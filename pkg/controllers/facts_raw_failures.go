@@ -25,12 +25,11 @@ const (
 )
 
 type factsRawFailuresController struct {
-	logger                  logr.Logger
-	reconcileInterval       time.Duration
-	queue                   workqueue.TypedRateLimitingInterface[string]
-	activeWindow            time.Duration
-	unresolvedPRRetryWindow time.Duration
-	envSet                  map[string]struct{}
+	logger            logr.Logger
+	reconcileInterval time.Duration
+	queue             workqueue.TypedRateLimitingInterface[string]
+	activeWindow      time.Duration
+	envSet            map[string]struct{}
 
 	store contracts.Store
 }
@@ -72,11 +71,10 @@ func newFactsRawFailuresController(logger logr.Logger, deps Dependencies) (*fact
 				Name: FactsRawFailuresControllerName,
 			},
 		),
-		reconcileInterval:       factsRawFailuresReconcileInterval,
-		activeWindow:            activeReconcileWindow(deps.Source),
-		unresolvedPRRetryWindow: unresolvedPRRetryWindow(deps.Source),
-		envSet:                  envSet,
-		store:                   deps.Store,
+		reconcileInterval: factsRawFailuresReconcileInterval,
+		activeWindow:      activeReconcileWindow(deps.Source),
+		envSet:            envSet,
+		store:             deps.Store,
 	}, nil
 }
 
@@ -207,8 +205,7 @@ func (c *factsRawFailuresController) listKeys(ctx context.Context) ([]string, er
 		if !isRunWithinActiveWindow(run, c.activeWindow, now) {
 			continue
 		}
-		if run.PRNumber > 0 && !run.MergedPR && strings.EqualFold(strings.TrimSpace(run.PRState), "closed") {
-			// Closed and not merged is a terminal state for post-good reconciliation.
+		if !run.Failed {
 			continue
 		}
 		filtered = append(filtered, key)
@@ -236,12 +233,12 @@ func (c *factsRawFailuresController) processKey(ctx context.Context, key string)
 		return fmt.Errorf("get run metadata for key %q: %w", key, err)
 	}
 	occurredAt := ""
-	mergedPR := false
-	postGoodCommit := false
 	if runMetadataFound {
+		if !runRecord.Failed {
+			c.logger.V(1).Info("Skipping run; run is not failed.", "key", key, "run_url", runURL)
+			return nil
+		}
 		occurredAt = strings.TrimSpace(runRecord.OccurredAt)
-		mergedPR = runRecord.MergedPR
-		postGoodCommit = runRecord.PostGoodCommit
 	}
 
 	existingRawRows, err := c.store.ListRawFailuresByRun(ctx, environment, runURL)
@@ -253,34 +250,28 @@ func (c *factsRawFailuresController) processKey(ctx context.Context, key string)
 		return fmt.Errorf("list artifact failures for key %q: %w", key, err)
 	}
 
-	postGoodContribution := 0
-	if postGoodCommit {
-		postGoodContribution = 1
-	}
 	if len(existingRawRows) > 0 {
-		if !rawFailuresNeedRefresh(existingRawRows, mergedPR, postGoodContribution, len(artifactRows) > 0) {
+		if !rawFailuresNeedRefresh(existingRawRows, len(artifactRows) > 0) {
 			c.logger.V(1).Info("Skipping run; raw failures already materialized.", "key", key, "existing_rows", len(existingRawRows))
 			return nil
 		}
 		c.logger.V(1).Info(
-			"Refreshing raw failures for run due signal/source updates.",
+			"Refreshing raw failures for run due source updates.",
 			"key", key,
 			"existing_rows", len(existingRawRows),
 			"artifact_rows", len(artifactRows),
-			"merged_pr", mergedPR,
-			"post_good_commit_failures", postGoodContribution,
 		)
 	}
 
 	rawRows := []contracts.RawFailureRecord{}
 	switch {
 	case len(artifactRows) > 0:
-		rawRows = buildRawFailureRecords(environment, runURL, occurredAt, mergedPR, postGoodCommit, artifactRows)
+		rawRows = buildRawFailureRecords(environment, runURL, occurredAt, artifactRows)
 	case len(existingRawRows) > 0:
-		rawRows = refreshRawFailureSignals(existingRawRows, occurredAt, mergedPR, postGoodContribution)
+		rawRows = refreshRawFailureSignals(existingRawRows, occurredAt)
 	default:
 		rawRows = []contracts.RawFailureRecord{
-			buildSyntheticRawFailureRecord(environment, runURL, occurredAt, mergedPR, postGoodCommit),
+			buildSyntheticRawFailureRecord(environment, runURL, occurredAt),
 		}
 	}
 	if len(rawRows) == 0 {
@@ -297,18 +288,13 @@ func (c *factsRawFailuresController) processKey(ctx context.Context, key string)
 		"key", key,
 		"rows", len(rawRows),
 		"run_metadata_found", runMetadataFound,
-		"merged_pr", mergedPR,
-		"post_good_commit_failures", rawRows[0].PostGoodCommitFailures,
 	)
 	return nil
 }
 
-func rawFailuresNeedRefresh(existingRows []contracts.RawFailureRecord, mergedPR bool, postGoodCommitFailures int, hasArtifactRows bool) bool {
+func rawFailuresNeedRefresh(existingRows []contracts.RawFailureRecord, hasArtifactRows bool) bool {
 	existingOnlySynthetic := len(existingRows) > 0
 	for _, row := range existingRows {
-		if row.MergedPR != mergedPR || row.PostGoodCommitFailures != postGoodCommitFailures {
-			return true
-		}
 		if !row.NonArtifactBacked {
 			existingOnlySynthetic = false
 		}
@@ -319,12 +305,10 @@ func rawFailuresNeedRefresh(existingRows []contracts.RawFailureRecord, mergedPR 
 	return false
 }
 
-func refreshRawFailureSignals(existingRows []contracts.RawFailureRecord, occurredAt string, mergedPR bool, postGoodCommitFailures int) []contracts.RawFailureRecord {
+func refreshRawFailureSignals(existingRows []contracts.RawFailureRecord, occurredAt string) []contracts.RawFailureRecord {
 	out := make([]contracts.RawFailureRecord, 0, len(existingRows))
 	for _, row := range existingRows {
 		next := row
-		next.MergedPR = mergedPR
-		next.PostGoodCommitFailures = postGoodCommitFailures
 		if strings.TrimSpace(occurredAt) != "" {
 			next.OccurredAt = strings.TrimSpace(occurredAt)
 		}
@@ -342,17 +326,12 @@ func refreshRawFailureSignals(existingRows []contracts.RawFailureRecord, occurre
 	return out
 }
 
-func buildRawFailureRecords(environment, runURL, occurredAt string, mergedPR bool, postGoodCommit bool, artifactRows []contracts.ArtifactFailureRecord) []contracts.RawFailureRecord {
+func buildRawFailureRecords(environment, runURL, occurredAt string, artifactRows []contracts.ArtifactFailureRecord) []contracts.RawFailureRecord {
 	normalizedEnvironment := normalizeEnvironment(environment)
 	normalizedRunURL := strings.TrimSpace(runURL)
 	normalizedOccurredAt := strings.TrimSpace(occurredAt)
 	if normalizedEnvironment == "" || normalizedRunURL == "" || len(artifactRows) == 0 {
 		return []contracts.RawFailureRecord{}
-	}
-
-	postGoodCommitFailures := 0
-	if postGoodCommit {
-		postGoodCommitFailures = 1
 	}
 
 	ordered := make([]contracts.ArtifactFailureRecord, 0, len(artifactRows))
@@ -410,50 +389,42 @@ func buildRawFailureRecords(environment, runURL, occurredAt string, mergedPR boo
 		}
 
 		out = append(out, contracts.RawFailureRecord{
-			Environment:            normalizedEnvironment,
-			RowID:                  rowID,
-			RunURL:                 normalizedRunURL,
-			NonArtifactBacked:      false,
-			TestName:               row.TestName,
-			TestSuite:              row.TestSuite,
-			MergedPR:               mergedPR,
-			PostGoodCommitFailures: postGoodCommitFailures,
-			SignatureID:            sha256Hex(normalizedText),
-			OccurredAt:             normalizedOccurredAt,
-			RawText:                row.FailureText,
-			NormalizedText:         normalizedText,
+			Environment:       normalizedEnvironment,
+			RowID:             rowID,
+			RunURL:            normalizedRunURL,
+			NonArtifactBacked: false,
+			TestName:          row.TestName,
+			TestSuite:         row.TestSuite,
+			SignatureID:       sha256Hex(normalizedText),
+			OccurredAt:        normalizedOccurredAt,
+			RawText:           row.FailureText,
+			NormalizedText:    normalizedText,
 		})
 	}
 
 	return out
 }
 
-func buildSyntheticRawFailureRecord(environment, runURL, occurredAt string, mergedPR bool, postGoodCommit bool) contracts.RawFailureRecord {
+func buildSyntheticRawFailureRecord(environment, runURL, occurredAt string) contracts.RawFailureRecord {
 	normalizedEnvironment := normalizeEnvironment(environment)
 	normalizedRunURL := strings.TrimSpace(runURL)
 	normalizedOccurredAt := strings.TrimSpace(occurredAt)
 	normalizedText := factsnormalize.Text(rawFailureSyntheticText)
-	postGoodCommitFailures := 0
-	if postGoodCommit {
-		postGoodCommitFailures = 1
-	}
 	rowID := sha256Hex(strings.Join([]string{
 		normalizedEnvironment,
 		normalizedRunURL,
 		"non_artifact_backed",
 	}, "|"))
 	return contracts.RawFailureRecord{
-		Environment:            normalizedEnvironment,
-		RowID:                  rowID,
-		RunURL:                 normalizedRunURL,
-		NonArtifactBacked:      true,
-		TestName:               rawFailureUnknownPlaceholder,
-		TestSuite:              rawFailureUnknownPlaceholder,
-		MergedPR:               mergedPR,
-		PostGoodCommitFailures: postGoodCommitFailures,
-		SignatureID:            sha256Hex(normalizedText),
-		OccurredAt:             normalizedOccurredAt,
-		RawText:                rawFailureSyntheticText,
-		NormalizedText:         normalizedText,
+		Environment:       normalizedEnvironment,
+		RowID:             rowID,
+		RunURL:            normalizedRunURL,
+		NonArtifactBacked: true,
+		TestName:          rawFailureUnknownPlaceholder,
+		TestSuite:         rawFailureUnknownPlaceholder,
+		SignatureID:       sha256Hex(normalizedText),
+		OccurredAt:        normalizedOccurredAt,
+		RawText:           rawFailureSyntheticText,
+		NormalizedText:    normalizedText,
 	}
 }

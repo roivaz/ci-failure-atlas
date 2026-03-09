@@ -29,6 +29,7 @@ const (
 	metricProvisionFailureCount   = "provision_failure_count"
 	metricE2EFailureCount         = "e2e_failure_count"
 
+	metricPostGoodRunCount              = "post_good_run_count"
 	metricPostGoodFailureCount          = "post_good_failure_count"
 	metricPostGoodFailedE2EJobs         = "post_good_failed_e2e_jobs"
 	metricPostGoodCIInfraFailureCount   = "post_good_ci_infra_failure_count"
@@ -170,31 +171,24 @@ func (c *metricsRollupDailyController) queueMetadata(ctx context.Context) {
 }
 
 func (c *metricsRollupDailyController) listKeys(ctx context.Context) ([]string, error) {
-	hours, err := c.store.ListRunCountHourlyHours(ctx)
+	dates, err := c.store.ListRunDates(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list run count hourly hours: %w", err)
+		return nil, fmt.Errorf("list run dates: %w", err)
 	}
-
-	dateSet := map[string]struct{}{}
 	now := time.Now().UTC()
-	for _, hour := range hours {
-		hourValue := strings.TrimSpace(hour)
-		if !isTimestampWithinWindow(hourValue, c.activeWindow, now) {
+	filtered := make([]string, 0, len(dates))
+	for _, date := range dates {
+		dateValue := strings.TrimSpace(date)
+		if dateValue == "" {
 			continue
 		}
-		date, ok := dateFromMetricTimestamp(hourValue)
-		if !ok {
+		if !isDateWithinWindow(dateValue, c.activeWindow, now) {
 			continue
 		}
-		dateSet[date] = struct{}{}
+		filtered = append(filtered, dateValue)
 	}
-
-	dates := make([]string, 0, len(dateSet))
-	for date := range dateSet {
-		dates = append(dates, date)
-	}
-	sort.Strings(dates)
-	return dates, nil
+	sort.Strings(filtered)
+	return filtered, nil
 }
 
 func (c *metricsRollupDailyController) processKey(ctx context.Context, key string) error {
@@ -203,7 +197,7 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		return fmt.Errorf("invalid rollup date key %q: %w", key, err)
 	}
 
-	out := make([]contracts.MetricDailyRecord, 0, len(c.envs)*10)
+	out := make([]contracts.MetricDailyRecord, 0, len(c.envs)*12)
 	for _, env := range c.envs {
 		existingRows, err := c.store.ListMetricsDailyByDate(ctx, env, date)
 		if err != nil {
@@ -214,9 +208,9 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 			continue
 		}
 
-		rows, err := c.store.ListRunCountsHourlyByDate(ctx, env, date)
+		runs, err := c.store.ListRunsByDate(ctx, env, date)
 		if err != nil {
-			return fmt.Errorf("list run-count hourly rows for env=%q date=%q: %w", env, date, err)
+			return fmt.Errorf("list runs for env=%q date=%q: %w", env, date, err)
 		}
 
 		rawFailures, err := c.store.ListRawFailuresByDate(ctx, env, date)
@@ -224,11 +218,26 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 			return fmt.Errorf("list raw failures for env=%q date=%q: %w", env, date, err)
 		}
 
-		totalRuns := 0
+		totalRuns := len(runs)
 		failedRuns := 0
-		for _, row := range rows {
-			totalRuns += row.TotalRuns
-			failedRuns += row.FailedRuns
+		failedRunURLs := map[string]struct{}{}
+		postGoodRunCount := 0
+		postGoodFailedRunURLs := map[string]struct{}{}
+		for _, run := range runs {
+			runURL := strings.TrimSpace(run.RunURL)
+			if run.PostGoodCommit {
+				postGoodRunCount++
+			}
+			if !run.Failed {
+				continue
+			}
+			failedRuns++
+			if runURL != "" {
+				failedRunURLs[runURL] = struct{}{}
+			}
+			if run.PostGoodCommit && runURL != "" {
+				postGoodFailedRunURLs[runURL] = struct{}{}
+			}
 		}
 
 		failureRowCount := len(rawFailures)
@@ -241,7 +250,6 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		e2eRows := 0
 		failedRunLaneByRunURL := map[string]string{}
 		postGoodFailureRows := 0
-		postGoodFailedE2EJobsSet := map[string]struct{}{}
 		postGoodCIInfraRows := 0
 		postGoodProvisionRows := 0
 		postGoodE2ERows := 0
@@ -262,15 +270,15 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 				ciInfraRows++
 			}
 			runURL := strings.TrimSpace(row.RunURL)
-			if runURL != "" {
+			if _, failedRun := failedRunURLs[runURL]; failedRun && runURL != "" {
 				failedRunLaneByRunURL[runURL] = mergeFailedRunLaneFamily(failedRunLaneByRunURL[runURL], laneFamily)
 			}
 
-			if env == "dev" && row.PostGoodCommitFailures > 0 {
-				postGoodFailureRows++
-				if runURL != "" {
-					postGoodFailedE2EJobsSet[runURL] = struct{}{}
+			if env == "dev" {
+				if _, postGoodFailedRun := postGoodFailedRunURLs[runURL]; !postGoodFailedRun {
+					continue
 				}
+				postGoodFailureRows++
 				switch laneFamily {
 				case laneFamilyProvision:
 					postGoodProvisionRows++
@@ -315,9 +323,11 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricE2EFailureCount, Value: float64(e2eRows)},
 		)
 		if env == "dev" {
+			postGoodFailedRunCount := len(postGoodFailedRunURLs)
 			out = append(out,
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodRunCount, Value: float64(postGoodRunCount)},
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailureCount, Value: float64(postGoodFailureRows)},
-				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailedE2EJobs, Value: float64(len(postGoodFailedE2EJobsSet))},
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailedE2EJobs, Value: float64(postGoodFailedRunCount)},
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodCIInfraFailureCount, Value: float64(postGoodCIInfraRows)},
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodProvisionFailureCount, Value: float64(postGoodProvisionRows)},
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodE2EFailureCount, Value: float64(postGoodE2ERows)},
@@ -350,18 +360,20 @@ func normalizeRollupDate(value string) (string, error) {
 	return parsed.UTC().Format("2006-01-02"), nil
 }
 
-func dateFromMetricTimestamp(value string) (string, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "", false
+func isDateWithinWindow(value string, window time.Duration, now time.Time) bool {
+	if window <= 0 {
+		return true
 	}
-	if ts, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
-		return ts.UTC().Format("2006-01-02"), true
+	normalized, err := normalizeRollupDate(value)
+	if err != nil {
+		return false
 	}
-	if ts, err := time.Parse(time.RFC3339, trimmed); err == nil {
-		return ts.UTC().Format("2006-01-02"), true
+	parsed, err := time.Parse("2006-01-02", normalized)
+	if err != nil {
+		return false
 	}
-	return "", false
+	dayEnd := parsed.UTC().Add(24 * time.Hour)
+	return now.Sub(dayEnd) <= window
 }
 
 func hasRequiredMetricSet(existingRows []contracts.MetricDailyRecord, environment string) bool {
@@ -404,6 +416,7 @@ func requiredMetricSet(environment string) []string {
 		return required
 	}
 	return append(required,
+		metricPostGoodRunCount,
 		metricPostGoodFailureCount,
 		metricPostGoodFailedE2EJobs,
 		metricPostGoodCIInfraFailureCount,

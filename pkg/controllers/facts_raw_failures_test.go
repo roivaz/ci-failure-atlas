@@ -35,6 +35,7 @@ func TestFactsRawFailuresSyncOnceUsesRunOccurredAt(t *testing.T) {
 			Environment: "dev",
 			RunURL:      runURL,
 			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			Failed:      true,
 			OccurredAt:  occurredAt,
 		},
 	}); err != nil {
@@ -96,12 +97,6 @@ func TestFactsRawFailuresSyncOnceUsesRunOccurredAt(t *testing.T) {
 		if row.OccurredAt != occurredAt {
 			t.Fatalf("expected occurred_at=%q from run metadata, got row=%+v", occurredAt, row)
 		}
-		if row.MergedPR {
-			t.Fatalf("expected merged_pr=false for non-enriched run, got row=%+v", row)
-		}
-		if row.PostGoodCommitFailures != 0 {
-			t.Fatalf("expected post_good_commit_failures=0 for non-post-good run, got row=%+v", row)
-		}
 		if row.SignatureID != sha256Hex(row.NormalizedText) {
 			t.Fatalf("expected signature_id=sha256(normalized_text), got row=%+v", row)
 		}
@@ -137,6 +132,7 @@ func TestFactsRawFailuresSyncOnceMaterializesSyntheticNonArtifactRows(t *testing
 			Environment: "dev",
 			RunURL:      runURL,
 			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			Failed:      true,
 			OccurredAt:  occurredAt,
 		},
 	}); err != nil {
@@ -193,6 +189,7 @@ func TestFactsRawFailuresRunOnceUpgradesSyntheticRowToArtifactBacked(t *testing.
 			Environment: "dev",
 			RunURL:      runURL,
 			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			Failed:      true,
 			OccurredAt:  "2026-03-06T12:00:00Z",
 		},
 	}); err != nil {
@@ -352,7 +349,7 @@ func TestFactsRawFailuresRunOnceSkipsAlreadyMaterializedRun(t *testing.T) {
 	}
 }
 
-func TestFactsRawFailuresRunOnceRefreshesPRMergeSignals(t *testing.T) {
+func TestFactsRawFailuresRunOnceRefreshesOccurredAt(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -375,6 +372,7 @@ func TestFactsRawFailuresRunOnceRefreshesPRMergeSignals(t *testing.T) {
 			FinalMergedSHA: "",
 			MergedPR:       false,
 			PostGoodCommit: false,
+			Failed:         true,
 			OccurredAt:     occurredAt,
 		},
 	}); err != nil {
@@ -415,6 +413,7 @@ func TestFactsRawFailuresRunOnceRefreshesPRMergeSignals(t *testing.T) {
 			FinalMergedSHA: "sha-7001",
 			MergedPR:       true,
 			PostGoodCommit: true,
+			Failed:         true,
 			OccurredAt:     occurredAt,
 		},
 	}); err != nil {
@@ -428,12 +427,12 @@ func TestFactsRawFailuresRunOnceRefreshesPRMergeSignals(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("unexpected raw failure row count: got=%d want=1", len(rows))
 	}
-	if !rows[0].MergedPR || rows[0].PostGoodCommitFailures != 1 {
-		t.Fatalf("expected refreshed merge signal fields (merged_pr=true, post_good_commit_failures=1), got row=%+v", rows[0])
+	if rows[0].OccurredAt != occurredAt {
+		t.Fatalf("expected refreshed occurred_at, got row=%+v", rows[0])
 	}
 }
 
-func TestFactsRawFailuresSyncOnceSkipsClosedNotMergedPR(t *testing.T) {
+func TestFactsRawFailuresSyncOnceSkipsSuccessfulRuns(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -456,6 +455,7 @@ func TestFactsRawFailuresSyncOnceSkipsClosedNotMergedPR(t *testing.T) {
 			FinalMergedSHA: "",
 			MergedPR:       false,
 			PostGoodCommit: false,
+			Failed:         false,
 			OccurredAt:     time.Now().UTC().Add(-10 * 24 * time.Hour).Format(time.RFC3339),
 		},
 	}); err != nil {
@@ -491,7 +491,7 @@ func TestFactsRawFailuresSyncOnceSkipsClosedNotMergedPR(t *testing.T) {
 		t.Fatalf("list raw failure run keys: %v", err)
 	}
 	if len(keys) != 0 {
-		t.Fatalf("expected closed-not-merged PR run to be skipped, got keys=%v", keys)
+		t.Fatalf("expected successful run to be skipped, got keys=%v", keys)
 	}
 }
 
@@ -514,12 +514,14 @@ func TestFactsRawFailuresSyncOnceFiltersConfiguredEnvironments(t *testing.T) {
 			Environment: "dev",
 			RunURL:      devRunURL,
 			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			Failed:      true,
 			OccurredAt:  occurredAt,
 		},
 		{
 			Environment: "int",
 			RunURL:      intRunURL,
 			JobName:     "periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel",
+			Failed:      true,
 			OccurredAt:  occurredAt,
 		},
 	}); err != nil {

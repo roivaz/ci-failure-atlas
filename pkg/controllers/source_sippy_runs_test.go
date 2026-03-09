@@ -1,13 +1,7 @@
 package controllers
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -94,11 +88,8 @@ func TestSourceSippyRunsSyncOnceUpsertsFailedRunsAndCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list run keys: %v", err)
 	}
-	if len(keys) != 1 {
-		t.Fatalf("unexpected run keys length: got=%d want=%d keys=%v", len(keys), 1, keys)
-	}
-	if keys[0] != "dev|https://prow.ci.openshift.org/view/gs/test-platform-results/job-a/1" {
-		t.Fatalf("unexpected run key: %q", keys[0])
+	if len(keys) != 2 {
+		t.Fatalf("unexpected run keys length: got=%d want=%d keys=%v", len(keys), 2, keys)
 	}
 	run, found, err := store.GetRun(ctx, "dev", "https://prow.ci.openshift.org/view/gs/test-platform-results/job-a/1")
 	if err != nil {
@@ -110,33 +101,18 @@ func TestSourceSippyRunsSyncOnceUpsertsFailedRunsAndCheckpoint(t *testing.T) {
 	if run.MergedPR || run.PostGoodCommit || run.FinalMergedSHA != "" || run.PRState != "" {
 		t.Fatalf("unexpected run merge fields before facts.runs materialization: %+v", run)
 	}
-
-	hours, err := store.ListRunCountHourlyHours(ctx)
+	if !run.Failed {
+		t.Fatalf("expected job-a run to be marked failed")
+	}
+	runB, found, err := store.GetRun(ctx, "dev", "https://prow.ci.openshift.org/view/gs/test-platform-results/job-b/2")
 	if err != nil {
-		t.Fatalf("list run count hourly hours: %v", err)
+		t.Fatalf("get run metadata for job-b: %v", err)
 	}
-	wantHours := []string{"2026-01-02T03:00:00Z", "2026-01-02T04:00:00Z"}
-	if !reflect.DeepEqual(hours, wantHours) {
-		t.Fatalf("unexpected run count hourly hour list: got=%v want=%v", hours, wantHours)
+	if !found {
+		t.Fatalf("expected run metadata for dev/job-b/2")
 	}
-
-	runCountRows := mustReadRunCountHourlyRows(t, filepath.Join(dataDir, "facts", "run_counts_hourly.ndjson"))
-	if len(runCountRows) != 2 {
-		t.Fatalf("unexpected run count row count: got=%d want=2", len(runCountRows))
-	}
-	for _, row := range runCountRows {
-		switch row.Hour {
-		case "2026-01-02T03:00:00Z":
-			if row.TotalRuns != 1 || row.FailedRuns != 1 || row.SuccessfulRuns != 0 {
-				t.Fatalf("unexpected counters for hour %s: %+v", row.Hour, row)
-			}
-		case "2026-01-02T04:00:00Z":
-			if row.TotalRuns != 1 || row.FailedRuns != 0 || row.SuccessfulRuns != 1 {
-				t.Fatalf("unexpected counters for hour %s: %+v", row.Hour, row)
-			}
-		default:
-			t.Fatalf("unexpected hour in run counts: %s", row.Hour)
-		}
+	if runB.Failed {
+		t.Fatalf("expected job-b run to be marked successful")
 	}
 
 	checkpoint, found, err := store.GetCheckpoint(ctx, checkpointNameForEnvironment("dev"))
@@ -404,32 +380,4 @@ func mustCompleteSourceOptions(t *testing.T, envs []string) *sourceoptions.Optio
 		t.Fatalf("complete source options: %v", err)
 	}
 	return completed
-}
-
-func mustReadRunCountHourlyRows(t *testing.T, path string) []contracts.RunCountHourlyRecord {
-	t.Helper()
-
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("open run counts file %q: %v", path, err)
-	}
-	defer f.Close()
-
-	rows := make([]contracts.RunCountHourlyRecord, 0)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var row contracts.RunCountHourlyRecord
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			t.Fatalf("decode run count hourly row %q: %v", line, err)
-		}
-		rows = append(rows, row)
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scan run counts file %q: %v", path, err)
-	}
-	return rows
 }

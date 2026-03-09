@@ -188,6 +188,9 @@ func (c *sourceProwFailuresController) listKeys(ctx context.Context) ([]string, 
 		if !isRunWithinActiveWindow(run, c.activeWindow, now) {
 			continue
 		}
+		if !run.Failed {
+			continue
+		}
 		filtered = append(filtered, key)
 	}
 	return filtered, nil
