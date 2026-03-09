@@ -16,27 +16,15 @@ import (
 const (
 	windowDays = 7
 
-	metricRunCount                      = "run_count"
-	metricFailureCount                  = "failure_count"
-	metricFailureRowCount               = "failure_row_count"
-	metricFailedCIInfraRunCount         = "failed_ci_infra_run_count"
-	metricFailedProvisionRunCount       = "failed_provision_run_count"
-	metricFailedE2ERunCount             = "failed_e2e_run_count"
-	metricCIInfraFailureCount           = "ci_infra_failure_count"
-	metricProvisionFailureCount         = "provision_failure_count"
-	metricE2EFailureCount               = "e2e_failure_count"
-	metricPostGoodRunCount              = "post_good_run_count"
-	metricPostGoodFailureCount          = "post_good_failure_count"
-	metricPostGoodFailedE2EJobs         = "post_good_failed_e2e_jobs"
-	metricPostGoodCIInfraFailureCount   = "post_good_ci_infra_failure_count"
-	metricPostGoodProvisionFailureCount = "post_good_provision_failure_count"
-	metricPostGoodE2EFailureCount       = "post_good_e2e_failure_count"
-)
-
-const (
-	runLaneCIInfra   = "ci_infra"
-	runLaneProvision = "provision"
-	runLaneE2E       = "e2e"
+	metricRunCount                = "run_count"
+	metricFailureCount            = "failure_count"
+	metricFailedCIInfraRunCount   = "failed_ci_infra_run_count"
+	metricFailedProvisionRunCount = "failed_provision_run_count"
+	metricFailedE2ERunCount       = "failed_e2e_run_count"
+	metricPostGoodRunCount        = "post_good_run_count"
+	metricPostGoodFailedE2EJobs   = "post_good_failed_e2e_jobs"
+	metricPostGoodFailedCIInfra   = "post_good_failed_ci_infra_run_count"
+	metricPostGoodFailedProvision = "post_good_failed_provision_run_count"
 )
 
 var reportEnvironments = []string{"dev", "int", "stg", "prod"}
@@ -52,21 +40,15 @@ type validatedOptions struct {
 }
 
 type counts struct {
-	RunCount                      int
-	FailureCount                  int
-	FailureRowCount               int
-	FailedCIInfraRunCount         int
-	FailedProvisionRunCount       int
-	FailedE2ERunCount             int
-	CIInfraFailureCount           int
-	ProvisionFailureCount         int
-	E2EFailureCount               int
-	PostGoodRunCount              int
-	PostGoodFailureCount          int
-	PostGoodFailedE2EJobs         int
-	PostGoodCIInfraFailureCount   int
-	PostGoodProvisionFailureCount int
-	PostGoodE2EFailureCount       int
+	RunCount                int
+	FailureCount            int
+	FailedCIInfraRunCount   int
+	FailedProvisionRunCount int
+	FailedE2ERunCount       int
+	PostGoodRunCount        int
+	PostGoodFailedE2EJobs   int
+	PostGoodFailedCIInfra   int
+	PostGoodFailedProvision int
 }
 
 type runOutcomes struct {
@@ -123,11 +105,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 				Counts: dayCounts,
 			}
 			if env == "dev" {
-				postGoodOutcomes, err := collectPostGoodRunOutcomes(ctx, store, env, date, dayCounts)
-				if err != nil {
-					return fmt.Errorf("collect post-good run outcomes for env=%q date=%q: %w", env, date, err)
-				}
-				day.PostGoodRunOutcomes = postGoodOutcomes
+				day.PostGoodRunOutcomes = collectPostGoodRunOutcomes(dayCounts)
 			}
 			report.Days = append(report.Days, day)
 			report.Totals = addCounts(report.Totals, dayCounts)
@@ -187,32 +165,20 @@ func collectCounts(rows []storecontracts.MetricDailyRecord) counts {
 			out.RunCount = value
 		case metricFailureCount:
 			out.FailureCount = value
-		case metricFailureRowCount:
-			out.FailureRowCount = value
 		case metricFailedCIInfraRunCount:
 			out.FailedCIInfraRunCount = value
 		case metricFailedProvisionRunCount:
 			out.FailedProvisionRunCount = value
 		case metricFailedE2ERunCount:
 			out.FailedE2ERunCount = value
-		case metricCIInfraFailureCount:
-			out.CIInfraFailureCount = value
-		case metricProvisionFailureCount:
-			out.ProvisionFailureCount = value
-		case metricE2EFailureCount:
-			out.E2EFailureCount = value
 		case metricPostGoodRunCount:
 			out.PostGoodRunCount = value
-		case metricPostGoodFailureCount:
-			out.PostGoodFailureCount = value
 		case metricPostGoodFailedE2EJobs:
 			out.PostGoodFailedE2EJobs = value
-		case metricPostGoodCIInfraFailureCount:
-			out.PostGoodCIInfraFailureCount = value
-		case metricPostGoodProvisionFailureCount:
-			out.PostGoodProvisionFailureCount = value
-		case metricPostGoodE2EFailureCount:
-			out.PostGoodE2EFailureCount = value
+		case metricPostGoodFailedCIInfra:
+			out.PostGoodFailedCIInfra = value
+		case metricPostGoodFailedProvision:
+			out.PostGoodFailedProvision = value
 		}
 	}
 	return out
@@ -220,21 +186,15 @@ func collectCounts(rows []storecontracts.MetricDailyRecord) counts {
 
 func addCounts(a counts, b counts) counts {
 	return counts{
-		RunCount:                      a.RunCount + b.RunCount,
-		FailureCount:                  a.FailureCount + b.FailureCount,
-		FailureRowCount:               a.FailureRowCount + b.FailureRowCount,
-		FailedCIInfraRunCount:         a.FailedCIInfraRunCount + b.FailedCIInfraRunCount,
-		FailedProvisionRunCount:       a.FailedProvisionRunCount + b.FailedProvisionRunCount,
-		FailedE2ERunCount:             a.FailedE2ERunCount + b.FailedE2ERunCount,
-		CIInfraFailureCount:           a.CIInfraFailureCount + b.CIInfraFailureCount,
-		ProvisionFailureCount:         a.ProvisionFailureCount + b.ProvisionFailureCount,
-		E2EFailureCount:               a.E2EFailureCount + b.E2EFailureCount,
-		PostGoodRunCount:              a.PostGoodRunCount + b.PostGoodRunCount,
-		PostGoodFailureCount:          a.PostGoodFailureCount + b.PostGoodFailureCount,
-		PostGoodFailedE2EJobs:         a.PostGoodFailedE2EJobs + b.PostGoodFailedE2EJobs,
-		PostGoodCIInfraFailureCount:   a.PostGoodCIInfraFailureCount + b.PostGoodCIInfraFailureCount,
-		PostGoodProvisionFailureCount: a.PostGoodProvisionFailureCount + b.PostGoodProvisionFailureCount,
-		PostGoodE2EFailureCount:       a.PostGoodE2EFailureCount + b.PostGoodE2EFailureCount,
+		RunCount:                a.RunCount + b.RunCount,
+		FailureCount:            a.FailureCount + b.FailureCount,
+		FailedCIInfraRunCount:   a.FailedCIInfraRunCount + b.FailedCIInfraRunCount,
+		FailedProvisionRunCount: a.FailedProvisionRunCount + b.FailedProvisionRunCount,
+		FailedE2ERunCount:       a.FailedE2ERunCount + b.FailedE2ERunCount,
+		PostGoodRunCount:        a.PostGoodRunCount + b.PostGoodRunCount,
+		PostGoodFailedE2EJobs:   a.PostGoodFailedE2EJobs + b.PostGoodFailedE2EJobs,
+		PostGoodFailedCIInfra:   a.PostGoodFailedCIInfra + b.PostGoodFailedCIInfra,
+		PostGoodFailedProvision: a.PostGoodFailedProvision + b.PostGoodFailedProvision,
 	}
 }
 
@@ -299,16 +259,12 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 		b.WriteString(fmt.Sprintf("  <section class=\"env\">\n    <h2>Environment: %s</h2>\n", html.EscapeString(envLabel)))
 		b.WriteString("    <div class=\"cards\">\n")
 		b.WriteString(cardHTML("E2E Jobs", report.Totals.RunCount))
-		b.WriteString(cardHTML("Failed E2E Jobs", report.Totals.FailureCount))
-		b.WriteString(cardHTML("Failed Tests", report.Totals.FailureRowCount))
 		b.WriteString(cardHTML("Success Rate", fmt.Sprintf("%.2f%%", successPct(report.Totals.RunCount, report.Totals.FailureCount))))
 		b.WriteString("    </div>\n")
 		if report.Environment == "dev" {
 			postGoodTotals := summarizePostGoodRunOutcomes(report.Days)
 			b.WriteString("    <div class=\"cards cards-post-good\">\n")
 			b.WriteString(cardHTML("E2E Jobs (good commits)", postGoodTotals.TotalRuns))
-			b.WriteString(cardHTML("Failed E2E Jobs (good commits)", postGoodTotals.FailedRuns))
-			b.WriteString(cardHTML("Failed Tests (good commits)", report.Totals.PostGoodFailureCount))
 			b.WriteString(cardHTML("Success Rate (good commits)", fmt.Sprintf("%.2f%%", successPct(postGoodTotals.TotalRuns, postGoodTotals.FailedRuns))))
 			b.WriteString("    </div>\n")
 		}
@@ -458,70 +414,19 @@ func dailyRunOutcomeCounts(day counts) (successfulRuns int, ciInfraFailedRuns in
 	return successfulRuns, ciInfraFailedRuns, provisionFailedRuns, e2eFailedRuns
 }
 
-func collectPostGoodRunOutcomes(
-	ctx context.Context,
-	store storecontracts.Store,
-	environment string,
-	date string,
-	day counts,
-) (runOutcomes, error) {
+func collectPostGoodRunOutcomes(day counts) runOutcomes {
 	out := runOutcomes{}
 
-	rawRows, err := store.ListRawFailuresByDate(ctx, environment, date)
-	if err != nil {
-		return runOutcomes{}, err
-	}
+	ciInfraFailedRuns := day.PostGoodFailedCIInfra
+	provisionFailedRuns := day.PostGoodFailedProvision
+	e2eFailedRuns := day.PostGoodFailedE2EJobs
+	totalFailedRuns := ciInfraFailedRuns + provisionFailedRuns + e2eFailedRuns
 
-	failedLaneByRunURL := map[string]string{}
-	runCache := map[string]storecontracts.RunRecord{}
-	runFoundCache := map[string]bool{}
-	for _, row := range rawRows {
-		runURL := strings.TrimSpace(row.RunURL)
-		if runURL == "" {
-			continue
-		}
-		postGoodRun, err := isPostGoodRun(ctx, store, environment, runURL, runCache, runFoundCache)
-		if err != nil {
-			return runOutcomes{}, err
-		}
-		if !postGoodRun {
-			continue
-		}
-		lane, err := classifyPostGoodRunLane(ctx, store, environment, row, runCache, runFoundCache)
-		if err != nil {
-			return runOutcomes{}, err
-		}
-		failedLaneByRunURL[runURL] = mergePostGoodFailedRunLane(failedLaneByRunURL[runURL], lane)
-	}
-
-	ciInfraFailedRuns := 0
-	provisionFailedRuns := 0
-	e2eFailedRuns := 0
-	for _, lane := range failedLaneByRunURL {
-		switch lane {
-		case runLaneProvision:
-			provisionFailedRuns++
-		case runLaneE2E:
-			e2eFailedRuns++
-		default:
-			ciInfraFailedRuns++
-		}
-	}
-
-	// post_good_failed_e2e_jobs is the post-good failed-run denominator.
-	postGoodFailedRuns := day.PostGoodFailedE2EJobs
-	accountedFailedRuns := ciInfraFailedRuns + provisionFailedRuns + e2eFailedRuns
-	if postGoodFailedRuns < accountedFailedRuns {
-		postGoodFailedRuns = accountedFailedRuns
-	}
-	if postGoodFailedRuns > accountedFailedRuns {
-		ciInfraFailedRuns += postGoodFailedRuns - accountedFailedRuns
-	}
 	totalRuns := day.PostGoodRunCount
-	if totalRuns < postGoodFailedRuns {
-		totalRuns = postGoodFailedRuns
+	if totalRuns < totalFailedRuns {
+		totalRuns = totalFailedRuns
 	}
-	successfulRuns := totalRuns - postGoodFailedRuns
+	successfulRuns := totalRuns - totalFailedRuns
 	if successfulRuns < 0 {
 		successfulRuns = 0
 	}
@@ -531,37 +436,7 @@ func collectPostGoodRunOutcomes(
 	out.CIInfraFailedRuns = ciInfraFailedRuns
 	out.ProvisionFailedRuns = provisionFailedRuns
 	out.E2EFailedRuns = e2eFailedRuns
-	return out, nil
-}
-
-func isPostGoodRun(
-	ctx context.Context,
-	store storecontracts.Store,
-	environment string,
-	runURL string,
-	runCache map[string]storecontracts.RunRecord,
-	runFoundCache map[string]bool,
-) (bool, error) {
-	normalizedRunURL := strings.TrimSpace(runURL)
-	if normalizedRunURL == "" {
-		return false, nil
-	}
-	if cachedFound, ok := runFoundCache[normalizedRunURL]; ok {
-		if !cachedFound {
-			return false, nil
-		}
-		return runCache[normalizedRunURL].PostGoodCommit, nil
-	}
-	run, found, err := store.GetRun(ctx, environment, normalizedRunURL)
-	if err != nil {
-		return false, err
-	}
-	runFoundCache[normalizedRunURL] = found
-	if !found {
-		return false, nil
-	}
-	runCache[normalizedRunURL] = run
-	return run.PostGoodCommit, nil
+	return out
 }
 
 type runOutcomesTotals struct {
@@ -580,98 +455,6 @@ func summarizePostGoodRunOutcomes(days []dayReport) runOutcomesTotals {
 			day.PostGoodRunOutcomes.E2EFailedRuns
 	}
 	return out
-}
-
-func classifyPostGoodRunLane(
-	ctx context.Context,
-	store storecontracts.Store,
-	environment string,
-	row storecontracts.RawFailureRecord,
-	runCache map[string]storecontracts.RunRecord,
-	runFoundCache map[string]bool,
-) (string, error) {
-	if row.NonArtifactBacked {
-		return runLaneCIInfra, nil
-	}
-
-	runURL := strings.TrimSpace(row.RunURL)
-	jobName := ""
-	if runURL != "" {
-		if cachedFound, ok := runFoundCache[runURL]; ok {
-			if cachedFound {
-				jobName = strings.TrimSpace(runCache[runURL].JobName)
-			}
-		} else {
-			run, found, err := store.GetRun(ctx, environment, runURL)
-			if err != nil {
-				return "", err
-			}
-			runFoundCache[runURL] = found
-			if found {
-				runCache[runURL] = run
-				jobName = strings.TrimSpace(run.JobName)
-			}
-		}
-	}
-
-	switch deriveRunLane(jobName, row.TestName, row.TestSuite) {
-	case runLaneProvision:
-		return runLaneProvision, nil
-	case runLaneE2E:
-		return runLaneE2E, nil
-	default:
-		return runLaneCIInfra, nil
-	}
-}
-
-func mergePostGoodFailedRunLane(current string, next string) string {
-	currentRank := postGoodFailedRunLaneRank(current)
-	nextRank := postGoodFailedRunLaneRank(next)
-	if nextRank > currentRank {
-		return normalizePostGoodFailedRunLane(next)
-	}
-	return normalizePostGoodFailedRunLane(current)
-}
-
-func postGoodFailedRunLaneRank(lane string) int {
-	switch normalizePostGoodFailedRunLane(lane) {
-	case runLaneProvision:
-		return 3
-	case runLaneE2E:
-		return 2
-	default:
-		return 1
-	}
-}
-
-func normalizePostGoodFailedRunLane(lane string) string {
-	switch strings.TrimSpace(lane) {
-	case runLaneProvision:
-		return runLaneProvision
-	case runLaneE2E:
-		return runLaneE2E
-	default:
-		return runLaneCIInfra
-	}
-}
-
-func deriveRunLane(jobName string, testName string, testSuite string) string {
-	normalizedJob := strings.ToLower(strings.TrimSpace(jobName))
-	normalizedName := strings.ToLower(strings.TrimSpace(testName))
-	normalizedSuite := strings.ToLower(strings.TrimSpace(testSuite))
-
-	switch {
-	case strings.Contains(normalizedSuite, "step graph"):
-		return runLaneProvision
-	case strings.HasPrefix(normalizedName, "run pipeline step "):
-		return runLaneProvision
-	case strings.Contains(normalizedJob, "provision"):
-		return runLaneProvision
-	case strings.Contains(normalizedJob, "e2e"):
-		return runLaneE2E
-	default:
-		return runLaneCIInfra
-	}
 }
 
 func maxRunCount(days []dayReport) int {

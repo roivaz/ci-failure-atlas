@@ -37,58 +37,20 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 	if err := store.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
 		{Environment: "dev", Date: "2026-03-01", Metric: metricRunCount, Value: 10},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricFailureCount, Value: 4},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricFailureRowCount, Value: 6},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricFailedCIInfraRunCount, Value: 1},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricFailedProvisionRunCount, Value: 1},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricFailedE2ERunCount, Value: 2},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricCIInfraFailureCount, Value: 1},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricProvisionFailureCount, Value: 1},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricE2EFailureCount, Value: 2},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodRunCount, Value: 7},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailureCount, Value: 2},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedE2EJobs, Value: 1},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodCIInfraFailureCount, Value: 0},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodProvisionFailureCount, Value: 1},
-		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodE2EFailureCount, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedE2EJobs, Value: 0},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedCIInfra, Value: 0},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedProvision, Value: 1},
 		{Environment: "int", Date: "2026-03-01", Metric: metricRunCount, Value: 8},
 		{Environment: "int", Date: "2026-03-01", Metric: metricFailureCount, Value: 2},
-		{Environment: "int", Date: "2026-03-01", Metric: metricFailureRowCount, Value: 3},
 		{Environment: "int", Date: "2026-03-01", Metric: metricFailedCIInfraRunCount, Value: 2},
 		{Environment: "int", Date: "2026-03-01", Metric: metricFailedProvisionRunCount, Value: 0},
 		{Environment: "int", Date: "2026-03-01", Metric: metricFailedE2ERunCount, Value: 0},
-		{Environment: "int", Date: "2026-03-01", Metric: metricCIInfraFailureCount, Value: 2},
-		{Environment: "int", Date: "2026-03-01", Metric: metricProvisionFailureCount, Value: 0},
-		{Environment: "int", Date: "2026-03-01", Metric: metricE2EFailureCount, Value: 0},
 	}); err != nil {
 		t.Fatalf("seed metrics: %v", err)
-	}
-	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
-		{
-			Environment:    "dev",
-			RunURL:         "https://run-dev-post-good-1",
-			JobName:        "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-			PostGoodCommit: true,
-			Failed:         true,
-			OccurredAt:     "2026-03-01T10:00:00Z",
-		},
-	}); err != nil {
-		t.Fatalf("seed runs: %v", err)
-	}
-	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
-		{
-			Environment:       "dev",
-			RowID:             "dev-post-good-row-1",
-			RunURL:            "https://run-dev-post-good-1",
-			NonArtifactBacked: false,
-			TestName:          "Run pipeline step gather",
-			TestSuite:         "step graph",
-			SignatureID:       "sig-post-good-row-1",
-			OccurredAt:        "2026-03-01T10:00:00Z",
-			RawText:           "provision failed",
-			NormalizedText:    "provision failed",
-		},
-	}); err != nil {
-		t.Fatalf("seed raw failures: %v", err)
 	}
 
 	outputPath := filepath.Join(dataDir, "reports", "weekly.html")
@@ -112,11 +74,8 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"Environment: INT",
 		"Environment: STG",
 		"Environment: PROD",
-		"Failed Tests",
 		"Success Rate",
 		"E2E Jobs (good commits)",
-		"Failed E2E Jobs (good commits)",
-		"Failed Tests (good commits)",
 		"Success Rate (good commits)",
 		"Chart mode:",
 		"Absolute counts",
@@ -143,6 +102,10 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 	forbiddenSnippets := []string{
 		"<table>",
 		"Success rate uses (E2E Jobs - Failed E2E Jobs)",
+		"Failed E2E Jobs",
+		"Failed Tests",
+		"Failed E2E Jobs (good commits)",
+		"Failed Tests (good commits)",
 	}
 	for _, snippet := range forbiddenSnippets {
 		if strings.Contains(report, snippet) {

@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"ci-failure-atlas/pkg/store/contracts"
+	"ci-failure-atlas/pkg/testrules"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -21,20 +23,14 @@ const metricsRollupDailyReconcileInterval = 5 * time.Minute
 const (
 	metricRunCount                = "run_count"
 	metricFailureCount            = "failure_count"
-	metricFailureRowCount         = "failure_row_count"
 	metricFailedCIInfraRunCount   = "failed_ci_infra_run_count"
 	metricFailedProvisionRunCount = "failed_provision_run_count"
 	metricFailedE2ERunCount       = "failed_e2e_run_count"
-	metricCIInfraFailureCount     = "ci_infra_failure_count"
-	metricProvisionFailureCount   = "provision_failure_count"
-	metricE2EFailureCount         = "e2e_failure_count"
 
-	metricPostGoodRunCount              = "post_good_run_count"
-	metricPostGoodFailureCount          = "post_good_failure_count"
-	metricPostGoodFailedE2EJobs         = "post_good_failed_e2e_jobs"
-	metricPostGoodCIInfraFailureCount   = "post_good_ci_infra_failure_count"
-	metricPostGoodProvisionFailureCount = "post_good_provision_failure_count"
-	metricPostGoodE2EFailureCount       = "post_good_e2e_failure_count"
+	metricPostGoodRunCount                = "post_good_run_count"
+	metricPostGoodFailedE2EJobs           = "post_good_failed_e2e_jobs"
+	metricPostGoodFailedCIInfraRunCount   = "post_good_failed_ci_infra_run_count"
+	metricPostGoodFailedProvisionRunCount = "post_good_failed_provision_run_count"
 )
 
 const (
@@ -197,17 +193,8 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		return fmt.Errorf("invalid rollup date key %q: %w", key, err)
 	}
 
-	out := make([]contracts.MetricDailyRecord, 0, len(c.envs)*12)
+	out := make([]contracts.MetricDailyRecord, 0, len(c.envs)*9)
 	for _, env := range c.envs {
-		existingRows, err := c.store.ListMetricsDailyByDate(ctx, env, date)
-		if err != nil {
-			return fmt.Errorf("list existing metric daily rows for env=%q date=%q: %w", env, date, err)
-		}
-		if hasRequiredMetricSet(existingRows, env) {
-			c.logger.V(1).Info("Skipping env/date; required daily metrics already materialized.", "date", date, "environment", env, "existing_rows", len(existingRows))
-			continue
-		}
-
 		runs, err := c.store.ListRunsByDate(ctx, env, date)
 		if err != nil {
 			return fmt.Errorf("list runs for env=%q date=%q: %w", env, date, err)
@@ -219,10 +206,11 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 		}
 
 		totalRuns := len(runs)
-		failedRuns := 0
+		failedRunsWithoutURL := 0
 		failedRunURLs := map[string]struct{}{}
 		postGoodRunCount := 0
 		postGoodFailedRunURLs := map[string]struct{}{}
+		postGoodFailedRunsWithoutURL := 0
 		for _, run := range runs {
 			runURL := strings.TrimSpace(run.RunURL)
 			if run.PostGoodCommit {
@@ -231,64 +219,50 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 			if !run.Failed {
 				continue
 			}
-			failedRuns++
-			if runURL != "" {
-				failedRunURLs[runURL] = struct{}{}
+			if runURL == "" {
+				failedRunsWithoutURL++
+				if run.PostGoodCommit {
+					postGoodFailedRunsWithoutURL++
+				}
+				continue
 			}
-			if run.PostGoodCommit && runURL != "" {
+			failedRunURLs[runURL] = struct{}{}
+			if run.PostGoodCommit {
 				postGoodFailedRunURLs[runURL] = struct{}{}
 			}
 		}
 
-		failureRowCount := len(rawFailures)
-		if totalRuns == 0 && failureRowCount == 0 {
+		if totalRuns == 0 && len(rawFailures) == 0 {
 			continue
 		}
 
-		ciInfraRows := 0
-		provisionRows := 0
-		e2eRows := 0
 		failedRunLaneByRunURL := map[string]string{}
-		postGoodFailureRows := 0
-		postGoodCIInfraRows := 0
-		postGoodProvisionRows := 0
-		postGoodE2ERows := 0
 
 		runCache := map[string]contracts.RunRecord{}
 		runFoundCache := map[string]bool{}
 		for _, row := range rawFailures {
-			laneFamily, err := classifyMetricLaneFamily(ctx, c.store, env, row, runCache, runFoundCache)
-			if err != nil {
-				return fmt.Errorf("classify lane family for env=%q date=%q run_url=%q row_id=%q: %w", env, date, row.RunURL, row.RowID, err)
-			}
-			switch laneFamily {
-			case laneFamilyProvision:
-				provisionRows++
-			case laneFamilyE2E:
-				e2eRows++
-			default:
-				ciInfraRows++
-			}
+			laneFamily := classifyMetricLaneFamily(env, row)
 			runURL := strings.TrimSpace(row.RunURL)
+			if runURL != "" {
+				// Any raw-failure row implies that the backing run failed, even if
+				// stale run metadata has failed=false.
+				failedRunURLs[runURL] = struct{}{}
+			}
 			if _, failedRun := failedRunURLs[runURL]; failedRun && runURL != "" {
 				failedRunLaneByRunURL[runURL] = mergeFailedRunLaneFamily(failedRunLaneByRunURL[runURL], laneFamily)
 			}
-
-			if env == "dev" {
-				if _, postGoodFailedRun := postGoodFailedRunURLs[runURL]; !postGoodFailedRun {
-					continue
+			if env == "dev" && runURL != "" {
+				postGoodRun, err := isMetricPostGoodRun(ctx, c.store, env, runURL, runCache, runFoundCache)
+				if err != nil {
+					return fmt.Errorf("check post-good run signal for env=%q date=%q run_url=%q: %w", env, date, runURL, err)
 				}
-				postGoodFailureRows++
-				switch laneFamily {
-				case laneFamilyProvision:
-					postGoodProvisionRows++
-				case laneFamilyE2E:
-					postGoodE2ERows++
-				default:
-					postGoodCIInfraRows++
+				if postGoodRun {
+					postGoodFailedRunURLs[runURL] = struct{}{}
 				}
 			}
 		}
+
+		failedRuns := failedRunsWithoutURL + len(failedRunURLs)
 
 		failedCIInfraRuns := 0
 		failedProvisionRuns := 0
@@ -311,28 +285,45 @@ func (c *metricsRollupDailyController) processKey(ctx context.Context, key strin
 			failedCIInfraRuns += unclassifiedFailedRuns
 		}
 
-		out = append(out,
+		expectedRows := make([]contracts.MetricDailyRecord, 0, 9)
+		expectedRows = append(expectedRows,
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricRunCount, Value: float64(totalRuns)},
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailureCount, Value: float64(failedRuns)},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailureRowCount, Value: float64(failureRowCount)},
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailedCIInfraRunCount, Value: float64(failedCIInfraRuns)},
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailedProvisionRunCount, Value: float64(failedProvisionRuns)},
 			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricFailedE2ERunCount, Value: float64(failedE2ERuns)},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricCIInfraFailureCount, Value: float64(ciInfraRows)},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricProvisionFailureCount, Value: float64(provisionRows)},
-			contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricE2EFailureCount, Value: float64(e2eRows)},
 		)
 		if env == "dev" {
-			postGoodFailedRunCount := len(postGoodFailedRunURLs)
-			out = append(out,
+			postGoodFailedE2ERuns := 0
+			postGoodFailedCIInfraRuns := postGoodFailedRunsWithoutURL
+			postGoodFailedProvisionRuns := 0
+			for runURL := range postGoodFailedRunURLs {
+				switch normalizeFailedRunLaneFamily(failedRunLaneByRunURL[runURL]) {
+				case laneFamilyProvision:
+					postGoodFailedProvisionRuns++
+				case laneFamilyE2E:
+					postGoodFailedE2ERuns++
+				default:
+					postGoodFailedCIInfraRuns++
+				}
+			}
+			expectedRows = append(expectedRows,
 				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodRunCount, Value: float64(postGoodRunCount)},
-				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailureCount, Value: float64(postGoodFailureRows)},
-				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailedE2EJobs, Value: float64(postGoodFailedRunCount)},
-				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodCIInfraFailureCount, Value: float64(postGoodCIInfraRows)},
-				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodProvisionFailureCount, Value: float64(postGoodProvisionRows)},
-				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodE2EFailureCount, Value: float64(postGoodE2ERows)},
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailedE2EJobs, Value: float64(postGoodFailedE2ERuns)},
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailedCIInfraRunCount, Value: float64(postGoodFailedCIInfraRuns)},
+				contracts.MetricDailyRecord{Environment: env, Date: date, Metric: metricPostGoodFailedProvisionRunCount, Value: float64(postGoodFailedProvisionRuns)},
 			)
 		}
+
+		existingRows, err := c.store.ListMetricsDailyByDate(ctx, env, date)
+		if err != nil {
+			return fmt.Errorf("list metrics daily rows for env=%q date=%q: %w", env, date, err)
+		}
+		if metricsDailyRowsMatch(existingRows, expectedRows) {
+			c.logger.V(1).Info("Skipping env/date; metrics already up to date.", "date", date, "environment", env, "metrics", len(expectedRows))
+			continue
+		}
+		out = append(out, expectedRows...)
 	}
 
 	if len(out) == 0 {
@@ -376,53 +367,34 @@ func isDateWithinWindow(value string, window time.Duration, now time.Time) bool 
 	return now.Sub(dayEnd) <= window
 }
 
-func hasRequiredMetricSet(existingRows []contracts.MetricDailyRecord, environment string) bool {
-	required := requiredMetricSet(environment)
-	if len(required) == 0 {
-		return false
+func isMetricPostGoodRun(
+	ctx context.Context,
+	store contracts.Store,
+	environment string,
+	runURL string,
+	runCache map[string]contracts.RunRecord,
+	runFoundCache map[string]bool,
+) (bool, error) {
+	normalizedRunURL := strings.TrimSpace(runURL)
+	if normalizedRunURL == "" {
+		return false, nil
 	}
-	if len(existingRows) == 0 {
-		return false
-	}
-	seen := map[string]struct{}{}
-	for _, row := range existingRows {
-		metric := strings.TrimSpace(row.Metric)
-		if metric == "" {
-			continue
+	if cachedFound, ok := runFoundCache[normalizedRunURL]; ok {
+		if !cachedFound {
+			return false, nil
 		}
-		seen[metric] = struct{}{}
+		return runCache[normalizedRunURL].PostGoodCommit, nil
 	}
-	for _, metric := range required {
-		if _, ok := seen[metric]; !ok {
-			return false
-		}
+	run, found, err := store.GetRun(ctx, environment, normalizedRunURL)
+	if err != nil {
+		return false, err
 	}
-	return true
-}
-
-func requiredMetricSet(environment string) []string {
-	required := []string{
-		metricRunCount,
-		metricFailureCount,
-		metricFailureRowCount,
-		metricFailedCIInfraRunCount,
-		metricFailedProvisionRunCount,
-		metricFailedE2ERunCount,
-		metricCIInfraFailureCount,
-		metricE2EFailureCount,
-		metricProvisionFailureCount,
+	runFoundCache[normalizedRunURL] = found
+	if !found {
+		return false, nil
 	}
-	if normalizeEnvironment(environment) != "dev" {
-		return required
-	}
-	return append(required,
-		metricPostGoodRunCount,
-		metricPostGoodFailureCount,
-		metricPostGoodFailedE2EJobs,
-		metricPostGoodCIInfraFailureCount,
-		metricPostGoodProvisionFailureCount,
-		metricPostGoodE2EFailureCount,
-	)
+	runCache[normalizedRunURL] = run
+	return run.PostGoodCommit, nil
 }
 
 func mergeFailedRunLaneFamily(current string, next string) string {
@@ -456,66 +428,50 @@ func normalizeFailedRunLaneFamily(laneFamily string) string {
 	}
 }
 
-func classifyMetricLaneFamily(
-	ctx context.Context,
-	store contracts.Store,
-	environment string,
-	row contracts.RawFailureRecord,
-	runCache map[string]contracts.RunRecord,
-	runFoundCache map[string]bool,
-) (string, error) {
+func classifyMetricLaneFamily(environment string, row contracts.RawFailureRecord) string {
 	if row.NonArtifactBacked {
 		// Synthetic rows are infrastructure ingestion gaps and should always be
 		// attributed to ci/infra until artifact reconciliation completes.
-		return laneFamilyCIInfra, nil
+		return laneFamilyCIInfra
 	}
 
-	runURL := strings.TrimSpace(row.RunURL)
-	jobName := ""
-	if runURL != "" {
-		if cachedFound, ok := runFoundCache[runURL]; ok {
-			if cachedFound {
-				jobName = strings.TrimSpace(runCache[runURL].JobName)
-			}
-		} else {
-			run, found, err := store.GetRun(ctx, environment, runURL)
-			if err != nil {
-				return "", err
-			}
-			runFoundCache[runURL] = found
-			if found {
-				runCache[runURL] = run
-				jobName = strings.TrimSpace(run.JobName)
-			}
-		}
-	}
-
-	lane := deriveLane(jobName, row.TestName, row.TestSuite)
-	switch lane {
-	case laneFamilyProvision:
-		return laneFamilyProvision, nil
-	case laneFamilyE2E:
-		return laneFamilyE2E, nil
+	switch testrules.ClassifyLane(environment, row.TestSuite, row.TestName) {
+	case testrules.LaneProvision:
+		return laneFamilyProvision
+	case testrules.LaneE2E:
+		return laneFamilyE2E
 	default:
-		return laneFamilyCIInfra, nil
+		return laneFamilyCIInfra
 	}
 }
 
-func deriveLane(jobName string, testName string, testSuite string) string {
-	normalizedJob := strings.ToLower(strings.TrimSpace(jobName))
-	normalizedName := strings.ToLower(strings.TrimSpace(testName))
-	normalizedSuite := strings.ToLower(strings.TrimSpace(testSuite))
-
-	switch {
-	case strings.Contains(normalizedSuite, "step graph"):
-		return laneFamilyProvision
-	case strings.HasPrefix(normalizedName, "run pipeline step "):
-		return laneFamilyProvision
-	case strings.Contains(normalizedJob, "provision"):
-		return laneFamilyProvision
-	case strings.Contains(normalizedJob, "e2e"):
-		return laneFamilyE2E
-	default:
-		return "unknown"
+func metricsDailyRowsMatch(existingRows []contracts.MetricDailyRecord, expectedRows []contracts.MetricDailyRecord) bool {
+	if len(existingRows) != len(expectedRows) {
+		return false
 	}
+	if len(expectedRows) == 0 {
+		return true
+	}
+	existingByMetric := make(map[string]float64, len(existingRows))
+	for _, row := range existingRows {
+		metric := strings.TrimSpace(row.Metric)
+		if metric == "" {
+			return false
+		}
+		existingByMetric[metric] = row.Value
+	}
+	if len(existingByMetric) != len(expectedRows) {
+		return false
+	}
+	for _, row := range expectedRows {
+		metric := strings.TrimSpace(row.Metric)
+		existingValue, found := existingByMetric[metric]
+		if !found {
+			return false
+		}
+		if math.Abs(existingValue-row.Value) > 1e-9 {
+			return false
+		}
+	}
+	return true
 }

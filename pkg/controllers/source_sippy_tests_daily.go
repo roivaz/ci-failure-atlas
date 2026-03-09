@@ -13,6 +13,7 @@ import (
 
 	sippysource "ci-failure-atlas/pkg/source/sippy"
 	"ci-failure-atlas/pkg/store/contracts"
+	"ci-failure-atlas/pkg/testrules"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -28,28 +29,6 @@ const (
 var requiredSippyTestsDailyPeriods = []string{
 	sourceSippyTestsDailyDefaultPeriod,
 	sourceSippyTestsDailyTwoDayPeriod,
-}
-
-type TestFilter struct {
-	TestSuite     string
-	TestNameRegex string
-}
-
-// TODO: Wire this map via CLI flags/config file.
-var sippyTestFiltersByEnvironment = map[string][]TestFilter{
-	"dev": {
-		{TestSuite: "rp-api-compat-all/parallel"},
-		{TestSuite: "step graph", TestNameRegex: `Microsoft\.Azure\.ARO\.HCP`},
-	},
-	"int": {
-		{TestSuite: "integration/parallel"},
-	},
-	"stg": {
-		{TestSuite: "stage/parallel"},
-	},
-	"prod": {
-		{TestSuite: "prod/parallel"},
-	},
 }
 
 type compiledTestFilter struct {
@@ -397,7 +376,7 @@ func sippyTestsDailyKey(environment string, date string) string {
 func buildEnvironmentTestFilters(enabledEnvironments map[string]struct{}) (map[string][]compiledTestFilter, error) {
 	out := map[string][]compiledTestFilter{}
 	for environment := range enabledEnvironments {
-		rawFilters, ok := sippyTestFiltersByEnvironment[environment]
+		rawFilters, ok := testrules.FiltersForEnvironment(environment)
 		if !ok || len(rawFilters) == 0 {
 			return nil, fmt.Errorf("source.sippy.tests-daily: missing test filter map for environment %q", environment)
 		}

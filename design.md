@@ -284,8 +284,8 @@ These are generated from fresh facts + semantic outputs, not from ad-hoc snapsho
 
 Current v1 daily rollup metrics:
 
-- `run_count`, `failure_count`, `failure_rate` (from `runs`)
-- `failure_row_count` and lane breakdowns (from `raw_failures`)
+- `run_count`, `failure_count`, `success_rate` (from `runs`)
+- failed-run lane breakdowns (`failed_ci_infra_run_count`, `failed_provision_run_count`, `failed_e2e_run_count`)
 
 ## 13) Initial Implementation Slices
 
