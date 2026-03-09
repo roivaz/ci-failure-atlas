@@ -508,6 +508,113 @@ func TestUpsertMetricsDailyReplacesTouchedDateEnvironmentMetricSet(t *testing.T)
 	}
 }
 
+func TestUpsertTestMetadataDailyReplacesTouchedEnvironmentDatePeriodSet(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	err = store.UpsertTestMetadataDaily(ctx, []contracts.TestMetadataDailyRecord{
+		{
+			Environment:            "dev",
+			Date:                   "2026-03-10",
+			Release:                "Presubmits",
+			Period:                 "default",
+			TestName:               "test-a",
+			TestSuite:              "suite-a",
+			CurrentPassPercentage:  98.3,
+			CurrentRuns:            100,
+			PreviousPassPercentage: 97.1,
+			PreviousRuns:           95,
+			NetImprovement:         1.2,
+			IngestedAt:             "2026-03-10T00:15:00Z",
+		},
+		{
+			Environment:            "dev",
+			Date:                   "2026-03-10",
+			Release:                "Presubmits",
+			Period:                 "twoDay",
+			TestName:               "test-a",
+			TestSuite:              "suite-a",
+			CurrentPassPercentage:  99.0,
+			CurrentRuns:            12,
+			PreviousPassPercentage: 95.0,
+			PreviousRuns:           9,
+			NetImprovement:         4.0,
+			IngestedAt:             "2026-03-10T00:15:00Z",
+		},
+		{
+			Environment:            "int",
+			Date:                   "2026-03-10",
+			Release:                "aro-integration",
+			Period:                 "default",
+			TestName:               "test-int",
+			TestSuite:              "suite-int",
+			CurrentPassPercentage:  92.0,
+			CurrentRuns:            80,
+			PreviousPassPercentage: 90.0,
+			PreviousRuns:           75,
+			NetImprovement:         2.0,
+			IngestedAt:             "2026-03-10T00:15:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert initial test metadata daily rows: %v", err)
+	}
+
+	err = store.UpsertTestMetadataDaily(ctx, []contracts.TestMetadataDailyRecord{
+		{
+			Environment:            "dev",
+			Date:                   "2026-03-10",
+			Release:                "Presubmits",
+			Period:                 "default",
+			TestName:               "test-b",
+			TestSuite:              "suite-b",
+			CurrentPassPercentage:  88.0,
+			CurrentRuns:            50,
+			PreviousPassPercentage: 91.0,
+			PreviousRuns:           70,
+			NetImprovement:         -3.0,
+			IngestedAt:             "2026-03-10T00:45:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert replacement test metadata daily rows: %v", err)
+	}
+
+	devRows, err := store.ListTestMetadataDailyByDate(ctx, "dev", "2026-03-10")
+	if err != nil {
+		t.Fatalf("list dev test metadata by date: %v", err)
+	}
+	if len(devRows) != 2 {
+		t.Fatalf("unexpected dev rows count: got=%d want=2", len(devRows))
+	}
+	periodRows := map[string]contracts.TestMetadataDailyRecord{}
+	for _, row := range devRows {
+		periodRows[row.Period] = row
+	}
+	if periodRows["default"].TestName != "test-b" || periodRows["default"].CurrentRuns != 50 {
+		t.Fatalf("unexpected dev default-period row content: %+v", periodRows["default"])
+	}
+	if periodRows["twoDay"].TestName != "test-a" || periodRows["twoDay"].CurrentRuns != 12 {
+		t.Fatalf("unexpected dev twoDay-period row content: %+v", periodRows["twoDay"])
+	}
+
+	intRows, err := store.ListTestMetadataDailyByDate(ctx, "int", "2026-03-10")
+	if err != nil {
+		t.Fatalf("list int test metadata by date: %v", err)
+	}
+	if len(intRows) != 1 {
+		t.Fatalf("unexpected int rows count: got=%d want=1", len(intRows))
+	}
+	if intRows[0].TestName != "test-int" || intRows[0].CurrentRuns != 80 {
+		t.Fatalf("unexpected int row content: %+v", intRows[0])
+	}
+}
+
 func TestUpsertRunCountsHourlyAndListHours(t *testing.T) {
 	t.Parallel()
 
@@ -914,6 +1021,20 @@ func TestUpsertRequiresEnvironment(t *testing.T) {
 		t.Fatalf("expected UpsertRunCountsHourly to fail on inconsistent counters")
 	}
 
+	if err := store.UpsertTestMetadataDaily(ctx, []contracts.TestMetadataDailyRecord{
+		{
+			Date:                   "2026-03-05",
+			Period:                 "default",
+			TestName:               "test-a",
+			CurrentPassPercentage:  95,
+			CurrentRuns:            20,
+			PreviousPassPercentage: 93,
+			PreviousRuns:           18,
+		},
+	}); err == nil {
+		t.Fatalf("expected UpsertTestMetadataDaily to fail without environment")
+	}
+
 	if _, _, err := store.GetRun(ctx, "", "https://run-a"); err == nil {
 		t.Fatalf("expected GetRun to fail without environment")
 	}
@@ -948,5 +1069,13 @@ func TestUpsertRequiresEnvironment(t *testing.T) {
 
 	if _, err := store.ListMetricsDailyByDate(ctx, "dev", "20260305"); err == nil {
 		t.Fatalf("expected ListMetricsDailyByDate to fail with invalid date")
+	}
+
+	if _, err := store.ListTestMetadataDailyByDate(ctx, "", "2026-03-05"); err == nil {
+		t.Fatalf("expected ListTestMetadataDailyByDate to fail without environment")
+	}
+
+	if _, err := store.ListTestMetadataDailyByDate(ctx, "dev", "20260305"); err == nil {
+		t.Fatalf("expected ListTestMetadataDailyByDate to fail with invalid date")
 	}
 }

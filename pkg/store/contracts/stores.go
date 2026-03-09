@@ -73,6 +73,21 @@ type MetricDailyRecord struct {
 	Value       float64 `json:"value"`
 }
 
+type TestMetadataDailyRecord struct {
+	Environment            string  `json:"environment"`
+	Date                   string  `json:"date"`
+	Release                string  `json:"release"`
+	Period                 string  `json:"period"`
+	TestName               string  `json:"test_name"`
+	TestSuite              string  `json:"test_suite"`
+	CurrentPassPercentage  float64 `json:"current_pass_percentage"`
+	CurrentRuns            int     `json:"current_runs"`
+	PreviousPassPercentage float64 `json:"previous_pass_percentage"`
+	PreviousRuns           int     `json:"previous_runs"`
+	NetImprovement         float64 `json:"net_improvement"`
+	IngestedAt             string  `json:"ingested_at"`
+}
+
 type RunCountHourlyRecord struct {
 	Environment    string `json:"environment"`
 	Hour           string `json:"hour"`
@@ -125,6 +140,11 @@ type MetricsStore interface {
 	ListMetricDates(ctx context.Context) ([]string, error)
 }
 
+type TestMetadataDailyStore interface {
+	UpsertTestMetadataDaily(ctx context.Context, rows []TestMetadataDailyRecord) error
+	ListTestMetadataDailyByDate(ctx context.Context, environment string, date string) ([]TestMetadataDailyRecord, error)
+}
+
 type RunCountHourlyStore interface {
 	UpsertRunCountsHourly(ctx context.Context, rows []RunCountHourlyRecord) error
 	ListRunCountHourlyHours(ctx context.Context) ([]string, error)
@@ -164,6 +184,7 @@ type Store interface {
 	ArtifactFailureStore
 	RawFailureStore
 	MetricsStore
+	TestMetadataDailyStore
 	RunCountHourlyStore
 	CheckpointStore
 	DeadLetterStore

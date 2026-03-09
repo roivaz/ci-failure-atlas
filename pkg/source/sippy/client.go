@@ -22,6 +22,16 @@ type JobRun struct {
 	Failed    bool
 }
 
+type TestSummary struct {
+	Name                   string
+	SuiteName              string
+	CurrentPassPercentage  float64
+	CurrentRuns            int
+	PreviousPassPercentage float64
+	PreviousRuns           int
+	NetImprovement         float64
+}
+
 type PullRequest struct {
 	Number   int
 	SHA      string
@@ -45,9 +55,19 @@ type ListPullRequestsOptions struct {
 	Limit   int
 }
 
+type ListTestsOptions struct {
+	Release   string
+	Period    string
+	SortField string
+	Sort      string
+	Filter    string
+	Limit     int
+}
+
 type Client interface {
 	ListPullRequests(ctx context.Context, opts ListPullRequestsOptions) ([]PullRequest, error)
 	ListJobRuns(ctx context.Context, opts ListJobRunsOptions) ([]JobRun, error)
+	ListTests(ctx context.Context, opts ListTestsOptions) ([]TestSummary, error)
 }
 
 type HTTPClient struct {
@@ -214,6 +234,61 @@ func (c *HTTPClient) ListJobRuns(ctx context.Context, opts ListJobRunsOptions) (
 		}
 	}
 
+	return results, nil
+}
+
+func (c *HTTPClient) ListTests(ctx context.Context, opts ListTestsOptions) ([]TestSummary, error) {
+	if strings.TrimSpace(opts.Release) == "" {
+		return nil, fmt.Errorf("release is required")
+	}
+
+	period := strings.TrimSpace(opts.Period)
+	if period == "" {
+		period = "default"
+	}
+	sortField := strings.TrimSpace(opts.SortField)
+	if sortField == "" {
+		sortField = "name"
+	}
+	sortDirection := strings.TrimSpace(opts.Sort)
+	if sortDirection == "" {
+		sortDirection = "asc"
+	}
+
+	params := url.Values{}
+	params.Set("release", opts.Release)
+	params.Set("period", period)
+	params.Set("sortField", sortField)
+	params.Set("sort", sortDirection)
+	if strings.TrimSpace(opts.Filter) != "" {
+		params.Set("filter", opts.Filter)
+	}
+	if opts.Limit > 0 {
+		params.Set("limit", strconv.Itoa(opts.Limit))
+	}
+
+	var rows []testsResponse
+	if err := c.getJSON(ctx, "/api/tests", params, &rows); err != nil {
+		return nil, err
+	}
+
+	results := make([]TestSummary, 0, len(rows))
+	for _, row := range rows {
+		name := strings.TrimSpace(row.Name)
+		if name == "" {
+			continue
+		}
+		summary := TestSummary{
+			Name:                   name,
+			SuiteName:              strings.TrimSpace(row.SuiteName),
+			CurrentPassPercentage:  row.CurrentPassPercentage,
+			CurrentRuns:            row.CurrentRuns,
+			PreviousPassPercentage: row.PreviousPassPercentage,
+			PreviousRuns:           row.PreviousRuns,
+			NetImprovement:         row.NetImprovement,
+		}
+		results = append(results, summary)
+	}
 	return results, nil
 }
 
@@ -388,6 +463,16 @@ type pullRequestResponse struct {
 	Number   int        `json:"number"`
 	SHA      string     `json:"sha"`
 	MergedAt *time.Time `json:"merged_at"`
+}
+
+type testsResponse struct {
+	Name                   string  `json:"name"`
+	SuiteName              string  `json:"suite_name"`
+	CurrentPassPercentage  float64 `json:"current_pass_percentage"`
+	CurrentRuns            int     `json:"current_runs"`
+	PreviousPassPercentage float64 `json:"previous_pass_percentage"`
+	PreviousRuns           int     `json:"previous_runs"`
+	NetImprovement         float64 `json:"net_improvement"`
 }
 
 type jobRunsResponse struct {

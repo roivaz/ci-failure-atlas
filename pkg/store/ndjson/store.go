@@ -28,6 +28,7 @@ const (
 	artifactFailuresFilename = "artifact_failures.ndjson"
 	rawFailuresFilename      = "raw_failures.ndjson"
 	metricsDailyFilename     = "metrics_daily.ndjson"
+	testMetadataDailyFile    = "test_metadata_daily.ndjson"
 	runCountsHourlyFilename  = "run_counts_hourly.ndjson"
 	phase1WorksetFilename    = "phase1_workset.ndjson"
 	phase1NormalizedFilename = "phase1_normalized.ndjson"
@@ -908,6 +909,122 @@ func (s *Store) ListMetricDates(ctx context.Context) ([]string, error) {
 	return dates, nil
 }
 
+func (s *Store) UpsertTestMetadataDaily(ctx context.Context, rows []contracts.TestMetadataDailyRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.testMetadataDailyPath()
+	existing, err := readNDJSON[contracts.TestMetadataDailyRecord](path)
+	if err != nil {
+		return err
+	}
+
+	normalizedInput := make([]contracts.TestMetadataDailyRecord, 0, len(rows))
+	touchedDateEnvironments := map[string]struct{}{}
+	for _, row := range rows {
+		normalized := normalizeTestMetadataDailyRecord(row)
+		key := testMetadataDailyKey(normalized)
+		if key == "" {
+			return fmt.Errorf("test metadata daily record missing environment, date, period, and/or test_name")
+		}
+		normalizedInput = append(normalizedInput, normalized)
+		touchedDateEnvironments[normalized.Environment+"|"+normalized.Date+"|"+normalized.Period] = struct{}{}
+	}
+
+	mergedByKey := map[string]contracts.TestMetadataDailyRecord{}
+	for _, row := range existing {
+		normalized := normalizeTestMetadataDailyRecord(row)
+		key := testMetadataDailyKey(normalized)
+		if key == "" {
+			continue
+		}
+		if _, touched := touchedDateEnvironments[normalized.Environment+"|"+normalized.Date+"|"+normalized.Period]; touched {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, normalized := range normalizedInput {
+		key := testMetadataDailyKey(normalized)
+		mergedByKey[key] = normalized
+	}
+
+	merged := make([]contracts.TestMetadataDailyRecord, 0, len(mergedByKey))
+	for _, row := range mergedByKey {
+		merged = append(merged, row)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Environment != merged[j].Environment {
+			return merged[i].Environment < merged[j].Environment
+		}
+		if merged[i].Date != merged[j].Date {
+			return merged[i].Date < merged[j].Date
+		}
+		if merged[i].Period != merged[j].Period {
+			return merged[i].Period < merged[j].Period
+		}
+		if merged[i].TestSuite != merged[j].TestSuite {
+			return merged[i].TestSuite < merged[j].TestSuite
+		}
+		return merged[i].TestName < merged[j].TestName
+	})
+
+	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListTestMetadataDailyByDate(ctx context.Context, environment string, date string) ([]contracts.TestMetadataDailyRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	lookupEnv := normalizeEnvironment(environment)
+	if lookupEnv == "" {
+		return nil, fmt.Errorf("test metadata daily lookup requires environment")
+	}
+	lookupDate, err := normalizeDate(date)
+	if err != nil {
+		return nil, fmt.Errorf("test metadata daily lookup requires valid date (YYYY-MM-DD): %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.TestMetadataDailyRecord](s.testMetadataDailyPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.TestMetadataDailyRecord, 0)
+	for _, row := range rows {
+		normalized := normalizeTestMetadataDailyRecord(row)
+		if normalized.Environment != lookupEnv || normalized.Date != lookupDate {
+			continue
+		}
+		if normalized.TestName == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Period != filtered[j].Period {
+			return filtered[i].Period < filtered[j].Period
+		}
+		if filtered[i].TestSuite != filtered[j].TestSuite {
+			return filtered[i].TestSuite < filtered[j].TestSuite
+		}
+		return filtered[i].TestName < filtered[j].TestName
+	})
+
+	return filtered, nil
+}
+
 func (s *Store) UpsertCheckpoints(ctx context.Context, rows []contracts.CheckpointRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1494,6 +1611,10 @@ func (s *Store) metricsDailyPath() string {
 	return filepath.Join(s.dataDirectory, factsDirectory, metricsDailyFilename)
 }
 
+func (s *Store) testMetadataDailyPath() string {
+	return filepath.Join(s.dataDirectory, factsDirectory, testMetadataDailyFile)
+}
+
 func (s *Store) runCountsHourlyPath() string {
 	return filepath.Join(s.dataDirectory, factsDirectory, runCountsHourlyFilename)
 }
@@ -1618,6 +1739,27 @@ func normalizeMetricDailyRecord(row contracts.MetricDailyRecord) contracts.Metri
 		Date:        strings.TrimSpace(row.Date),
 		Metric:      strings.TrimSpace(row.Metric),
 		Value:       row.Value,
+	}
+}
+
+func normalizeTestMetadataDailyRecord(row contracts.TestMetadataDailyRecord) contracts.TestMetadataDailyRecord {
+	period := strings.TrimSpace(row.Period)
+	if period == "" {
+		period = "default"
+	}
+	return contracts.TestMetadataDailyRecord{
+		Environment:            normalizeEnvironment(row.Environment),
+		Date:                   strings.TrimSpace(row.Date),
+		Release:                strings.TrimSpace(row.Release),
+		Period:                 period,
+		TestName:               strings.TrimSpace(row.TestName),
+		TestSuite:              strings.TrimSpace(row.TestSuite),
+		CurrentPassPercentage:  row.CurrentPassPercentage,
+		CurrentRuns:            row.CurrentRuns,
+		PreviousPassPercentage: row.PreviousPassPercentage,
+		PreviousRuns:           row.PreviousRuns,
+		NetImprovement:         row.NetImprovement,
+		IngestedAt:             strings.TrimSpace(row.IngestedAt),
 	}
 }
 
@@ -1837,6 +1979,13 @@ func metricDailyKey(row contracts.MetricDailyRecord) string {
 		return ""
 	}
 	return row.Environment + "|" + row.Date + "|" + row.Metric
+}
+
+func testMetadataDailyKey(row contracts.TestMetadataDailyRecord) string {
+	if row.Environment == "" || row.Date == "" || row.Period == "" || row.TestName == "" {
+		return ""
+	}
+	return row.Environment + "|" + row.Date + "|" + row.Period + "|" + row.TestSuite + "|" + row.TestName
 }
 
 func runCountHourlyKey(row contracts.RunCountHourlyRecord) string {

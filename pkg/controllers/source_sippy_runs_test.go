@@ -349,6 +349,9 @@ type fakeSippyClient struct {
 	pullRequests     []sippysource.PullRequest
 	pullRequestsErr  error
 	pullRequestCalls []sippysource.ListPullRequestsOptions
+	tests            []sippysource.TestSummary
+	testsErr         error
+	testCalls        []sippysource.ListTestsOptions
 }
 
 func (f *fakeSippyClient) ListJobRuns(_ context.Context, opts sippysource.ListJobRunsOptions) ([]sippysource.JobRun, error) {
@@ -368,6 +371,16 @@ func (f *fakeSippyClient) ListPullRequests(_ context.Context, opts sippysource.L
 	}
 	out := make([]sippysource.PullRequest, len(f.pullRequests))
 	copy(out, f.pullRequests)
+	return out, nil
+}
+
+func (f *fakeSippyClient) ListTests(_ context.Context, opts sippysource.ListTestsOptions) ([]sippysource.TestSummary, error) {
+	f.testCalls = append(f.testCalls, opts)
+	if f.testsErr != nil {
+		return nil, f.testsErr
+	}
+	out := make([]sippysource.TestSummary, len(f.tests))
+	copy(out, f.tests)
 	return out, nil
 }
 
