@@ -7,9 +7,11 @@ import (
 	"html"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
@@ -25,6 +27,13 @@ const (
 	metricPostGoodFailedE2EJobs   = "post_good_failed_e2e_jobs"
 	metricPostGoodFailedCIInfra   = "post_good_failed_ci_infra_run_count"
 	metricPostGoodFailedProvision = "post_good_failed_provision_run_count"
+
+	weeklyDrilldownTopLimit      = 5
+	weeklySippyDefaultPeriod     = "default"
+	weeklyTestSuccessTarget      = 95.0
+	weeklyTestSuccessMinRuns     = 10
+	weeklyPhrasePreviewMaxLength = 120
+	weeklySignatureExampleLimit  = 3
 )
 
 var reportEnvironments = []string{"dev", "int", "stg", "prod"}
@@ -32,11 +41,13 @@ var reportEnvironments = []string{"dev", "int", "stg", "prod"}
 type Options struct {
 	OutputPath string
 	StartDate  string
+	TargetRate float64
 }
 
 type validatedOptions struct {
 	OutputPath string
 	StartDate  time.Time
+	TargetRate float64
 }
 
 type counts struct {
@@ -71,14 +82,62 @@ type envReport struct {
 	Totals      counts
 }
 
+type semanticEnvSummary struct {
+	GlobalClusters int
+	TestClusters   int
+	ReviewItems    int
+	TopPhrase      string
+	TopSupport     int
+	TopPostGood    int
+}
+
+type semanticSnapshot struct {
+	ByEnvironment         map[string]semanticEnvSummary
+	PhraseSupportByEnv    map[string]map[string]int
+	PhrasePostGoodByEnv   map[string]map[string]int
+	PhraseLatestRunsByEnv map[string]map[string][]signatureRunExample
+}
+
+type belowTargetTest struct {
+	TestName  string
+	TestSuite string
+	Date      string
+	PassRate  float64
+	Runs      int
+}
+
+type topSignature struct {
+	Phrase          string
+	SupportCount    int
+	SupportShare    float64
+	PostGoodCount   int
+	SeenInOtherEnvs []string
+	LatestRuns      []signatureRunExample
+}
+
+type signatureRunExample struct {
+	RunURL     string
+	OccurredAt string
+}
+
 func DefaultOptions() Options {
 	return Options{
 		OutputPath: "data/reports/weekly-metrics.html",
 		StartDate:  "",
+		TargetRate: 95.0,
 	}
 }
 
 func Generate(ctx context.Context, store storecontracts.Store, opts Options) error {
+	return GenerateWithComparison(ctx, store, nil, opts)
+}
+
+func GenerateWithComparison(
+	ctx context.Context,
+	store storecontracts.Store,
+	previousSemanticStore storecontracts.Store,
+	opts Options,
+) error {
 	validated, err := validateOptions(opts)
 	if err != nil {
 		return err
@@ -87,7 +146,68 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		return fmt.Errorf("store is required")
 	}
 
-	dates := dateWindow(validated.StartDate, windowDays)
+	currentDates := dateWindow(validated.StartDate, windowDays)
+	currentReports, err := buildEnvReports(ctx, store, currentDates)
+	if err != nil {
+		return err
+	}
+
+	previousStart := validated.StartDate.AddDate(0, 0, -windowDays)
+	previousDates := dateWindow(previousStart, windowDays)
+	previousReports, err := buildEnvReports(ctx, store, previousDates)
+	if err != nil {
+		return err
+	}
+
+	currentSemantic, err := loadSemanticSnapshot(ctx, store)
+	if err != nil {
+		return fmt.Errorf("load current semantic snapshot: %w", err)
+	}
+	testsBelowTargetByEnv, err := loadBelowTargetTestsByEnvironment(
+		ctx,
+		store,
+		currentDates,
+		weeklySippyDefaultPeriod,
+		weeklyTestSuccessTarget,
+		weeklyTestSuccessMinRuns,
+		weeklyDrilldownTopLimit,
+	)
+	if err != nil {
+		return fmt.Errorf("load weekly tests below target: %w", err)
+	}
+	topSignaturesByEnv := rankTopSignaturesByEnvironment(currentSemantic, weeklyDrilldownTopLimit)
+	var previousSemantic semanticSnapshot
+	if previousSemanticStore != nil {
+		previousSemantic, err = loadSemanticSnapshot(ctx, previousSemanticStore)
+		if err != nil {
+			return fmt.Errorf("load previous semantic snapshot: %w", err)
+		}
+	}
+
+	startDate := validated.StartDate.UTC()
+	endDate := startDate.AddDate(0, 0, windowDays-1)
+	rendered := buildHTML(
+		startDate,
+		endDate,
+		currentReports,
+		previousReports,
+		validated.TargetRate,
+		currentSemantic,
+		previousSemantic,
+		testsBelowTargetByEnv,
+		topSignaturesByEnv,
+	)
+
+	if err := os.MkdirAll(filepath.Dir(validated.OutputPath), 0o755); err != nil {
+		return fmt.Errorf("create weekly report output directory: %w", err)
+	}
+	if err := os.WriteFile(validated.OutputPath, []byte(rendered), 0o644); err != nil {
+		return fmt.Errorf("write weekly report: %w", err)
+	}
+	return nil
+}
+
+func buildEnvReports(ctx context.Context, store storecontracts.Store, dates []string) ([]envReport, error) {
 	reports := make([]envReport, 0, len(reportEnvironments))
 	for _, env := range reportEnvironments {
 		report := envReport{
@@ -97,7 +217,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		for _, date := range dates {
 			rows, err := store.ListMetricsDailyByDate(ctx, env, date)
 			if err != nil {
-				return fmt.Errorf("list metrics for env=%q date=%q: %w", env, date, err)
+				return nil, fmt.Errorf("list metrics for env=%q date=%q: %w", env, date, err)
 			}
 			dayCounts := collectCounts(rows)
 			day := dayReport{
@@ -112,18 +232,98 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		}
 		reports = append(reports, report)
 	}
+	return reports, nil
+}
 
-	startDate := validated.StartDate.UTC()
-	endDate := startDate.AddDate(0, 0, windowDays-1)
-	rendered := buildHTML(startDate, endDate, reports, time.Now().UTC())
+func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (semanticSnapshot, error) {
+	out := semanticSnapshot{
+		ByEnvironment:         map[string]semanticEnvSummary{},
+		PhraseSupportByEnv:    map[string]map[string]int{},
+		PhrasePostGoodByEnv:   map[string]map[string]int{},
+		PhraseLatestRunsByEnv: map[string]map[string][]signatureRunExample{},
+	}
 
-	if err := os.MkdirAll(filepath.Dir(validated.OutputPath), 0o755); err != nil {
-		return fmt.Errorf("create weekly report output directory: %w", err)
+	globalClusters, err := store.ListGlobalClusters(ctx)
+	if err != nil {
+		return out, err
 	}
-	if err := os.WriteFile(validated.OutputPath, []byte(rendered), 0o644); err != nil {
-		return fmt.Errorf("write weekly report: %w", err)
+	for _, row := range globalClusters {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		summary := out.ByEnvironment[environment]
+		summary.GlobalClusters++
+
+		phrase := strings.TrimSpace(row.CanonicalEvidencePhrase)
+		if phrase == "" {
+			phrase = "(unknown evidence)"
+		}
+		support := row.SupportCount
+		if support < 0 {
+			support = 0
+		}
+		postGood := row.PostGoodCommitCount
+		if postGood < 0 {
+			postGood = 0
+		}
+
+		if support > summary.TopSupport || (support == summary.TopSupport && (summary.TopPhrase == "" || phrase < summary.TopPhrase)) {
+			summary.TopPhrase = phrase
+			summary.TopSupport = support
+			summary.TopPostGood = postGood
+		}
+		out.ByEnvironment[environment] = summary
+
+		if _, ok := out.PhraseSupportByEnv[environment]; !ok {
+			out.PhraseSupportByEnv[environment] = map[string]int{}
+		}
+		out.PhraseSupportByEnv[environment][phrase] += support
+
+		if _, ok := out.PhrasePostGoodByEnv[environment]; !ok {
+			out.PhrasePostGoodByEnv[environment] = map[string]int{}
+		}
+		out.PhrasePostGoodByEnv[environment][phrase] += postGood
+
+		if _, ok := out.PhraseLatestRunsByEnv[environment]; !ok {
+			out.PhraseLatestRunsByEnv[environment] = map[string][]signatureRunExample{}
+		}
+		out.PhraseLatestRunsByEnv[environment][phrase] = mergeSignatureRunExamples(
+			out.PhraseLatestRunsByEnv[environment][phrase],
+			runExamplesFromGlobalCluster(row),
+			weeklySignatureExampleLimit,
+		)
 	}
-	return nil
+
+	testClusters, err := store.ListTestClusters(ctx)
+	if err != nil {
+		return out, err
+	}
+	for _, row := range testClusters {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		summary := out.ByEnvironment[environment]
+		summary.TestClusters++
+		out.ByEnvironment[environment] = summary
+	}
+
+	reviewItems, err := store.ListReviewQueue(ctx)
+	if err != nil {
+		return out, err
+	}
+	for _, row := range reviewItems {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		summary := out.ByEnvironment[environment]
+		summary.ReviewItems++
+		out.ByEnvironment[environment] = summary
+	}
+
+	return out, nil
 }
 
 func validateOptions(opts Options) (validatedOptions, error) {
@@ -139,9 +339,13 @@ func validateOptions(opts Options) (validatedOptions, error) {
 	if err != nil {
 		return validatedOptions{}, fmt.Errorf("invalid --start-date %q (expected YYYY-MM-DD): %w", startDateRaw, err)
 	}
+	if opts.TargetRate <= 0 || opts.TargetRate > 100 {
+		return validatedOptions{}, fmt.Errorf("invalid --target-rate %.2f (expected range: 0 < target <= 100)", opts.TargetRate)
+	}
 	return validatedOptions{
 		OutputPath: outputPath,
 		StartDate:  startDate.UTC(),
+		TargetRate: opts.TargetRate,
 	}, nil
 }
 
@@ -198,14 +402,24 @@ func addCounts(a counts, b counts) counts {
 	}
 }
 
-func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, generatedAt time.Time) string {
+func buildHTML(
+	startDate time.Time,
+	endDate time.Time,
+	reports []envReport,
+	previousReports []envReport,
+	targetRate float64,
+	currentSemantic semanticSnapshot,
+	previousSemantic semanticSnapshot,
+	testsBelowTargetByEnv map[string][]belowTargetTest,
+	topSignaturesByEnv map[string][]topSignature,
+) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n")
 	b.WriteString("<html lang=\"en\">\n")
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Weekly Metrics Report</title>\n")
+	b.WriteString("  <title>CI Weekly Report</title>\n")
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 4px; }\n")
@@ -213,6 +427,14 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 	b.WriteString("    .chart-controls { margin: 0 0 16px; font-size: 13px; color: #374151; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }\n")
 	b.WriteString("    .chart-controls label { display: inline-flex; align-items: center; gap: 6px; }\n")
 	b.WriteString("    .env { border: 1px solid #e5e7eb; border-radius: 8px; margin: 14px 0; padding: 12px; }\n")
+	b.WriteString("    .overview-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 10px 0 16px; }\n")
+	b.WriteString("    .overview-table th, .overview-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }\n")
+	b.WriteString("    .overview-table th { background: #f3f4f6; color: #374151; font-weight: 700; }\n")
+	b.WriteString("    .exec-heading-help { border-bottom: 1px dotted #9ca3af; cursor: help; }\n")
+	b.WriteString("    .status-on-track { color: #166534; font-weight: 700; }\n")
+	b.WriteString("    .status-off-track { color: #991b1b; font-weight: 700; }\n")
+	b.WriteString("    .status-near-track { color: #92400e; font-weight: 700; }\n")
+	b.WriteString("    .status-na { color: #6b7280; font-weight: 700; }\n")
 	b.WriteString("    .cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }\n")
 	b.WriteString("    .cards.cards-post-good { margin-top: 0; }\n")
 	b.WriteString("    .card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px; min-width: 160px; }\n")
@@ -236,17 +458,126 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 	b.WriteString("    .seg-ciinfra { background: #eab308; }\n")
 	b.WriteString("    .seg-ciinfra .segment-label { color: #1f2937; text-shadow: none; }\n")
 	b.WriteString("    .outcome-values { color: #4b5563; font-size: 11px; text-align: right; white-space: nowrap; }\n")
+	b.WriteString("    .drill-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }\n")
+	b.WriteString("    .drill-tab { border: 1px solid #d1d5db; border-radius: 999px; padding: 4px 10px; background: #f9fafb; color: #374151; font-size: 12px; cursor: pointer; }\n")
+	b.WriteString("    .drill-tab.active { background: #111827; border-color: #111827; color: #ffffff; font-weight: 700; }\n")
+	b.WriteString("    .drill-panel[hidden] { display: none; }\n")
+	b.WriteString("    .panel-note { margin: 4px 0 10px; color: #4b5563; font-size: 12px; }\n")
+	b.WriteString("    .panel-empty { margin: 6px 0 12px; color: #6b7280; font-size: 12px; }\n")
+	b.WriteString("    .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0 12px; }\n")
+	b.WriteString("    .detail-table th, .detail-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }\n")
+	b.WriteString("    .detail-table th { background: #f9fafb; color: #374151; font-weight: 700; }\n")
 	b.WriteString("    body[data-chart-mode=\"count\"] .mode-percent { display: none; }\n")
 	b.WriteString("    body[data-chart-mode=\"percent\"] .mode-count { display: none; }\n")
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body data-chart-mode=\"count\">\n")
-	b.WriteString("  <h1>CI Weekly Metrics Report</h1>\n")
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Window: <strong>%s</strong> to <strong>%s</strong> (7 days) &middot; Generated: %s</p>\n",
+	b.WriteString("  <h1>CI Weekly Report</h1>\n")
+	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Window: <strong>%s</strong> to <strong>%s</strong> (7 days)</p>\n",
 		startDate.Format("2006-01-02"),
 		endDate.Format("2006-01-02"),
-		html.EscapeString(generatedAt.Format(time.RFC3339)),
 	))
+	b.WriteString("  <div class=\"meta\">Goals:<br/>- e2e-integration, e2e-stage, e2e-prod job runs should each succeed 95% of the time<br/>- e2e-dev job runs should succeed 95% of the time after the last push of a PR that merges</div>\n")
+
+	previousByEnvironment := map[string]envReport{}
+	for _, report := range previousReports {
+		previousByEnvironment[normalizeReportEnvironment(report.Environment)] = report
+	}
+
+	b.WriteString("  <section class=\"env\">\n")
+	b.WriteString("    <h2>Executive Status (Week-over-Week)</h2>\n")
+	b.WriteString("    <table class=\"overview-table\">\n")
+	b.WriteString("      <thead><tr>")
+	b.WriteString(executiveHeaderHTML("Env", "Environment partition: dev, int, stg, or prod."))
+	b.WriteString(executiveHeaderHTML("Goal basis", "INT/STG/PROD use all E2E job runs. DEV uses runs after the last push of a PR that merges."))
+	b.WriteString(executiveHeaderHTML("Runs", "Number of job runs in the selected goal basis for this environment."))
+	b.WriteString(executiveHeaderHTML("Success", "Success rate on the goal basis: (runs - failed runs) / runs * 100."))
+	b.WriteString(executiveHeaderHTML("Gap vs target", "Difference in percentage points between current success and the configured target rate."))
+	b.WriteString(executiveHeaderHTML("Change from last week", "How much the success rate changed compared with last week, using the same run scope as this row."))
+	b.WriteString(executiveHeaderHTML("Provision success (DEV)", "DEV-only estimate. CI/Infra failures are excluded because provisioning never started. Successful runs and E2E-failed runs count as provisioning success. Formula: (successful + e2e_failed) / (successful + provision_failed + e2e_failed)."))
+	b.WriteString(executiveHeaderHTML("Provision change from last week (DEV)", "DEV-only change in percentage points compared with last week, using the same provision-step estimate."))
+	b.WriteString(executiveHeaderHTML("Main reason for failed runs", "The failure category with the most failed runs in this environment (CI/infra, provisioning, or tests)."))
+	b.WriteString(executiveHeaderHTML("Most common failure pattern", "The failure message pattern that appeared most often in this environment. The value also shows how much it changed from the comparison snapshot."))
+	b.WriteString("</tr></thead>\n")
+	b.WriteString("      <tbody>\n")
+	for _, report := range reports {
+		environment := normalizeReportEnvironment(report.Environment)
+		goalBasis, goalRuns, currentSuccess, goalAvailable := goalBasisKPI(report)
+		statusClass := "status-na"
+		statusLabel := "insufficient data"
+		gapCell := "n/a"
+		if goalAvailable {
+			statusClass, statusLabel = targetStatus(currentSuccess, targetRate)
+			gapCell = fmt.Sprintf("%+.2fpp", currentSuccess-targetRate)
+		}
+		prevCell := "n/a"
+		if prev, ok := previousByEnvironment[environment]; ok {
+			_, _, prevSuccess, prevAvailable := goalBasisKPI(prev)
+			if goalAvailable && prevAvailable {
+				prevCell = fmt.Sprintf("%+.2fpp", currentSuccess-prevSuccess)
+			}
+		}
+
+		primaryFailedLane, primaryFailedCount := topFailedLaneForGoalBasis(report)
+		primaryFailedLaneCell := fmt.Sprintf("%s (%d)", html.EscapeString(primaryFailedLane), primaryFailedCount)
+		if !goalAvailable || primaryFailedCount <= 0 {
+			primaryFailedLaneCell = "n/a"
+		}
+
+		successCell := fmt.Sprintf("<span class=\"%s\">n/a (%s)</span>", statusClass, html.EscapeString(statusLabel))
+		if goalAvailable {
+			successCell = fmt.Sprintf("<span class=\"%s\">%.2f%% (%s)</span>", statusClass, currentSuccess, html.EscapeString(statusLabel))
+		}
+
+		provisionSuccessCell := "n/a"
+		provisionWoWCell := "n/a"
+		if environment == "dev" {
+			currentProvision := summarizeProvisionStepOutcomes(report.Days)
+			if currentProvision.TotalAttempted > 0 {
+				currentProvisionSuccess := successPct(currentProvision.TotalAttempted, currentProvision.Failed)
+				provisionSuccessCell = fmt.Sprintf("%.2f%% (%d/%d)", currentProvisionSuccess, currentProvision.Successful, currentProvision.TotalAttempted)
+				if prev, ok := previousByEnvironment[environment]; ok {
+					previousProvision := summarizeProvisionStepOutcomes(prev.Days)
+					if previousProvision.TotalAttempted > 0 {
+						previousProvisionSuccess := successPct(previousProvision.TotalAttempted, previousProvision.Failed)
+						provisionWoWCell = fmt.Sprintf("%+.2fpp", currentProvisionSuccess-previousProvisionSuccess)
+					}
+				}
+			}
+		}
+
+		semanticSummary := currentSemantic.ByEnvironment[environment]
+		signatureCell := "n/a"
+		if semanticSummary.TopPhrase != "" {
+			previousSupport := 0
+			if previousByPhrase, ok := previousSemantic.PhraseSupportByEnv[environment]; ok {
+				previousSupport = previousByPhrase[semanticSummary.TopPhrase]
+			}
+			signatureCell = fmt.Sprintf(
+				"`%s` (%d, %s)",
+				html.EscapeString(cleanInline(semanticSummary.TopPhrase, 88)),
+				semanticSummary.TopSupport,
+				formatSignedInt(semanticSummary.TopSupport-previousSupport),
+			)
+		}
+
+		b.WriteString("        <tr>")
+		b.WriteString(fmt.Sprintf("<td><strong>%s</strong></td>", html.EscapeString(strings.ToUpper(environment))))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(goalBasis)))
+		b.WriteString(fmt.Sprintf("<td>%d</td>", goalRuns))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", successCell))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(gapCell)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(prevCell)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(provisionSuccessCell)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(provisionWoWCell)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", primaryFailedLaneCell))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", signatureCell))
+		b.WriteString("</tr>\n")
+	}
+	b.WriteString("      </tbody>\n")
+	b.WriteString("    </table>\n")
+	b.WriteString("  </section>\n")
+
 	b.WriteString("  <div class=\"chart-controls\">\n")
 	b.WriteString("    <strong>Chart mode:</strong>\n")
 	b.WriteString("    <label><input type=\"radio\" name=\"chart-mode\" value=\"count\" checked> Absolute counts</label>\n")
@@ -254,18 +585,38 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 	b.WriteString("  </div>\n")
 
 	for _, report := range reports {
+		environment := normalizeReportEnvironment(report.Environment)
 		envLabel := strings.ToUpper(strings.TrimSpace(report.Environment))
 		envMaxRuns := maxRunCount(report.Days)
+		lanePanelID := fmt.Sprintf("drill-%s-lane", environment)
+		testsPanelID := fmt.Sprintf("drill-%s-tests", environment)
+		signaturesPanelID := fmt.Sprintf("drill-%s-signatures", environment)
 		b.WriteString(fmt.Sprintf("  <section class=\"env\">\n    <h2>Environment: %s</h2>\n", html.EscapeString(envLabel)))
+		b.WriteString("    <div class=\"drill-tabs\" role=\"tablist\" aria-label=\"Drill-down views\"")
+		b.WriteString(fmt.Sprintf(" data-env=\"%s\">\n", html.EscapeString(environment)))
+		b.WriteString(fmt.Sprintf("      <button type=\"button\" class=\"drill-tab active\" role=\"tab\" aria-selected=\"true\" data-target=\"%s\">Lane outcomes</button>\n", html.EscapeString(lanePanelID)))
+		b.WriteString(fmt.Sprintf("      <button type=\"button\" class=\"drill-tab\" role=\"tab\" aria-selected=\"false\" data-target=\"%s\">Tests below %.0f%%</button>\n", html.EscapeString(testsPanelID), weeklyTestSuccessTarget))
+		b.WriteString(fmt.Sprintf("      <button type=\"button\" class=\"drill-tab\" role=\"tab\" aria-selected=\"false\" data-target=\"%s\">Top failure signatures</button>\n", html.EscapeString(signaturesPanelID)))
+		b.WriteString("    </div>\n")
+
+		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\">\n", html.EscapeString(lanePanelID), html.EscapeString(environment)))
 		b.WriteString("    <div class=\"cards\">\n")
 		b.WriteString(cardHTML("E2E Jobs", report.Totals.RunCount))
 		b.WriteString(cardHTML("Success Rate", fmt.Sprintf("%.2f%%", successPct(report.Totals.RunCount, report.Totals.FailureCount))))
+		if report.Environment == "dev" {
+			provisionStep := summarizeProvisionStepOutcomes(report.Days)
+			provisionStepValue := "n/a"
+			if provisionStep.TotalAttempted > 0 {
+				provisionStepValue = fmt.Sprintf("%.2f%% (%d/%d)", successPct(provisionStep.TotalAttempted, provisionStep.Failed), provisionStep.Successful, provisionStep.TotalAttempted)
+			}
+			b.WriteString(cardHTML("Provision step success rate (CI/Infra excluded)", provisionStepValue))
+		}
 		b.WriteString("    </div>\n")
 		if report.Environment == "dev" {
 			postGoodTotals := summarizePostGoodRunOutcomes(report.Days)
 			b.WriteString("    <div class=\"cards cards-post-good\">\n")
-			b.WriteString(cardHTML("E2E Jobs (good commits)", postGoodTotals.TotalRuns))
-			b.WriteString(cardHTML("Success Rate (good commits)", fmt.Sprintf("%.2f%%", successPct(postGoodTotals.TotalRuns, postGoodTotals.FailedRuns))))
+			b.WriteString(cardHTML("E2E Jobs (after last push of merged PR)", postGoodTotals.TotalRuns))
+			b.WriteString(cardHTML("Success Rate (after last push of merged PR)", fmt.Sprintf("%.2f%%", successPct(postGoodTotals.TotalRuns, postGoodTotals.FailedRuns))))
 			b.WriteString("    </div>\n")
 		}
 		b.WriteString("    <h3 class=\"chart-title\">Daily Run Outcomes (stacked by run-level lane)</h3>\n")
@@ -311,9 +662,9 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 		}
 		b.WriteString("    </div>\n")
 		if report.Environment == "dev" {
-			b.WriteString("    <h3 class=\"chart-title\">Daily Run Outcomes for Good PRs (stacked by run-level lane)</h3>\n")
+			b.WriteString("    <h3 class=\"chart-title\">Daily Run Outcomes for DEV Goal Basis (after last push of merged PR)</h3>\n")
 			b.WriteString("    <div class=\"legend\">\n")
-			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-success\"></span>Successful runs (good PR semantics)</span>\n")
+			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-success\"></span>Successful runs (after last push of merged PR)</span>\n")
 			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-provision\"></span>Provision failures</span>\n")
 			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-e2e\"></span>E2E failures</span>\n")
 			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-ciinfra\"></span>CI/Infra failures</span>\n")
@@ -331,7 +682,7 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 					b.WriteString("<div class=\"outcome-bar outcome-bar-empty\">No runs</div>")
 				} else {
 					b.WriteString("<div class=\"outcome-bar\">")
-					b.WriteString(outcomeSegmentHTML("seg-success", successfulRuns, totalRuns, envMaxRuns, "Successful runs (good PR semantics)"))
+					b.WriteString(outcomeSegmentHTML("seg-success", successfulRuns, totalRuns, envMaxRuns, "Successful runs (after last push of merged PR)"))
 					b.WriteString(outcomeSegmentHTML("seg-provision", provisionFailedRuns, totalRuns, envMaxRuns, "Provision failures"))
 					b.WriteString(outcomeSegmentHTML("seg-e2e", e2eFailedRuns, totalRuns, envMaxRuns, "E2E failures"))
 					b.WriteString(outcomeSegmentHTML("seg-ciinfra", ciInfraFailedRuns, totalRuns, envMaxRuns, "CI/Infra failures"))
@@ -357,6 +708,89 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 			}
 			b.WriteString("    </div>\n")
 		}
+		b.WriteString("    </div>\n")
+
+		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(testsPanelID), html.EscapeString(environment)))
+		b.WriteString(fmt.Sprintf("      <p class=\"panel-note\">Source: Sippy test metadata (period: %s). Top %d tests below %.2f%% success; minimum %d runs. If the selected week has no metadata rows, this view falls back to the latest available metadata date.</p>\n",
+			html.EscapeString(weeklySippyDefaultPeriod),
+			weeklyDrilldownTopLimit,
+			weeklyTestSuccessTarget,
+			weeklyTestSuccessMinRuns,
+		))
+		tests := testsBelowTargetByEnv[environment]
+		if len(tests) == 0 {
+			b.WriteString(fmt.Sprintf("      <p class=\"panel-empty\">No tests below %.2f%% in this window with at least %d runs.</p>\n", weeklyTestSuccessTarget, weeklyTestSuccessMinRuns))
+		} else {
+			b.WriteString("      <table class=\"detail-table\">\n")
+			b.WriteString("        <thead><tr><th>Pass rate</th><th>Runs</th><th>Date</th><th>Suite</th><th>Test</th></tr></thead>\n")
+			b.WriteString("        <tbody>\n")
+			for _, item := range tests {
+				suite := cleanInline(item.TestSuite, 80)
+				if suite == "" {
+					suite = "n/a"
+				}
+				b.WriteString("          <tr>")
+				b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", item.PassRate))
+				b.WriteString(fmt.Sprintf("<td>%d</td>", item.Runs))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(item.Date)))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(suite)))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(cleanInline(item.TestName, 160))))
+				b.WriteString("</tr>\n")
+			}
+			b.WriteString("        </tbody>\n")
+			b.WriteString("      </table>\n")
+		}
+		b.WriteString("    </div>\n")
+
+		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(signaturesPanelID), html.EscapeString(environment)))
+		b.WriteString(fmt.Sprintf("      <p class=\"panel-note\">Top %d semantic signatures by support in this window; includes links to the latest Prow jobs where each pattern appears.</p>\n", weeklyDrilldownTopLimit))
+		signatures := topSignaturesByEnv[environment]
+		if len(signatures) == 0 {
+			b.WriteString("      <p class=\"panel-empty\">No semantic signatures available for this environment in the selected semantic snapshot.</p>\n")
+		} else {
+			b.WriteString("      <table class=\"detail-table\">\n")
+			b.WriteString("        <thead><tr><th>Signature</th><th>Support</th><th>Share</th><th>Post-good support</th><th>Also seen in envs</th><th>Latest job examples</th></tr></thead>\n")
+			b.WriteString("        <tbody>\n")
+			for _, item := range signatures {
+				otherEnvironments := "none"
+				if len(item.SeenInOtherEnvs) > 0 {
+					otherEnvironments = strings.Join(item.SeenInOtherEnvs, ", ")
+				}
+				latestExamplesCell := "n/a"
+				if len(item.LatestRuns) > 0 {
+					links := make([]string, 0, len(item.LatestRuns))
+					for index, run := range item.LatestRuns {
+						url := strings.TrimSpace(run.RunURL)
+						if url == "" {
+							continue
+						}
+						label := fmt.Sprintf("Job %d", index+1)
+						if ts, ok := parseSignatureRunTimestamp(run.OccurredAt); ok {
+							label = ts.UTC().Format("2006-01-02 15:04Z")
+						}
+						links = append(links, fmt.Sprintf(
+							"<a href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">%s</a>",
+							html.EscapeString(url),
+							html.EscapeString(label),
+						))
+					}
+					if len(links) > 0 {
+						latestExamplesCell = strings.Join(links, " &middot; ")
+					}
+				}
+				b.WriteString("          <tr>")
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(cleanInline(item.Phrase, weeklyPhrasePreviewMaxLength))))
+				b.WriteString(fmt.Sprintf("<td>%d</td>", item.SupportCount))
+				b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", item.SupportShare))
+				b.WriteString(fmt.Sprintf("<td>%d</td>", item.PostGoodCount))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(otherEnvironments)))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", latestExamplesCell))
+				b.WriteString("</tr>\n")
+			}
+			b.WriteString("        </tbody>\n")
+			b.WriteString("      </table>\n")
+		}
+		b.WriteString("    </div>\n")
 		b.WriteString("  </section>\n")
 	}
 
@@ -379,6 +813,25 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 	b.WriteString("      }\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
+	b.WriteString("  function activateDrillTab(button) {\n")
+	b.WriteString("    if (!button) { return; }\n")
+	b.WriteString("    var group = button.closest('.drill-tabs');\n")
+	b.WriteString("    if (!group) { return; }\n")
+	b.WriteString("    var env = group.getAttribute('data-env') || '';\n")
+	b.WriteString("    var target = button.getAttribute('data-target') || '';\n")
+	b.WriteString("    var buttons = group.querySelectorAll('.drill-tab');\n")
+	b.WriteString("    for (var i = 0; i < buttons.length; i++) {\n")
+	b.WriteString("      var current = buttons[i];\n")
+	b.WriteString("      var active = current === button;\n")
+	b.WriteString("      current.classList.toggle('active', active);\n")
+	b.WriteString("      current.setAttribute('aria-selected', active ? 'true' : 'false');\n")
+	b.WriteString("    }\n")
+	b.WriteString("    var panels = document.querySelectorAll('.drill-panel[data-env=\"' + env + '\"]');\n")
+	b.WriteString("    for (var j = 0; j < panels.length; j++) {\n")
+	b.WriteString("      var panel = panels[j];\n")
+	b.WriteString("      panel.hidden = panel.id !== target;\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
 	b.WriteString("  var radios = document.querySelectorAll('input[name=\"chart-mode\"]');\n")
 	b.WriteString("  for (var i = 0; i < radios.length; i++) {\n")
 	b.WriteString("    radios[i].addEventListener('change', function(e) {\n")
@@ -387,11 +840,340 @@ func buildHTML(startDate time.Time, endDate time.Time, reports []envReport, gene
 	b.WriteString("      }\n")
 	b.WriteString("    });\n")
 	b.WriteString("  }\n")
+	b.WriteString("  var tabs = document.querySelectorAll('.drill-tab');\n")
+	b.WriteString("  for (var k = 0; k < tabs.length; k++) {\n")
+	b.WriteString("    tabs[k].addEventListener('click', function(e) {\n")
+	b.WriteString("      activateDrillTab(e.currentTarget);\n")
+	b.WriteString("    });\n")
+	b.WriteString("  }\n")
+	b.WriteString("  var groups = document.querySelectorAll('.drill-tabs');\n")
+	b.WriteString("  for (var g = 0; g < groups.length; g++) {\n")
+	b.WriteString("    var firstTab = groups[g].querySelector('.drill-tab');\n")
+	b.WriteString("    if (firstTab) {\n")
+	b.WriteString("      activateDrillTab(firstTab);\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
 	b.WriteString("  applyChartMode('count');\n")
 	b.WriteString("})();\n")
 	b.WriteString("</script>\n")
 	b.WriteString("</body>\n</html>\n")
 	return b.String()
+}
+
+func loadBelowTargetTestsByEnvironment(
+	ctx context.Context,
+	store storecontracts.Store,
+	dates []string,
+	period string,
+	targetPassRate float64,
+	minRuns int,
+	limit int,
+) (map[string][]belowTargetTest, error) {
+	out := make(map[string][]belowTargetTest, len(reportEnvironments))
+	trimmedPeriod := strings.TrimSpace(period)
+	metricDates, err := store.ListMetricDates(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list metric dates for test metadata fallback: %w", err)
+	}
+	fallbackDates := metadataFallbackDates(metricDates, dates)
+	for _, environment := range reportEnvironments {
+		filtered, hadWindowRows, collectErr := collectBelowTargetTestsForDates(
+			ctx,
+			store,
+			environment,
+			dates,
+			trimmedPeriod,
+			targetPassRate,
+			minRuns,
+			limit,
+		)
+		if collectErr != nil {
+			return nil, collectErr
+		}
+		if len(filtered) == 0 && !hadWindowRows && len(fallbackDates) > 0 {
+			filtered, _, collectErr = collectBelowTargetTestsForDates(
+				ctx,
+				store,
+				environment,
+				fallbackDates,
+				trimmedPeriod,
+				targetPassRate,
+				minRuns,
+				limit,
+			)
+			if collectErr != nil {
+				return nil, collectErr
+			}
+		}
+		out[environment] = filtered
+	}
+	return out, nil
+}
+
+func collectBelowTargetTestsForDates(
+	ctx context.Context,
+	store storecontracts.Store,
+	environment string,
+	dates []string,
+	period string,
+	targetPassRate float64,
+	minRuns int,
+	limit int,
+) ([]belowTargetTest, bool, error) {
+	bestByTestKey := map[string]belowTargetTest{}
+	hadRows := false
+	for _, date := range dates {
+		rows, err := store.ListTestMetadataDailyByDate(ctx, environment, date)
+		if err != nil {
+			return nil, hadRows, fmt.Errorf("list test metadata daily for env=%q date=%q: %w", environment, date, err)
+		}
+		for _, row := range rows {
+			if period != "" && strings.TrimSpace(row.Period) != period {
+				continue
+			}
+			testName := strings.TrimSpace(row.TestName)
+			if testName == "" {
+				continue
+			}
+			hadRows = true
+			testSuite := strings.TrimSpace(row.TestSuite)
+			candidate := belowTargetTest{
+				TestName:  testName,
+				TestSuite: testSuite,
+				Date:      strings.TrimSpace(row.Date),
+				PassRate:  row.CurrentPassPercentage,
+				Runs:      row.CurrentRuns,
+			}
+			key := strings.ToLower(testSuite) + "|" + strings.ToLower(testName)
+			existing, exists := bestByTestKey[key]
+			if !exists || preferBelowTargetTest(candidate, existing) {
+				bestByTestKey[key] = candidate
+			}
+		}
+	}
+
+	filtered := make([]belowTargetTest, 0, len(bestByTestKey))
+	for _, candidate := range bestByTestKey {
+		if candidate.Runs < minRuns || candidate.PassRate >= targetPassRate {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].PassRate != filtered[j].PassRate {
+			return filtered[i].PassRate < filtered[j].PassRate
+		}
+		if filtered[i].Runs != filtered[j].Runs {
+			return filtered[i].Runs > filtered[j].Runs
+		}
+		if filtered[i].TestSuite != filtered[j].TestSuite {
+			return filtered[i].TestSuite < filtered[j].TestSuite
+		}
+		return filtered[i].TestName < filtered[j].TestName
+	})
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, hadRows, nil
+}
+
+func metadataFallbackDates(metricDates []string, primaryDates []string) []string {
+	exclude := map[string]struct{}{}
+	for _, date := range primaryDates {
+		trimmed := strings.TrimSpace(date)
+		if trimmed == "" {
+			continue
+		}
+		exclude[trimmed] = struct{}{}
+	}
+	unique := map[string]struct{}{}
+	for _, date := range metricDates {
+		trimmed := strings.TrimSpace(date)
+		if trimmed == "" {
+			continue
+		}
+		if _, blocked := exclude[trimmed]; blocked {
+			continue
+		}
+		unique[trimmed] = struct{}{}
+	}
+	out := make([]string, 0, len(unique))
+	for value := range unique {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+func preferBelowTargetTest(candidate belowTargetTest, existing belowTargetTest) bool {
+	if candidate.Date != existing.Date {
+		return candidate.Date > existing.Date
+	}
+	if candidate.Runs != existing.Runs {
+		return candidate.Runs > existing.Runs
+	}
+	if candidate.PassRate != existing.PassRate {
+		return candidate.PassRate < existing.PassRate
+	}
+	if candidate.TestSuite != existing.TestSuite {
+		return candidate.TestSuite < existing.TestSuite
+	}
+	return candidate.TestName < existing.TestName
+}
+
+func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int) map[string][]topSignature {
+	out := make(map[string][]topSignature, len(reportEnvironments))
+	for _, environment := range reportEnvironments {
+		supportByPhrase := snapshot.PhraseSupportByEnv[environment]
+		postGoodByPhrase := snapshot.PhrasePostGoodByEnv[environment]
+		totalSupport := 0
+		for _, support := range supportByPhrase {
+			if support > 0 {
+				totalSupport += support
+			}
+		}
+
+		rows := make([]topSignature, 0, len(supportByPhrase))
+		for phrase, support := range supportByPhrase {
+			if support <= 0 {
+				continue
+			}
+			otherEnvironments := make([]string, 0, len(reportEnvironments)-1)
+			for _, candidateEnvironment := range reportEnvironments {
+				if candidateEnvironment == environment {
+					continue
+				}
+				if snapshot.PhraseSupportByEnv[candidateEnvironment][phrase] <= 0 {
+					continue
+				}
+				otherEnvironments = append(otherEnvironments, strings.ToUpper(candidateEnvironment))
+			}
+			share := 0.0
+			if totalSupport > 0 {
+				share = float64(support) * 100.0 / float64(totalSupport)
+			}
+			rows = append(rows, topSignature{
+				Phrase:          strings.TrimSpace(phrase),
+				SupportCount:    support,
+				SupportShare:    share,
+				PostGoodCount:   postGoodByPhrase[phrase],
+				SeenInOtherEnvs: otherEnvironments,
+				LatestRuns:      append([]signatureRunExample(nil), snapshot.PhraseLatestRunsByEnv[environment][phrase]...),
+			})
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].SupportCount != rows[j].SupportCount {
+				return rows[i].SupportCount > rows[j].SupportCount
+			}
+			if rows[i].PostGoodCount != rows[j].PostGoodCount {
+				return rows[i].PostGoodCount > rows[j].PostGoodCount
+			}
+			return rows[i].Phrase < rows[j].Phrase
+		})
+		if limit > 0 && len(rows) > limit {
+			rows = rows[:limit]
+		}
+		out[environment] = rows
+	}
+	return out
+}
+
+func runExamplesFromGlobalCluster(row semanticcontracts.GlobalClusterRecord) []signatureRunExample {
+	candidates := make([]signatureRunExample, 0, len(row.References)+1)
+	for _, ref := range row.References {
+		runURL := strings.TrimSpace(ref.RunURL)
+		if runURL == "" {
+			continue
+		}
+		candidates = append(candidates, signatureRunExample{
+			RunURL:     runURL,
+			OccurredAt: strings.TrimSpace(ref.OccurredAt),
+		})
+	}
+	if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
+		candidates = append(candidates, signatureRunExample{
+			RunURL: sourceRunURL,
+		})
+	}
+	return mergeSignatureRunExamples(nil, candidates, weeklySignatureExampleLimit)
+}
+
+func mergeSignatureRunExamples(existing []signatureRunExample, incoming []signatureRunExample, limit int) []signatureRunExample {
+	mergedByURL := map[string]signatureRunExample{}
+	for _, current := range existing {
+		runURL := strings.TrimSpace(current.RunURL)
+		if runURL == "" {
+			continue
+		}
+		current.RunURL = runURL
+		mergedByURL[runURL] = current
+	}
+	for _, candidate := range incoming {
+		runURL := strings.TrimSpace(candidate.RunURL)
+		if runURL == "" {
+			continue
+		}
+		candidate.RunURL = runURL
+		existingValue, exists := mergedByURL[runURL]
+		if !exists || preferSignatureRunExample(candidate, existingValue) {
+			mergedByURL[runURL] = candidate
+		}
+	}
+
+	merged := make([]signatureRunExample, 0, len(mergedByURL))
+	for _, value := range mergedByURL {
+		merged = append(merged, value)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		ti, okI := parseSignatureRunTimestamp(merged[i].OccurredAt)
+		tj, okJ := parseSignatureRunTimestamp(merged[j].OccurredAt)
+		switch {
+		case okI && okJ && !ti.Equal(tj):
+			return ti.After(tj)
+		case okI != okJ:
+			return okI
+		}
+		return merged[i].RunURL < merged[j].RunURL
+	})
+	if limit > 0 && len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged
+}
+
+func preferSignatureRunExample(candidate signatureRunExample, existing signatureRunExample) bool {
+	candidateTime, candidateHasTime := parseSignatureRunTimestamp(candidate.OccurredAt)
+	existingTime, existingHasTime := parseSignatureRunTimestamp(existing.OccurredAt)
+	switch {
+	case candidateHasTime && existingHasTime && !candidateTime.Equal(existingTime):
+		return candidateTime.After(existingTime)
+	case candidateHasTime != existingHasTime:
+		return candidateHasTime
+	}
+	return len(strings.TrimSpace(candidate.OccurredAt)) > len(strings.TrimSpace(existing.OccurredAt))
+}
+
+func parseSignatureRunTimestamp(value string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	formats := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range formats {
+		parsed, err := time.Parse(layout, trimmed)
+		if err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func dailyRunOutcomeCounts(day counts) (successfulRuns int, ciInfraFailedRuns int, provisionFailedRuns int, e2eFailedRuns int) {
@@ -445,6 +1227,12 @@ type runOutcomesTotals struct {
 	SuccessfulRuns int
 }
 
+type provisionStepTotals struct {
+	TotalAttempted int
+	Successful     int
+	Failed         int
+}
+
 func summarizePostGoodRunOutcomes(days []dayReport) runOutcomesTotals {
 	out := runOutcomesTotals{}
 	for _, day := range days {
@@ -453,6 +1241,29 @@ func summarizePostGoodRunOutcomes(days []dayReport) runOutcomesTotals {
 		out.FailedRuns += day.PostGoodRunOutcomes.CIInfraFailedRuns +
 			day.PostGoodRunOutcomes.ProvisionFailedRuns +
 			day.PostGoodRunOutcomes.E2EFailedRuns
+	}
+	return out
+}
+
+func summarizeProvisionStepOutcomes(days []dayReport) provisionStepTotals {
+	out := provisionStepTotals{}
+	for _, day := range days {
+		successfulRuns, _, provisionFailedRuns, e2eFailedRuns := dailyRunOutcomeCounts(day.Counts)
+		attempted := successfulRuns + provisionFailedRuns + e2eFailedRuns
+		successfulProvision := successfulRuns + e2eFailedRuns
+		if attempted < 0 {
+			attempted = 0
+		}
+		if successfulProvision < 0 {
+			successfulProvision = 0
+		}
+		failedProvision := provisionFailedRuns
+		if failedProvision < 0 {
+			failedProvision = 0
+		}
+		out.TotalAttempted += attempted
+		out.Successful += successfulProvision
+		out.Failed += failedProvision
 	}
 	return out
 }
@@ -493,6 +1304,14 @@ func outcomePct(value int, total int) float64 {
 	return float64(value) * 100.0 / float64(total)
 }
 
+func executiveHeaderHTML(label string, tooltip string) string {
+	return fmt.Sprintf(
+		"<th><span class=\"exec-heading-help\" title=\"%s\">%s</span></th>",
+		html.EscapeString(strings.TrimSpace(tooltip)),
+		html.EscapeString(strings.TrimSpace(label)),
+	)
+}
+
 func cardHTML(label string, value any) string {
 	return fmt.Sprintf("      <div class=\"card\"><div class=\"label\">%s</div><div class=\"value\">%v</div></div>\n", html.EscapeString(label), value)
 }
@@ -506,4 +1325,83 @@ func successPct(total int, failed int) float64 {
 		successful = 0
 	}
 	return float64(successful) * 100.0 / float64(total)
+}
+
+func normalizeReportEnvironment(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func formatSignedInt(value int) string {
+	if value > 0 {
+		return fmt.Sprintf("+%d", value)
+	}
+	return fmt.Sprintf("%d", value)
+}
+
+func goalBasisKPI(report envReport) (string, int, float64, bool) {
+	environment := normalizeReportEnvironment(report.Environment)
+	if environment == "dev" {
+		postMergeTotals := summarizePostGoodRunOutcomes(report.Days)
+		if postMergeTotals.TotalRuns <= 0 {
+			return "After last push of a PR that merges", 0, 0, false
+		}
+		return "After last push of a PR that merges", postMergeTotals.TotalRuns, successPct(postMergeTotals.TotalRuns, postMergeTotals.FailedRuns), true
+	}
+	if report.Totals.RunCount <= 0 {
+		return "All E2E job runs", 0, 0, false
+	}
+	return "All E2E job runs", report.Totals.RunCount, successPct(report.Totals.RunCount, report.Totals.FailureCount), true
+}
+
+func topFailedLaneForGoalBasis(report envReport) (string, int) {
+	environment := normalizeReportEnvironment(report.Environment)
+	if environment == "dev" {
+		return topFailedLaneFromCounts(
+			report.Totals.PostGoodFailedCIInfra,
+			report.Totals.PostGoodFailedProvision,
+			report.Totals.PostGoodFailedE2EJobs,
+		)
+	}
+	return topFailedLane(report.Totals)
+}
+
+func topFailedLane(total counts) (string, int) {
+	return topFailedLaneFromCounts(total.FailedCIInfraRunCount, total.FailedProvisionRunCount, total.FailedE2ERunCount)
+}
+
+func topFailedLaneFromCounts(ciInfraCount, provisionCount, e2eCount int) (string, int) {
+	bestLane := "ci/infra"
+	bestCount := ciInfraCount
+	if provisionCount > bestCount {
+		bestLane = "provision"
+		bestCount = provisionCount
+	}
+	if e2eCount > bestCount {
+		bestLane = "e2e"
+		bestCount = e2eCount
+	}
+	return bestLane, bestCount
+}
+
+func targetStatus(successRate float64, targetRate float64) (string, string) {
+	if successRate >= targetRate {
+		return "status-on-track", "on track"
+	}
+	if successRate >= targetRate-5.0 {
+		return "status-near-track", "near target"
+	}
+	return "status-off-track", "off track"
+}
+
+func cleanInline(input string, max int) string {
+	normalized := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(input, "\n", " "), "\r", " "), "\t", " "))
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	if max <= 0 {
+		return normalized
+	}
+	runes := []rune(normalized)
+	if len(runes) <= max {
+		return normalized
+	}
+	return string(runes[:max-1]) + "..."
 }
