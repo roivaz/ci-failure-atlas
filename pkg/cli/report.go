@@ -34,7 +34,9 @@ func NewReportCommand() (*cobra.Command, error) {
 			if err != nil {
 				return err
 			}
-			store, err := ndjson.New(completed.DataDirectory)
+			store, err := ndjson.NewWithOptions(completed.DataDirectory, ndjson.Options{
+				SemanticSubdirectory: completed.SemanticSubdirectory,
+			})
 			if err != nil {
 				return fmt.Errorf("create NDJSON store: %w", err)
 			}
@@ -68,7 +70,9 @@ func NewReportCommand() (*cobra.Command, error) {
 			if err != nil {
 				return err
 			}
-			store, err := ndjson.New(completed.DataDirectory)
+			store, err := ndjson.NewWithOptions(completed.DataDirectory, ndjson.Options{
+				SemanticSubdirectory: completed.SemanticSubdirectory,
+			})
 			if err != nil {
 				return fmt.Errorf("create NDJSON store: %w", err)
 			}
@@ -103,7 +107,9 @@ func NewReportCommand() (*cobra.Command, error) {
 			if err != nil {
 				return err
 			}
-			store, err := ndjson.New(completed.DataDirectory)
+			store, err := ndjson.NewWithOptions(completed.DataDirectory, ndjson.Options{
+				SemanticSubdirectory: completed.SemanticSubdirectory,
+			})
 			if err != nil {
 				return fmt.Errorf("create NDJSON store: %w", err)
 			}

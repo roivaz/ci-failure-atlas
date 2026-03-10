@@ -17,47 +17,44 @@ func NewWorkflowCommand() (*cobra.Command, error) {
 		SilenceErrors: true,
 	}
 
-	phase1Opts := workflowphase1.DefaultOptions()
-	phase1Cmd := &cobra.Command{
-		Use:   "phase1",
-		Short: "Run semantic phase1 workflow.",
+	buildOpts := workflowphase1.DefaultOptions()
+	buildCmd := &cobra.Command{
+		Use:   "build",
+		Short: "Run semantic workflow build (phase1 + phase2).",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			validated, err := phase1Opts.Validate()
+			phase1Validated, err := buildOpts.Validate()
 			if err != nil {
 				return err
 			}
-			completed, err := validated.Complete(cmd.Context())
+			phase1Completed, err := phase1Validated.Complete(cmd.Context())
 			if err != nil {
 				return err
 			}
-			return completed.Run(cmd.Context())
-		},
-	}
-	if err := workflowphase1.BindOptions(phase1Opts, phase1Cmd); err != nil {
-		return nil, fmt.Errorf("failed to bind workflow phase1 options: %w", err)
-	}
-	cmd.AddCommand(phase1Cmd)
+			if err := phase1Completed.Run(cmd.Context()); err != nil {
+				return fmt.Errorf("workflow build phase1: %w", err)
+			}
 
-	phase2Opts := workflowphase2.DefaultOptions()
-	phase2Cmd := &cobra.Command{
-		Use:   "phase2",
-		Short: "Run semantic phase2 workflow.",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			validated, err := phase2Opts.Validate()
+			phase2Opts := workflowphase2.DefaultOptions()
+			phase2Opts.NDJSONOptions.DataDirectory = buildOpts.NDJSONOptions.DataDirectory
+			phase2Opts.NDJSONOptions.SemanticSubdirectory = buildOpts.NDJSONOptions.SemanticSubdirectory
+			phase2Validated, err := phase2Opts.Validate()
 			if err != nil {
 				return err
 			}
-			completed, err := validated.Complete(cmd.Context())
+			phase2Completed, err := phase2Validated.Complete(cmd.Context())
 			if err != nil {
 				return err
 			}
-			return completed.Run(cmd.Context())
+			if err := phase2Completed.Run(cmd.Context()); err != nil {
+				return fmt.Errorf("workflow build phase2: %w", err)
+			}
+			return nil
 		},
 	}
-	if err := workflowphase2.BindOptions(phase2Opts, phase2Cmd); err != nil {
-		return nil, fmt.Errorf("failed to bind workflow phase2 options: %w", err)
+	if err := workflowphase1.BindOptions(buildOpts, buildCmd); err != nil {
+		return nil, fmt.Errorf("failed to bind workflow build options: %w", err)
 	}
-	cmd.AddCommand(phase2Cmd)
+	cmd.AddCommand(buildCmd)
 
 	for _, sub := range []string{
 		"validate",

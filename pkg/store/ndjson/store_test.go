@@ -2,6 +2,7 @@ package ndjson
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -75,6 +76,74 @@ func TestUpsertRunsAndListRunKeys(t *testing.T) {
 	}
 	if rows[0].Environment != "dev" || rows[0].RunURL != "https://run-a" || rows[0].JobName != "job-a-updated" {
 		t.Fatalf("unexpected first run row: %+v", rows[0])
+	}
+}
+
+func TestNewWithOptionsWritesSemanticArtifactsUnderSubdirectory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	weekStore, err := NewWithOptions(dataDir, Options{SemanticSubdirectory: "2026-03-01"})
+	if err != nil {
+		t.Fatalf("new store with semantic subdirectory: %v", err)
+	}
+
+	if err := weekStore.UpsertTestClusters(ctx, []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:   semanticcontracts.SchemaVersionV1,
+			Environment:     "dev",
+			Phase1ClusterID: "dev-cluster",
+			Lane:            "e2e",
+			JobName:         "job-dev",
+			TestName:        "test-dev",
+			TestSuite:       "suite-dev",
+			SupportCount:    1,
+		},
+	}); err != nil {
+		t.Fatalf("upsert test clusters in semantic subdirectory: %v", err)
+	}
+
+	weekSemanticPath := filepath.Join(dataDir, semanticDirectory, "2026-03-01", testClustersFilename)
+	if info, statErr := os.Stat(weekSemanticPath); statErr != nil {
+		t.Fatalf("expected week semantic path to exist: %v", statErr)
+	} else if info.IsDir() {
+		t.Fatalf("expected week semantic path to be a file: %q", weekSemanticPath)
+	}
+
+	defaultSemanticPath := filepath.Join(dataDir, semanticDirectory, testClustersFilename)
+	if _, statErr := os.Stat(defaultSemanticPath); statErr == nil {
+		t.Fatalf("did not expect default semantic file to exist when writing to subdirectory")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("unexpected stat error for default semantic file: %v", statErr)
+	}
+
+	defaultStore, err := New(dataDir)
+	if err != nil {
+		t.Fatalf("new default store: %v", err)
+	}
+	defaultRows, err := defaultStore.ListTestClusters(ctx)
+	if err != nil {
+		t.Fatalf("list test clusters from default store: %v", err)
+	}
+	if len(defaultRows) != 0 {
+		t.Fatalf("expected default store to have no test clusters, got=%d", len(defaultRows))
+	}
+
+	weekRows, err := weekStore.ListTestClusters(ctx)
+	if err != nil {
+		t.Fatalf("list test clusters from week store: %v", err)
+	}
+	if len(weekRows) != 1 {
+		t.Fatalf("expected one week-scoped test cluster row, got=%d", len(weekRows))
+	}
+}
+
+func TestNewWithOptionsRejectsSemanticSubdirectoryTraversal(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewWithOptions(t.TempDir(), Options{SemanticSubdirectory: "../outside"}); err == nil {
+		t.Fatalf("expected semantic subdirectory traversal to be rejected")
 	}
 }
 

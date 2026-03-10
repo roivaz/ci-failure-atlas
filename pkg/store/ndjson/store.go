@@ -40,20 +40,42 @@ const (
 )
 
 type Store struct {
-	dataDirectory string
-	mu            sync.RWMutex
+	dataDirectory        string
+	semanticSubdirectory string
+	mu                   sync.RWMutex
 }
 
 var _ contracts.Store = (*Store)(nil)
 
+type Options struct {
+	SemanticSubdirectory string
+}
+
 func New(dataDirectory string) (*Store, error) {
+	return NewWithOptions(dataDirectory, Options{})
+}
+
+func NewWithOptions(dataDirectory string, opts Options) (*Store, error) {
 	if dataDirectory == "" {
 		return nil, fmt.Errorf("data directory is required")
 	}
-	if err := os.MkdirAll(filepath.Clean(dataDirectory), 0o755); err != nil {
+	cleanDataDirectory := filepath.Clean(dataDirectory)
+	if err := os.MkdirAll(cleanDataDirectory, 0o755); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
-	return &Store{dataDirectory: dataDirectory}, nil
+	semanticSubdirectory, err := normalizeSemanticSubdirectory(opts.SemanticSubdirectory)
+	if err != nil {
+		return nil, fmt.Errorf("invalid semantic subdirectory: %w", err)
+	}
+	if semanticSubdirectory != "" {
+		if err := os.MkdirAll(filepath.Join(cleanDataDirectory, semanticDirectory, semanticSubdirectory), 0o755); err != nil {
+			return nil, fmt.Errorf("create semantic subdirectory: %w", err)
+		}
+	}
+	return &Store{
+		dataDirectory:        cleanDataDirectory,
+		semanticSubdirectory: semanticSubdirectory,
+	}, nil
 }
 
 func (s *Store) Close() error {
@@ -1729,27 +1751,27 @@ func (s *Store) testMetadataDailyPath() string {
 }
 
 func (s *Store) phase1WorksetPath() string {
-	return filepath.Join(s.dataDirectory, semanticDirectory, phase1WorksetFilename)
+	return filepath.Join(s.semanticBasePath(), phase1WorksetFilename)
 }
 
 func (s *Store) phase1NormalizedPath() string {
-	return filepath.Join(s.dataDirectory, semanticDirectory, phase1NormalizedFilename)
+	return filepath.Join(s.semanticBasePath(), phase1NormalizedFilename)
 }
 
 func (s *Store) phase1AssignmentsPath() string {
-	return filepath.Join(s.dataDirectory, semanticDirectory, phase1AssignmentsFile)
+	return filepath.Join(s.semanticBasePath(), phase1AssignmentsFile)
 }
 
 func (s *Store) testClustersPath() string {
-	return filepath.Join(s.dataDirectory, semanticDirectory, testClustersFilename)
+	return filepath.Join(s.semanticBasePath(), testClustersFilename)
 }
 
 func (s *Store) globalClustersPath() string {
-	return filepath.Join(s.dataDirectory, semanticDirectory, globalClustersFilename)
+	return filepath.Join(s.semanticBasePath(), globalClustersFilename)
 }
 
 func (s *Store) reviewQueuePath() string {
-	return filepath.Join(s.dataDirectory, semanticDirectory, reviewQueueFilename)
+	return filepath.Join(s.semanticBasePath(), reviewQueueFilename)
 }
 
 func (s *Store) checkpointsPath() string {
@@ -2290,6 +2312,37 @@ func normalizeDate(value string) (string, error) {
 		return "", err
 	}
 	return parsed.UTC().Format("2006-01-02"), nil
+}
+
+func normalizeSemanticSubdirectory(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	cleaned := filepath.Clean(trimmed)
+	if cleaned == "." {
+		return "", nil
+	}
+	if filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("must be a relative path")
+	}
+	for _, part := range strings.Split(cleaned, string(filepath.Separator)) {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			return "", fmt.Errorf("must not contain '..'")
+		}
+	}
+	return cleaned, nil
+}
+
+func (s *Store) semanticBasePath() string {
+	base := filepath.Join(s.dataDirectory, semanticDirectory)
+	if s.semanticSubdirectory == "" {
+		return base
+	}
+	return filepath.Join(base, s.semanticSubdirectory)
 }
 
 func dateFromTimestamp(value string) (string, bool) {

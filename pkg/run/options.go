@@ -156,7 +156,9 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 		return nil, err
 	}
 
-	store, err := ndjson.New(ndjsonCompleted.DataDirectory)
+	store, err := ndjson.NewWithOptions(ndjsonCompleted.DataDirectory, ndjson.Options{
+		SemanticSubdirectory: ndjsonCompleted.SemanticSubdirectory,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create NDJSON store: %w", err)
 	}
