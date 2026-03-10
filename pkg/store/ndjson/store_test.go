@@ -1011,6 +1011,78 @@ func TestUpsertAndListSemanticPhase1Artifacts(t *testing.T) {
 	}
 }
 
+func TestUpsertSemanticArtifactsReplaceTargetEnvironment(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	if err := store.UpsertTestClusters(ctx, []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:   semanticcontracts.SchemaVersionV1,
+			Environment:     "dev",
+			Phase1ClusterID: "dev-old",
+			Lane:            "e2e",
+			JobName:         "job-dev",
+			TestName:        "test-dev",
+			TestSuite:       "suite-dev",
+			SupportCount:    1,
+		},
+		{
+			SchemaVersion:   semanticcontracts.SchemaVersionV1,
+			Environment:     "int",
+			Phase1ClusterID: "int-keep",
+			Lane:            "e2e",
+			JobName:         "job-int",
+			TestName:        "test-int",
+			TestSuite:       "suite-int",
+			SupportCount:    1,
+		},
+	}); err != nil {
+		t.Fatalf("initial upsert test clusters: %v", err)
+	}
+
+	if err := store.UpsertTestClusters(ctx, []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:   semanticcontracts.SchemaVersionV1,
+			Environment:     "dev",
+			Phase1ClusterID: "dev-new",
+			Lane:            "e2e",
+			JobName:         "job-dev",
+			TestName:        "test-dev",
+			TestSuite:       "suite-dev",
+			SupportCount:    2,
+		},
+	}); err != nil {
+		t.Fatalf("replacement upsert test clusters: %v", err)
+	}
+
+	rows, err := store.ListTestClusters(ctx)
+	if err != nil {
+		t.Fatalf("list test clusters: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("unexpected test cluster row count: got=%d want=2", len(rows))
+	}
+
+	seen := map[string]semanticcontracts.TestClusterRecord{}
+	for _, row := range rows {
+		seen[row.Environment+"|"+row.Phase1ClusterID] = row
+	}
+	if _, ok := seen["dev|dev-old"]; ok {
+		t.Fatalf("expected old dev cluster to be replaced, rows=%+v", rows)
+	}
+	if _, ok := seen["dev|dev-new"]; !ok {
+		t.Fatalf("expected new dev cluster after replacement, rows=%+v", rows)
+	}
+	if _, ok := seen["int|int-keep"]; !ok {
+		t.Fatalf("expected non-target environment to be preserved, rows=%+v", rows)
+	}
+}
+
 func TestUpsertRequiresEnvironment(t *testing.T) {
 	t.Parallel()
 

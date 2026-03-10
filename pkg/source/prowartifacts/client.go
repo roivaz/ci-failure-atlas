@@ -100,7 +100,9 @@ func (c *HTTPClient) ListFailures(ctx context.Context, environment string, runUR
 
 		rows, err := parseJUnitFailures(contents, artifactURL)
 		if err != nil {
-			fetchErrors = append(fetchErrors, fmt.Errorf("parse junit %q: %w", junitPath, err))
+			// A 200 with unparsable/empty/non-junit XML is a terminal content
+			// mismatch for this deterministic path. Treat as missing instead of a
+			// retryable transport error.
 			continue
 		}
 
@@ -202,12 +204,9 @@ func (c *HTTPClient) fetchArtifact(ctx context.Context, artifactURL string) ([]b
 
 		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 		if strings.Contains(contentType, "text/html") || looksLikeHTML(body) {
-			lastErr = fmt.Errorf("fetch artifact %q returned HTML content instead of junit XML", artifactURL)
-			if attempt < maxAttempts {
-				time.Sleep(time.Duration(attempt) * time.Second)
-				continue
-			}
-			return nil, false, lastErr
+			// Some artifact paths legitimately resolve to HTML directory/index pages.
+			// Treat those as "artifact not found" instead of retryable failures.
+			return nil, false, nil
 		}
 
 		return body, true, nil

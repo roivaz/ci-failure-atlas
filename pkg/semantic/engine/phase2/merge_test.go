@@ -25,10 +25,9 @@ func TestMergeBuildsDeterministicGlobalCluster(t *testing.T) {
 			MemberSignatureIDs:           []string{"sig-3", "sig-2"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:         "https://prow.example/run/2",
-					OccurredAt:     "2026-03-05T11:00:00Z",
-					SignatureID:    "sig-2",
-					RawTextExcerpt: "cluster operators not available",
+					RunURL:      "https://prow.example/run/2",
+					OccurredAt:  "2026-03-05T11:00:00Z",
+					SignatureID: "sig-2",
 				},
 			},
 		},
@@ -46,10 +45,9 @@ func TestMergeBuildsDeterministicGlobalCluster(t *testing.T) {
 			MemberSignatureIDs:           []string{"sig-1"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:         "https://prow.example/run/1",
-					OccurredAt:     "2026-03-05T10:00:00Z",
-					SignatureID:    "sig-1",
-					RawTextExcerpt: "cluster operators not available",
+					RunURL:      "https://prow.example/run/1",
+					OccurredAt:  "2026-03-05T10:00:00Z",
+					SignatureID: "sig-1",
 				},
 			},
 		},
@@ -96,14 +94,14 @@ func TestMergeSplitsGenericCanonicalByProvider(t *testing.T) {
 			SchemaVersion:           semanticcontracts.SchemaVersionV1,
 			Phase1ClusterID:         "phase1-a",
 			CanonicalEvidencePhrase: "ERROR CODE: DeploymentFailed",
+			SearchQueryPhrase:       "/providers/Microsoft.EventGrid/topics/test",
 			SupportCount:            1,
 			MemberSignatureIDs:      []string{"sig-a"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:         "https://prow.example/run/1",
-					OccurredAt:     "2026-03-05T10:00:00Z",
-					SignatureID:    "sig-a",
-					RawTextExcerpt: "/providers/Microsoft.EventGrid/topics/test",
+					RunURL:      "https://prow.example/run/1",
+					OccurredAt:  "2026-03-05T10:00:00Z",
+					SignatureID: "sig-a",
 				},
 			},
 		},
@@ -111,14 +109,14 @@ func TestMergeSplitsGenericCanonicalByProvider(t *testing.T) {
 			SchemaVersion:           semanticcontracts.SchemaVersionV1,
 			Phase1ClusterID:         "phase1-b",
 			CanonicalEvidencePhrase: "ERROR CODE: DeploymentFailed",
+			SearchQueryPhrase:       "/providers/Microsoft.Monitor/actionGroups/test",
 			SupportCount:            1,
 			MemberSignatureIDs:      []string{"sig-b"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:         "https://prow.example/run/2",
-					OccurredAt:     "2026-03-05T11:00:00Z",
-					SignatureID:    "sig-b",
-					RawTextExcerpt: "/providers/Microsoft.Monitor/actionGroups/test",
+					RunURL:      "https://prow.example/run/2",
+					OccurredAt:  "2026-03-05T11:00:00Z",
+					SignatureID: "sig-b",
 				},
 			},
 		},
@@ -148,10 +146,9 @@ func TestMergeFallsBackSearchPhraseWhenSourceInvalid(t *testing.T) {
 			MemberSignatureIDs:           []string{"sig-a"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:         "https://prow.example/run/1",
-					OccurredAt:     "2026-03-05T10:00:00Z",
-					SignatureID:    "sig-a",
-					RawTextExcerpt: "request failed because context deadline exceeded while waiting for API response",
+					RunURL:      "https://prow.example/run/1",
+					OccurredAt:  "2026-03-05T10:00:00Z",
+					SignatureID: "sig-a",
 				},
 			},
 		},
@@ -164,7 +161,7 @@ func TestMergeFallsBackSearchPhraseWhenSourceInvalid(t *testing.T) {
 	if len(globalClusters) != 1 {
 		t.Fatalf("unexpected global cluster count: got=%d want=1", len(globalClusters))
 	}
-	if globalClusters[0].SearchQueryPhrase != "context deadline exceeded" {
+	if globalClusters[0].SearchQueryPhrase != "timeout while provisioning" {
 		t.Fatalf("unexpected fallback search phrase: got=%q", globalClusters[0].SearchQueryPhrase)
 	}
 	if globalClusters[0].SearchQuerySourceRunURL != "https://prow.example/run/1" || globalClusters[0].SearchQuerySourceSignatureID != "sig-a" {
@@ -180,14 +177,14 @@ func TestMergeAppendsPhase2ReviewItemsAndDeduplicates(t *testing.T) {
 			SchemaVersion:           semanticcontracts.SchemaVersionV1,
 			Phase1ClusterID:         "phase1-a",
 			CanonicalEvidencePhrase: "ERROR CODE: DeploymentFailed",
+			SearchQueryPhrase:       "/providers/Microsoft.EventGrid/topics/test",
 			SupportCount:            1,
 			MemberSignatureIDs:      []string{"sig-a"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:         "https://prow.example/run/1",
-					OccurredAt:     "2026-03-05T10:00:00Z",
-					SignatureID:    "sig-a",
-					RawTextExcerpt: "/providers/Microsoft.EventGrid/topics/test",
+					RunURL:      "https://prow.example/run/1",
+					OccurredAt:  "2026-03-05T10:00:00Z",
+					SignatureID: "sig-a",
 				},
 			},
 		},
@@ -195,14 +192,14 @@ func TestMergeAppendsPhase2ReviewItemsAndDeduplicates(t *testing.T) {
 			SchemaVersion:           semanticcontracts.SchemaVersionV1,
 			Phase1ClusterID:         "phase1-b",
 			CanonicalEvidencePhrase: "ERROR CODE: DeploymentFailed",
+			SearchQueryPhrase:       "/providers/Microsoft.Monitor/actionGroups/test",
 			SupportCount:            1,
 			MemberSignatureIDs:      []string{"sig-b"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:         "https://prow.example/run/2",
-					OccurredAt:     "2026-03-05T11:00:00Z",
-					SignatureID:    "sig-b",
-					RawTextExcerpt: "/providers/Microsoft.Monitor/actionGroups/test",
+					RunURL:      "https://prow.example/run/2",
+					OccurredAt:  "2026-03-05T11:00:00Z",
+					SignatureID: "sig-b",
 				},
 			},
 		},

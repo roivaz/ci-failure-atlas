@@ -13,6 +13,7 @@ import (
 
 	"ci-failure-atlas/pkg/ndjsonoptions"
 	phase1engine "ci-failure-atlas/pkg/semantic/engine/phase1"
+	semanticinput "ci-failure-atlas/pkg/semantic/input"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/store/ndjson"
 )
@@ -128,12 +129,16 @@ func (o *Options) Run(ctx context.Context) error {
 	}
 	defer o.Cleanup()
 
-	rawFailures, runs, err := o.loadInputs(ctx)
+	enriched, err := semanticinput.BuildEnrichedFailures(ctx, o.Store, semanticinput.BuildOptions{
+		EnvironmentSet: copyStringSet(o.EnvironmentSet),
+		WindowStart:    cloneTimePointer(o.WindowStart),
+		WindowEnd:      cloneTimePointer(o.WindowEnd),
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("build enriched semantic input rows: %w", err)
 	}
 
-	workset := phase1engine.BuildWorkset(rawFailures, runs)
+	workset := phase1engine.BuildWorkset(enriched.Rows)
 	normalized := phase1engine.Normalize(workset)
 	assignments := phase1engine.Classify(normalized)
 	testClusters, reviewItems, err := phase1engine.Compile(workset, assignments)
@@ -162,8 +167,11 @@ func (o *Options) Run(ctx context.Context) error {
 		"envs", strings.Join(o.Environments, ","),
 		"window_start", formatOptionalTime(o.WindowStart),
 		"window_end", formatOptionalTime(o.WindowEnd),
-		"raw_rows", len(rawFailures),
-		"runs", len(runs),
+		"raw_rows_total", enriched.Diagnostics.RawRowsTotal,
+		"rows_included", enriched.Diagnostics.RowsIncluded,
+		"rows_skipped_outside_window", enriched.Diagnostics.RowsSkippedOutsideWindow,
+		"rows_skipped_non_artifact", enriched.Diagnostics.RowsSkippedNonArtifact,
+		"rows_skipped_invalid", enriched.Diagnostics.RowsSkippedInvalid,
 		"workset_rows", len(workset),
 		"normalized_rows", len(normalized),
 		"assignments", len(assignments),
@@ -171,119 +179,6 @@ func (o *Options) Run(ctx context.Context) error {
 		"review_items", len(reviewItems),
 	)
 	return nil
-}
-
-func (o *Options) loadInputs(ctx context.Context) ([]storecontracts.RawFailureRecord, []storecontracts.RunRecord, error) {
-	keys, err := o.Store.ListRawFailureRunKeys(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list raw failure run keys: %w", err)
-	}
-
-	rawFailures := make([]storecontracts.RawFailureRecord, 0)
-	runsByKey := map[string]storecontracts.RunRecord{}
-
-	for _, key := range keys {
-		environment, runURL, err := splitEnvironmentRunKey(key)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !o.isEnvironmentEnabled(environment) {
-			continue
-		}
-
-		rows, err := o.Store.ListRawFailuresByRun(ctx, environment, runURL)
-		if err != nil {
-			return nil, nil, fmt.Errorf("list raw failures by run for key %q: %w", key, err)
-		}
-
-		run, found, err := o.Store.GetRun(ctx, environment, runURL)
-		if err != nil {
-			return nil, nil, fmt.Errorf("get run for key %q: %w", key, err)
-		}
-		filteredRows := make([]storecontracts.RawFailureRecord, 0, len(rows))
-		for _, row := range rows {
-			include, includeErr := o.includeRawFailureRowByWindow(row, run, found)
-			if includeErr != nil {
-				return nil, nil, includeErr
-			}
-			if !include {
-				continue
-			}
-			filteredRows = append(filteredRows, row)
-		}
-		rawFailures = append(rawFailures, filteredRows...)
-		if len(filteredRows) == 0 {
-			continue
-		}
-		if found {
-			runsByKey[strings.ToLower(strings.TrimSpace(environment))+"|"+strings.TrimSpace(runURL)] = run
-		}
-	}
-
-	runs := make([]storecontracts.RunRecord, 0, len(runsByKey))
-	for _, run := range runsByKey {
-		runs = append(runs, run)
-	}
-	return rawFailures, runs, nil
-}
-
-func splitEnvironmentRunKey(key string) (string, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(key), "|", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid key %q: expected environment|run_url", key)
-	}
-	environment := strings.ToLower(strings.TrimSpace(parts[0]))
-	runURL := strings.TrimSpace(parts[1])
-	if environment == "" {
-		return "", "", fmt.Errorf("invalid key %q: missing environment", key)
-	}
-	if runURL == "" {
-		return "", "", fmt.Errorf("invalid key %q: missing run_url", key)
-	}
-	return environment, runURL, nil
-}
-
-func (o *Options) isEnvironmentEnabled(environment string) bool {
-	_, ok := o.EnvironmentSet[workflowNormalizeEnvironment(environment)]
-	return ok
-}
-
-func (o *Options) includeRawFailureRowByWindow(row storecontracts.RawFailureRecord, run storecontracts.RunRecord, runFound bool) (bool, error) {
-	if o.WindowStart == nil || o.WindowEnd == nil {
-		return true, nil
-	}
-	timestamp := strings.TrimSpace(row.OccurredAt)
-	if timestamp == "" && runFound {
-		timestamp = strings.TrimSpace(run.OccurredAt)
-	}
-	if timestamp == "" {
-		return false, nil
-	}
-	parsed, err := parseRawTimestamp(timestamp)
-	if err != nil {
-		return false, nil
-	}
-	if parsed.Before(*o.WindowStart) {
-		return false, nil
-	}
-	if !parsed.Before(*o.WindowEnd) {
-		return false, nil
-	}
-	return true, nil
-}
-
-func parseRawTimestamp(raw string) (time.Time, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return time.Time{}, fmt.Errorf("empty timestamp")
-	}
-	if parsed, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
-		return parsed.UTC(), nil
-	}
-	if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
-		return parsed.UTC(), nil
-	}
-	return time.Time{}, fmt.Errorf("invalid RFC3339 timestamp %q", raw)
 }
 
 func normalizeWorkflowEnvironments(raw []string) ([]string, map[string]struct{}, error) {

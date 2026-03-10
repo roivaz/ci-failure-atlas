@@ -296,3 +296,45 @@ func TestValidateWorkflowPhase1ParsesDateWindowAsDayRange(t *testing.T) {
 		t.Fatalf("unexpected normalized environments: %+v", validated.Environments)
 	}
 }
+
+func TestRunWorkflowPhase1FailsWhenRunMetadataMissing(t *testing.T) {
+	t.Parallel()
+
+	opts := DefaultOptions()
+	opts.NDJSONOptions.DataDirectory = t.TempDir()
+	opts.Environments = []string{"dev"}
+
+	validated, err := opts.Validate()
+	if err != nil {
+		t.Fatalf("validate options: %v", err)
+	}
+	completed, err := validated.Complete(context.Background())
+	if err != nil {
+		t.Fatalf("complete options: %v", err)
+	}
+
+	ctx := logr.NewContext(context.Background(), logr.Discard())
+	if err := completed.Store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment:    "dev",
+			RowID:          "missing-run-row",
+			RunURL:         "https://prow.example/run/missing",
+			TestName:       "test-dev",
+			TestSuite:      "suite-dev",
+			SignatureID:    "sig-dev",
+			OccurredAt:     "2026-03-06T10:00:00Z",
+			RawText:        "dev failure",
+			NormalizedText: "dev failure",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	err = completed.Run(ctx)
+	if err == nil {
+		t.Fatalf("expected run to fail when run metadata is missing")
+	}
+	if !strings.Contains(err.Error(), "incomplete semantic input rows") {
+		t.Fatalf("expected missing-run semantic input error, got=%v", err)
+	}
+}

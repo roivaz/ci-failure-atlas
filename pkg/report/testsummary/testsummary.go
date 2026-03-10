@@ -33,11 +33,12 @@ type reference struct {
 	SignatureID    string `json:"signature_id"`
 	PRNumber       int    `json:"pr_number"`
 	PostGoodCommit bool   `json:"post_good_commit"`
-	RawTextExcerpt string `json:"raw_text_excerpt"`
+	PostGoodKnown  bool   `json:"post_good_known"`
 }
 
 type testCluster struct {
 	SchemaVersion           string      `json:"schema_version"`
+	Environment             string      `json:"environment"`
 	Phase1ClusterID         string      `json:"phase1_cluster_id"`
 	Lane                    string      `json:"lane"`
 	JobName                 string      `json:"job_name"`
@@ -294,6 +295,7 @@ func toReportTestClusters(rows []semanticcontracts.TestClusterRecord) []testClus
 	for _, row := range rows {
 		out = append(out, testCluster{
 			SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
+			Environment:             normalizeReportEnvironment(row.Environment),
 			Phase1ClusterID:         strings.TrimSpace(row.Phase1ClusterID),
 			Lane:                    strings.TrimSpace(row.Lane),
 			JobName:                 strings.TrimSpace(row.JobName),
@@ -322,7 +324,7 @@ func toReportReferences(rows []semanticcontracts.ReferenceRecord) []reference {
 			SignatureID:    strings.TrimSpace(row.SignatureID),
 			PRNumber:       row.PRNumber,
 			PostGoodCommit: row.PostGoodCommit,
-			RawTextExcerpt: strings.TrimSpace(row.RawTextExcerpt),
+			PostGoodKnown:  true,
 		})
 	}
 	return out
@@ -487,7 +489,9 @@ func loadRawMetadataFromStore(
 	noSuiteRunsByTest := map[testKeyNoSuite]map[string]struct{}{}
 
 	referencedRunURLs := map[string]struct{}{}
+	runURLEnvironments := map[string]map[string]struct{}{}
 	for _, cluster := range testClusters {
+		clusterEnvironment := normalizeReportEnvironment(cluster.Environment)
 		testKeyWithSuite := toTestKey(cluster.Lane, cluster.JobName, cluster.TestName, cluster.TestSuite)
 		if _, ok := fullRunsByTest[testKeyWithSuite]; !ok {
 			fullRunsByTest[testKeyWithSuite] = map[string]struct{}{}
@@ -509,56 +513,41 @@ func loadRawMetadataFromStore(
 			referencedRunURLs[runURL] = struct{}{}
 			fullRunsByTest[testKeyWithSuite][runURL] = struct{}{}
 			noSuiteRunsByTest[testKeyNoSuite][runURL] = struct{}{}
+			if clusterEnvironment != "" {
+				insertRunEnvironment(runURLEnvironments, runURL, clusterEnvironment)
+			}
 		}
 	}
 	if len(referencedRunURLs) == 0 {
 		return full, noSuite, fullErrorsByReference, nil
 	}
 
-	runKeys, err := store.ListRunKeys(ctx)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	environmentByRunURL := map[string]string{}
-	for _, key := range runKeys {
-		parts := strings.SplitN(strings.TrimSpace(key), "|", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		environment := strings.ToLower(strings.TrimSpace(parts[0]))
-		runURL := strings.TrimSpace(parts[1])
-		if environment == "" || runURL == "" {
-			continue
-		}
-		if _, exists := referencedRunURLs[runURL]; !exists {
-			continue
-		}
-		if _, exists := environmentByRunURL[runURL]; !exists {
-			environmentByRunURL[runURL] = environment
-		}
-	}
+	for runURL, envSet := range runURLEnvironments {
+		environments := sortedEnvironmentList(envSet)
+		for _, environment := range environments {
+			rows, err := store.ListRawFailuresByRun(ctx, environment, runURL)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			for _, row := range rows {
+				refKey := referenceKey{
+					RunURL:      strings.TrimSpace(row.RunURL),
+					SignatureID: strings.TrimSpace(row.SignatureID),
+				}
+				if refKey.RunURL == "" {
+					refKey.RunURL = runURL
+				}
+				if refKey.RunURL == "" || refKey.SignatureID == "" {
+					continue
+				}
 
-	for runURL := range referencedRunURLs {
-		environment := environmentByRunURL[runURL]
-		if environment == "" {
-			continue
-		}
-		rows, err := store.ListRawFailuresByRun(ctx, environment, runURL)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		for _, row := range rows {
-			refKey := referenceKey{
-				RunURL:      strings.TrimSpace(row.RunURL),
-				SignatureID: strings.TrimSpace(row.SignatureID),
-			}
-			fullError := strings.TrimSpace(row.RawText)
-			if refKey.RunURL == "" || refKey.SignatureID == "" || fullError == "" {
-				continue
-			}
-			existing, ok := fullErrorsByReference[refKey]
-			if !ok || len(fullError) > len(existing) {
-				fullErrorsByReference[refKey] = fullError
+				fullError := strings.TrimSpace(row.RawText)
+				if fullError != "" {
+					existing, ok := fullErrorsByReference[refKey]
+					if !ok || len(fullError) > len(existing) {
+						fullErrorsByReference[refKey] = fullError
+					}
+				}
 			}
 		}
 	}
@@ -571,6 +560,34 @@ func loadRawMetadataFromStore(
 	}
 
 	return full, noSuite, fullErrorsByReference, nil
+}
+
+func insertRunEnvironment(runURLEnvironments map[string]map[string]struct{}, runURL string, environment string) {
+	normalizedRunURL := strings.TrimSpace(runURL)
+	normalizedEnvironment := normalizeReportEnvironment(environment)
+	if normalizedRunURL == "" || normalizedEnvironment == "" {
+		return
+	}
+	if _, ok := runURLEnvironments[normalizedRunURL]; !ok {
+		runURLEnvironments[normalizedRunURL] = map[string]struct{}{}
+	}
+	runURLEnvironments[normalizedRunURL][normalizedEnvironment] = struct{}{}
+}
+
+func sortedEnvironmentList(setByEnvironment map[string]struct{}) []string {
+	if len(setByEnvironment) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(setByEnvironment))
+	for value := range setByEnvironment {
+		normalized := normalizeReportEnvironment(value)
+		if normalized == "" {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func loggerFromContext(ctx context.Context) logr.Logger {
@@ -594,7 +611,7 @@ func buildMarkdown(
 	recentRuns int,
 	minRuns int,
 ) string {
-	aggregates := aggregateByTest(testClusters)
+	aggregates := mergeUnknownJobAggregates(aggregateByTest(testClusters))
 	for i := range aggregates {
 		aggregates[i].Metadata = lookupMetadata(aggregates[i].Key, metadataByFull, metadataByNoSuite)
 		sortClusters(aggregates[i].Clusters)
@@ -678,6 +695,7 @@ func buildMarkdown(
 		b.WriteString(fmt.Sprintf("- Total failures: **%d**\n", test.TotalFailures))
 		b.WriteString(fmt.Sprintf("- Distinct signatures: **%d**\n", test.DistinctSignatures))
 		b.WriteString(fmt.Sprintf("- post-good-commit-runs: **%d**\n", test.PostGoodFailures))
+		b.WriteString(fmt.Sprintf("- post-good signal coverage: **%d/%d** failures\n", postGoodKnownCountForAggregate(test), test.TotalFailures))
 		b.WriteString(fmt.Sprintf("- Distinct failing PRs: **%d**\n", len(test.PRCounts)))
 		b.WriteString(fmt.Sprintf("- Risk classification: **%s**\n", testRiskLabel(test)))
 		if !test.LatestFailure.IsZero() {
@@ -695,6 +713,7 @@ func buildMarkdown(
 		b.WriteString("\n### Failure Signatures\n\n")
 		for signatureIndex, cluster := range test.Clusters {
 			b.WriteString(fmt.Sprintf("#### Signature %d - %d failures (post-good-commit-runs: %d)\n\n", signatureIndex+1, cluster.SupportCount, cluster.PostGoodCommitCount))
+			b.WriteString(fmt.Sprintf("- post-good signal coverage: **%d/%d** failures\n", postGoodKnownCountForCluster(cluster), cluster.SupportCount))
 			b.WriteString(fmt.Sprintf("- Evidence phrase: `%s`\n", cleanInline(cluster.CanonicalEvidencePhrase, 280)))
 			if strings.TrimSpace(cluster.SearchQueryPhrase) != "" {
 				b.WriteString(fmt.Sprintf("- Search phrase: `%s`\n", cleanInline(cluster.SearchQueryPhrase, 280)))
@@ -898,6 +917,88 @@ func aggregateByTest(clusters []testCluster) []testAggregate {
 	return out
 }
 
+func mergeUnknownJobAggregates(aggregates []testAggregate) []testAggregate {
+	if len(aggregates) == 0 {
+		return aggregates
+	}
+	type aggregateBaseKey struct {
+		Lane      string
+		TestName  string
+		TestSuite string
+	}
+
+	knownByBase := map[aggregateBaseKey][]int{}
+	for index := range aggregates {
+		if isUnknownJobName(aggregates[index].Key.JobName) {
+			continue
+		}
+		base := aggregateBaseKey{
+			Lane:      aggregates[index].Key.Lane,
+			TestName:  aggregates[index].Key.TestName,
+			TestSuite: aggregates[index].Key.TestSuite,
+		}
+		knownByBase[base] = append(knownByBase[base], index)
+	}
+
+	absorbed := map[int]struct{}{}
+	for index, aggregate := range aggregates {
+		if !isUnknownJobName(aggregate.Key.JobName) {
+			continue
+		}
+		base := aggregateBaseKey{
+			Lane:      aggregate.Key.Lane,
+			TestName:  aggregate.Key.TestName,
+			TestSuite: aggregate.Key.TestSuite,
+		}
+		targets := knownByBase[base]
+		if len(targets) != 1 {
+			continue
+		}
+		targetIndex := targets[0]
+		mergeTestAggregate(&aggregates[targetIndex], aggregate)
+		absorbed[index] = struct{}{}
+	}
+
+	if len(absorbed) == 0 {
+		return aggregates
+	}
+	out := make([]testAggregate, 0, len(aggregates)-len(absorbed))
+	for index, aggregate := range aggregates {
+		if _, shouldSkip := absorbed[index]; shouldSkip {
+			continue
+		}
+		out = append(out, aggregate)
+	}
+	return out
+}
+
+func mergeTestAggregate(target *testAggregate, source testAggregate) {
+	if target == nil {
+		return
+	}
+	target.Clusters = append(target.Clusters, source.Clusters...)
+	target.TotalFailures += source.TotalFailures
+	target.DistinctSignatures += source.DistinctSignatures
+	target.PostGoodFailures += source.PostGoodFailures
+	if target.LatestFailure.IsZero() || source.LatestFailure.After(target.LatestFailure) {
+		target.LatestFailure = source.LatestFailure
+	}
+	if target.PRCounts == nil {
+		target.PRCounts = map[int]int{}
+	}
+	for prNumber, count := range source.PRCounts {
+		if prNumber <= 0 || count <= 0 {
+			continue
+		}
+		target.PRCounts[prNumber] += count
+	}
+}
+
+func isUnknownJobName(jobName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(jobName))
+	return normalized == "" || normalized == "unknown"
+}
+
 func sortClusters(clusters []testCluster) {
 	sort.Slice(clusters, func(i, j int) bool {
 		if clusters[i].SupportCount != clusters[j].SupportCount {
@@ -910,9 +1011,34 @@ func sortClusters(clusters []testCluster) {
 	})
 }
 
+func postGoodKnownCountForAggregate(aggregate testAggregate) int {
+	count := 0
+	for _, cluster := range aggregate.Clusters {
+		count += postGoodKnownCountForCluster(cluster)
+	}
+	return count
+}
+
+func postGoodKnownCountForCluster(cluster testCluster) int {
+	count := 0
+	for _, reference := range cluster.References {
+		if reference.PostGoodKnown {
+			count++
+		}
+	}
+	return count
+}
+
 func signaturePRWarning(cluster testCluster, recentRuns []reference) (string, bool) {
 	if cluster.PostGoodCommitCount > 0 {
 		return "", false
+	}
+
+	coverageSuffix := ""
+	knownPostGood := postGoodKnownCountForCluster(cluster)
+	if knownPostGood < cluster.SupportCount {
+		unknownCount := cluster.SupportCount - knownPostGood
+		coverageSuffix = fmt.Sprintf(" Missing run-level post-good metadata for %d/%d failures.", unknownCount, cluster.SupportCount)
 	}
 
 	allPRs := set.New[int]()
@@ -931,7 +1057,7 @@ func signaturePRWarning(cluster testCluster, recentRuns []reference) (string, bo
 			prNumber = pr
 			count = c
 		}
-		return fmt.Sprintf("signature post-good-commit-runs=0 and all observed failures map to PR #%d (%d/%d). Strong bad-PR signal.", prNumber, count, cluster.SupportCount), true
+		return fmt.Sprintf("signature post-good-commit-runs=0 and all observed failures map to PR #%d (%d/%d). Strong bad-PR signal.%s", prNumber, count, cluster.SupportCount, coverageSuffix), true
 	}
 
 	recentPRs := set.New[int]()
@@ -950,22 +1076,22 @@ func signaturePRWarning(cluster testCluster, recentRuns []reference) (string, bo
 			prNumber = pr
 			count = c
 		}
-		return fmt.Sprintf("signature post-good-commit-runs=0 and recent failures are concentrated on PR #%d (%d recent runs). Check PR-specific regressions first.", prNumber, count), true
+		return fmt.Sprintf("signature post-good-commit-runs=0 and recent failures are concentrated on PR #%d (%d recent runs). Check PR-specific regressions first.%s", prNumber, count, coverageSuffix), true
 	}
 
 	// This report is built from failing runs only, so post-good-commit-runs=0
 	// does not
 	// prove a PR-local issue unless we also have post-merge signal.
 	if recentPRs.Len() > 1 {
-		return fmt.Sprintf("signature post-good-commit-runs=0 across %d recent PRs. Bad-PR attribution is tentative because there is no post-merge signal in failures.", recentPRs.Len()), true
+		return fmt.Sprintf("signature post-good-commit-runs=0 across %d recent PRs. Bad-PR attribution is tentative because there is no post-merge signal in failures.%s", recentPRs.Len(), coverageSuffix), true
 	}
 	if allPRs.Len() > 1 {
-		return fmt.Sprintf("signature post-good-commit-runs=0 across %d PRs. Bad-PR attribution is tentative because there is no post-merge signal in failures.", allPRs.Len()), true
+		return fmt.Sprintf("signature post-good-commit-runs=0 across %d PRs. Bad-PR attribution is tentative because there is no post-merge signal in failures.%s", allPRs.Len(), coverageSuffix), true
 	}
 	if allPRs.Len() == 1 {
-		return "signature post-good-commit-runs=0. Bad-PR attribution is tentative because there is no post-merge signal in failures.", true
+		return "signature post-good-commit-runs=0. Bad-PR attribution is tentative because there is no post-merge signal in failures." + coverageSuffix, true
 	}
-	return "signature post-good-commit-runs=0 with unknown PR mapping. Bad-PR attribution is tentative because there is no post-merge signal in failures.", true
+	return "signature post-good-commit-runs=0 with unknown PR mapping. Bad-PR attribution is tentative because there is no post-merge signal in failures." + coverageSuffix, true
 }
 
 func lookupMetadata(
@@ -1076,9 +1202,6 @@ func fullErrorSamplesForCluster(cluster testCluster, recentRuns []reference, ful
 			candidate := ""
 			if key.RunURL != "" && key.SignatureID != "" {
 				candidate = strings.TrimSpace(fullErrorsByReference[key])
-			}
-			if candidate == "" {
-				candidate = strings.TrimSpace(ref.RawTextExcerpt)
 			}
 			if candidate == "" {
 				continue

@@ -183,13 +183,13 @@ func compileGlobalCluster(members []semanticcontracts.TestClusterRecord) (semant
 	searchSourceRunURL := strings.TrimSpace(representative.SearchQuerySourceRunURL)
 	searchSourceSignatureID := strings.TrimSpace(representative.SearchQuerySourceSignatureID)
 	if !hasValidSearchSource(searchQueryPhrase, searchSourceRunURL, searchSourceSignatureID, references) {
-		fallbackRef := semanticcontracts.ReferenceRecord{}
+		searchQueryPhrase = fallbackSearchPhraseForCluster(representative)
+		searchSourceRunURL = ""
+		searchSourceSignatureID = ""
 		if len(references) > 0 {
-			fallbackRef = references[0]
+			searchSourceRunURL = strings.TrimSpace(references[0].RunURL)
+			searchSourceSignatureID = strings.TrimSpace(references[0].SignatureID)
 		}
-		searchQueryPhrase = safeSearchFromText(fallbackRef.RawTextExcerpt)
-		searchSourceRunURL = strings.TrimSpace(fallbackRef.RunURL)
-		searchSourceSignatureID = strings.TrimSpace(fallbackRef.SignatureID)
 	}
 
 	return semanticcontracts.GlobalClusterRecord{
@@ -239,7 +239,7 @@ func hasValidSearchSource(phrase, runURL, signatureID string, references []seman
 		if strings.TrimSpace(ref.SignatureID) != trimmedSignatureID {
 			continue
 		}
-		return strings.Contains(ref.RawTextExcerpt, trimmedPhrase)
+		return true
 	}
 	return false
 }
@@ -257,13 +257,7 @@ func buildPhase2AmbiguousProviderReviewItems(testClusters []semanticcontracts.Te
 		baseKey := normalized.Environment + "|" + base
 		baseToMembers[baseKey] = append(baseToMembers[baseKey], normalized)
 
-		provider := ""
-		for _, ref := range normalized.References {
-			provider = providerAnchor(ref.RawTextExcerpt)
-			if provider != "" {
-				break
-			}
-		}
+		provider := providerAnchorFromCluster(normalized)
 		if _, ok := baseToProviders[baseKey]; !ok {
 			baseToProviders[baseKey] = map[string]struct{}{}
 		}
@@ -282,6 +276,9 @@ func buildPhase2AmbiguousProviderReviewItems(testClusters []semanticcontracts.Te
 		if len(members) == 0 {
 			continue
 		}
+		sort.Slice(members, func(i, j int) bool {
+			return strings.TrimSpace(members[i].Phase1ClusterID) < strings.TrimSpace(members[j].Phase1ClusterID)
+		})
 		environment := strings.TrimSpace(members[0].Environment)
 		canonical := baseKey
 		if idx := strings.Index(baseKey, "|"); idx >= 0 && idx+1 < len(baseKey) {
@@ -328,7 +325,7 @@ func buildPhase2AmbiguousProviderReviewItems(testClusters []semanticcontracts.Te
 			Phase:                                "phase2",
 			Reason:                               "ambiguous_provider_merge",
 			ProposedCanonicalEvidencePhrase:      truncate(canonical, 240),
-			ProposedSearchQueryPhrase:            safeSearchFromText(firstRef.RawTextExcerpt),
+			ProposedSearchQueryPhrase:            phase2ReviewSearchPhrase(members, canonical),
 			ProposedSearchQuerySourceRunURL:      strings.TrimSpace(firstRef.RunURL),
 			ProposedSearchQuerySourceSignatureID: strings.TrimSpace(firstRef.SignatureID),
 			SourcePhase1ClusterIDs:               sortedKeys(sourcePhase1IDsSet),
@@ -350,16 +347,55 @@ func phase2Key(cluster semanticcontracts.TestClusterRecord) string {
 	}
 
 	anchor := ""
-	for _, ref := range cluster.References {
-		anchor = providerAnchor(ref.RawTextExcerpt)
-		if anchor != "" {
-			break
-		}
-	}
+	anchor = providerAnchorFromCluster(cluster)
 	if anchor == "" {
 		anchor = "<none>"
 	}
 	return canonical + "|provider:" + anchor
+}
+
+func fallbackSearchPhraseForCluster(cluster semanticcontracts.TestClusterRecord) string {
+	if phrase := bestSearchPhraseFromText(cluster.CanonicalEvidencePhrase); phrase != "" {
+		return phrase
+	}
+	if phrase := bestSearchPhraseFromText(cluster.SearchQueryPhrase); phrase != "" {
+		return phrase
+	}
+	return "failure"
+}
+
+func phase2ReviewSearchPhrase(members []semanticcontracts.TestClusterRecord, fallbackCanonical string) string {
+	for _, member := range members {
+		if phrase := bestSearchPhraseFromText(member.SearchQueryPhrase); phrase != "" {
+			return phrase
+		}
+	}
+	if phrase := bestSearchPhraseFromText(fallbackCanonical); phrase != "" {
+		return phrase
+	}
+	return "failure"
+}
+
+func bestSearchPhraseFromText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	derived := strings.TrimSpace(safeSearchFromText(trimmed))
+	if derived == "" || derived == "failure" {
+		return truncate(trimmed, 220)
+	}
+	return derived
+}
+
+func providerAnchorFromCluster(cluster semanticcontracts.TestClusterRecord) string {
+	if provider := providerAnchor(strings.TrimSpace(cluster.SearchQueryPhrase)); provider != "" {
+		return provider
+	}
+	if provider := providerAnchor(strings.TrimSpace(cluster.CanonicalEvidencePhrase)); provider != "" {
+		return provider
+	}
+	return ""
 }
 
 func isGenericCanonical(canonical string) bool {
@@ -566,7 +602,6 @@ func normalizeReference(row semanticcontracts.ReferenceRecord) semanticcontracts
 		SignatureID:    strings.TrimSpace(row.SignatureID),
 		PRNumber:       row.PRNumber,
 		PostGoodCommit: row.PostGoodCommit,
-		RawTextExcerpt: strings.TrimSpace(row.RawTextExcerpt),
 	}
 }
 

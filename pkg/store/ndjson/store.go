@@ -494,7 +494,7 @@ func (s *Store) ListArtifactFailuresByRun(ctx context.Context, environment strin
 		if normalized.Environment != lookup.Environment || normalized.RunURL != lookup.RunURL {
 			continue
 		}
-		if normalized.ArtifactRowID == "" || normalized.SignatureID == "" || normalized.FailureText == "" {
+		if normalized.ArtifactRowID == "" || normalized.SignatureID == "" {
 			continue
 		}
 		filtered = append(filtered, normalized)
@@ -1151,21 +1151,32 @@ func (s *Store) UpsertPhase1Workset(ctx context.Context, rows []semanticcontract
 		return err
 	}
 
-	mergedByKey := map[string]semanticcontracts.Phase1WorksetRecord{}
-	for _, row := range existing {
-		normalized := normalizePhase1WorksetRecord(row)
-		key := phase1WorksetKey(normalized)
-		if key == "" {
-			continue
-		}
-		mergedByKey[key] = normalized
-	}
+	normalizedIncoming := make([]semanticcontracts.Phase1WorksetRecord, 0, len(rows))
+	targetEnvironments := map[string]struct{}{}
 	for _, row := range rows {
 		normalized := normalizePhase1WorksetRecord(row)
 		key := phase1WorksetKey(normalized)
 		if key == "" {
 			return fmt.Errorf("phase1 workset record missing row_id")
 		}
+		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
+		normalizedIncoming = append(normalizedIncoming, normalized)
+	}
+
+	mergedByKey := map[string]semanticcontracts.Phase1WorksetRecord{}
+	for _, row := range existing {
+		normalized := normalizePhase1WorksetRecord(row)
+		if _, replaceEnvironment := targetEnvironments[strings.TrimSpace(normalized.Environment)]; replaceEnvironment {
+			continue
+		}
+		key := phase1WorksetKey(normalized)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, normalized := range normalizedIncoming {
+		key := phase1WorksetKey(normalized)
 		mergedByKey[key] = normalized
 	}
 
@@ -1223,21 +1234,32 @@ func (s *Store) UpsertPhase1Normalized(ctx context.Context, rows []semanticcontr
 		return err
 	}
 
-	mergedByKey := map[string]semanticcontracts.Phase1NormalizedRecord{}
-	for _, row := range existing {
-		normalized := normalizePhase1NormalizedRecord(row)
-		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{Environment: normalized.Environment, RowID: normalized.RowID})
-		if key == "" {
-			continue
-		}
-		mergedByKey[key] = normalized
-	}
+	normalizedIncoming := make([]semanticcontracts.Phase1NormalizedRecord, 0, len(rows))
+	targetEnvironments := map[string]struct{}{}
 	for _, row := range rows {
 		normalized := normalizePhase1NormalizedRecord(row)
 		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{Environment: normalized.Environment, RowID: normalized.RowID})
 		if key == "" {
 			return fmt.Errorf("phase1 normalized record missing row_id")
 		}
+		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
+		normalizedIncoming = append(normalizedIncoming, normalized)
+	}
+
+	mergedByKey := map[string]semanticcontracts.Phase1NormalizedRecord{}
+	for _, row := range existing {
+		normalized := normalizePhase1NormalizedRecord(row)
+		if _, replaceEnvironment := targetEnvironments[strings.TrimSpace(normalized.Environment)]; replaceEnvironment {
+			continue
+		}
+		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{Environment: normalized.Environment, RowID: normalized.RowID})
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, normalized := range normalizedIncoming {
+		key := phase1WorksetKey(semanticcontracts.Phase1WorksetRecord{Environment: normalized.Environment, RowID: normalized.RowID})
 		mergedByKey[key] = normalized
 	}
 
@@ -1326,21 +1348,32 @@ func (s *Store) UpsertPhase1Assignments(ctx context.Context, rows []semanticcont
 		return err
 	}
 
-	mergedByKey := map[string]semanticcontracts.Phase1AssignmentRecord{}
-	for _, row := range existing {
-		normalized := normalizePhase1AssignmentRecord(row)
-		key := phase1AssignmentKey(normalized)
-		if key == "" {
-			continue
-		}
-		mergedByKey[key] = normalized
-	}
+	normalizedIncoming := make([]semanticcontracts.Phase1AssignmentRecord, 0, len(rows))
+	targetEnvironments := map[string]struct{}{}
 	for _, row := range rows {
 		normalized := normalizePhase1AssignmentRecord(row)
 		key := phase1AssignmentKey(normalized)
 		if key == "" {
 			return fmt.Errorf("phase1 assignment record missing environment and/or row_id")
 		}
+		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
+		normalizedIncoming = append(normalizedIncoming, normalized)
+	}
+
+	mergedByKey := map[string]semanticcontracts.Phase1AssignmentRecord{}
+	for _, row := range existing {
+		normalized := normalizePhase1AssignmentRecord(row)
+		if _, replaceEnvironment := targetEnvironments[strings.TrimSpace(normalized.Environment)]; replaceEnvironment {
+			continue
+		}
+		key := phase1AssignmentKey(normalized)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, normalized := range normalizedIncoming {
+		key := phase1AssignmentKey(normalized)
 		mergedByKey[key] = normalized
 	}
 
@@ -1417,21 +1450,32 @@ func (s *Store) UpsertTestClusters(ctx context.Context, rows []semanticcontracts
 		return err
 	}
 
-	mergedByKey := map[string]semanticcontracts.TestClusterRecord{}
-	for _, row := range existing {
-		normalized := normalizeTestClusterRecord(row)
-		key := phase1ClusterKey(normalized)
-		if key == "" {
-			continue
-		}
-		mergedByKey[key] = normalized
-	}
+	normalizedIncoming := make([]semanticcontracts.TestClusterRecord, 0, len(rows))
+	targetEnvironments := map[string]struct{}{}
 	for _, row := range rows {
 		normalized := normalizeTestClusterRecord(row)
 		key := phase1ClusterKey(normalized)
 		if key == "" {
 			return fmt.Errorf("test cluster record missing environment and/or phase1_cluster_id")
 		}
+		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
+		normalizedIncoming = append(normalizedIncoming, normalized)
+	}
+
+	mergedByKey := map[string]semanticcontracts.TestClusterRecord{}
+	for _, row := range existing {
+		normalized := normalizeTestClusterRecord(row)
+		if _, replaceEnvironment := targetEnvironments[strings.TrimSpace(normalized.Environment)]; replaceEnvironment {
+			continue
+		}
+		key := phase1ClusterKey(normalized)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, normalized := range normalizedIncoming {
+		key := phase1ClusterKey(normalized)
 		mergedByKey[key] = normalized
 	}
 
@@ -1577,21 +1621,32 @@ func (s *Store) UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.
 		return err
 	}
 
-	mergedByKey := map[string]semanticcontracts.ReviewItemRecord{}
-	for _, row := range existing {
-		normalized := normalizeReviewItemRecord(row)
-		key := reviewItemKey(normalized)
-		if key == "" {
-			continue
-		}
-		mergedByKey[key] = normalized
-	}
+	normalizedIncoming := make([]semanticcontracts.ReviewItemRecord, 0, len(rows))
+	targetEnvironments := map[string]struct{}{}
 	for _, row := range rows {
 		normalized := normalizeReviewItemRecord(row)
 		key := reviewItemKey(normalized)
 		if key == "" {
 			return fmt.Errorf("review item record missing environment and/or review_item_id")
 		}
+		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
+		normalizedIncoming = append(normalizedIncoming, normalized)
+	}
+
+	mergedByKey := map[string]semanticcontracts.ReviewItemRecord{}
+	for _, row := range existing {
+		normalized := normalizeReviewItemRecord(row)
+		if _, replaceEnvironment := targetEnvironments[strings.TrimSpace(normalized.Environment)]; replaceEnvironment {
+			continue
+		}
+		key := reviewItemKey(normalized)
+		if key == "" {
+			continue
+		}
+		mergedByKey[key] = normalized
+	}
+	for _, normalized := range normalizedIncoming {
+		key := reviewItemKey(normalized)
 		mergedByKey[key] = normalized
 	}
 
@@ -1911,7 +1966,6 @@ func normalizeReferenceRecord(row semanticcontracts.ReferenceRecord) semanticcon
 		SignatureID:    strings.TrimSpace(row.SignatureID),
 		PRNumber:       prNumber,
 		PostGoodCommit: row.PostGoodCommit,
-		RawTextExcerpt: strings.TrimSpace(row.RawTextExcerpt),
 	}
 }
 
@@ -1922,7 +1976,7 @@ func normalizeReferenceSlice(rows []semanticcontracts.ReferenceRecord) []semanti
 	out := make([]semanticcontracts.ReferenceRecord, 0, len(rows))
 	for _, row := range rows {
 		normalized := normalizeReferenceRecord(row)
-		if normalized.RunURL == "" && normalized.SignatureID == "" && normalized.OccurredAt == "" && normalized.RawTextExcerpt == "" {
+		if normalized.RunURL == "" && normalized.SignatureID == "" && normalized.OccurredAt == "" {
 			continue
 		}
 		out = append(out, normalized)
@@ -1937,7 +1991,13 @@ func normalizeReferenceSlice(rows []semanticcontracts.ReferenceRecord) []semanti
 		if out[i].SignatureID != out[j].SignatureID {
 			return out[i].SignatureID < out[j].SignatureID
 		}
-		return out[i].RawTextExcerpt < out[j].RawTextExcerpt
+		if out[i].PRNumber != out[j].PRNumber {
+			return out[i].PRNumber < out[j].PRNumber
+		}
+		if out[i].PostGoodCommit != out[j].PostGoodCommit {
+			return !out[i].PostGoodCommit && out[j].PostGoodCommit
+		}
+		return false
 	})
 	return out
 }

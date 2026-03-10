@@ -42,7 +42,6 @@ type reference struct {
 	SignatureID    string `json:"signature_id"`
 	PRNumber       int    `json:"pr_number"`
 	PostGoodCommit bool   `json:"post_good_commit"`
-	RawTextExcerpt string `json:"raw_text_excerpt"`
 }
 
 type contributingTest struct {
@@ -428,7 +427,6 @@ func toReportReferences(rows []semanticcontracts.ReferenceRecord) []reference {
 			SignatureID:    strings.TrimSpace(row.SignatureID),
 			PRNumber:       row.PRNumber,
 			PostGoodCommit: row.PostGoodCommit,
-			RawTextExcerpt: strings.TrimSpace(row.RawTextExcerpt),
 		})
 	}
 	return out

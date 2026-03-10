@@ -165,7 +165,6 @@ func Compile(
 				SignatureID:    strings.TrimSpace(row.SignatureID),
 				PRNumber:       row.PRNumber,
 				PostGoodCommit: row.PostGoodCommit,
-				RawTextExcerpt: strings.TrimSpace(row.RawText),
 			})
 		}
 
@@ -199,7 +198,7 @@ func Compile(
 
 		searchPhrase, sourceRunURL, sourceSignatureID, sourceFound := resolveSearchPhrase(references, searchPhrase, canonicalPhrase, acc.Rows)
 		if !sourceFound {
-			sourceRunURL, sourceSignatureID, searchPhrase, sourceFound = fallbackSearchSource(references)
+			sourceRunURL, sourceSignatureID, searchPhrase, sourceFound = fallbackSearchSource(acc.Rows)
 			acc.ReasonSet["search_query_source_not_found"] = struct{}{}
 		}
 		if rePlaceholderToken.MatchString(searchPhrase) {
@@ -225,7 +224,7 @@ func Compile(
 			References:                   references,
 		}
 
-		if hasAmbiguousProviderMerge(cluster) {
+		if hasAmbiguousProviderMergeFromRows(acc.Rows, cluster.CanonicalEvidencePhrase, cluster.SearchQueryPhrase) {
 			acc.ReasonSet["ambiguous_provider_merge"] = struct{}{}
 		}
 		clusters = append(clusters, cluster)
@@ -310,26 +309,27 @@ func resolveSearchPhrase(
 	appendCandidate(buildFallbackSearchPhrase(rows))
 
 	for _, candidate := range candidates {
-		runURL, signatureID, excerpt, found := findSearchSourceWithExcerpt(references, candidate)
+		runURL, signatureID, excerpt, found := findSearchSourceWithExcerpt(rows, candidate)
 		if !found {
 			continue
 		}
 		refined := deriveConciseLiteralSearchPhrase(excerpt, candidate)
 		if refined != "" {
-			if refinedRunURL, refinedSignatureID, refinedFound := findSearchSource(references, refined); refinedFound {
+			if refinedRunURL, refinedSignatureID, refinedFound := findSearchSource(rows, refined); refinedFound {
 				return refined, refinedRunURL, refinedSignatureID, true
 			}
 		}
 		return candidate, runURL, signatureID, true
 	}
 
-	for _, ref := range references {
-		derived := deriveConciseLiteralSearchPhrase(ref.RawTextExcerpt, "")
-		if derived == "" || !strings.Contains(ref.RawTextExcerpt, derived) {
+	for _, row := range rows {
+		text := sourceTextForSearch(row)
+		derived := deriveConciseLiteralSearchPhrase(text, "")
+		if derived == "" || !strings.Contains(text, derived) {
 			continue
 		}
-		runURL := strings.TrimSpace(ref.RunURL)
-		signatureID := strings.TrimSpace(ref.SignatureID)
+		runURL := strings.TrimSpace(row.RunURL)
+		signatureID := strings.TrimSpace(row.SignatureID)
 		if runURL == "" || signatureID == "" {
 			continue
 		}
@@ -338,47 +338,72 @@ func resolveSearchPhrase(
 	return "", "", "", false
 }
 
-func findSearchSource(references []semanticcontracts.ReferenceRecord, phrase string) (string, string, bool) {
+func findSearchSource(rows []semanticcontracts.Phase1WorksetRecord, phrase string) (string, string, bool) {
 	target := strings.TrimSpace(phrase)
 	if target == "" {
 		return "", "", false
 	}
-	for _, ref := range references {
-		if strings.Contains(ref.RawTextExcerpt, target) {
-			return ref.RunURL, ref.SignatureID, true
+	for _, row := range rows {
+		text := sourceTextForSearch(row)
+		if !strings.Contains(text, target) {
+			continue
 		}
+		runURL := strings.TrimSpace(row.RunURL)
+		signatureID := strings.TrimSpace(row.SignatureID)
+		if runURL == "" || signatureID == "" {
+			continue
+		}
+		return runURL, signatureID, true
 	}
 	return "", "", false
 }
 
-func findSearchSourceWithExcerpt(references []semanticcontracts.ReferenceRecord, phrase string) (string, string, string, bool) {
+func findSearchSourceWithExcerpt(rows []semanticcontracts.Phase1WorksetRecord, phrase string) (string, string, string, bool) {
 	target := strings.TrimSpace(phrase)
 	if target == "" {
 		return "", "", "", false
 	}
-	for _, ref := range references {
-		if strings.Contains(ref.RawTextExcerpt, target) {
-			return ref.RunURL, ref.SignatureID, ref.RawTextExcerpt, true
+	for _, row := range rows {
+		text := sourceTextForSearch(row)
+		if !strings.Contains(text, target) {
+			continue
 		}
+		runURL := strings.TrimSpace(row.RunURL)
+		signatureID := strings.TrimSpace(row.SignatureID)
+		if runURL == "" || signatureID == "" {
+			continue
+		}
+		return runURL, signatureID, text, true
 	}
 	return "", "", "", false
 }
 
-func fallbackSearchSource(references []semanticcontracts.ReferenceRecord) (string, string, string, bool) {
-	if len(references) == 0 {
+func fallbackSearchSource(rows []semanticcontracts.Phase1WorksetRecord) (string, string, string, bool) {
+	if len(rows) == 0 {
 		return "", "", "", false
 	}
-	ref := references[0]
-	runURL := strings.TrimSpace(ref.RunURL)
-	signatureID := strings.TrimSpace(ref.SignatureID)
-	if runURL == "" || signatureID == "" {
-		return "", "", "", false
+	for _, row := range rows {
+		runURL := strings.TrimSpace(row.RunURL)
+		signatureID := strings.TrimSpace(row.SignatureID)
+		if runURL == "" || signatureID == "" {
+			continue
+		}
+		text := sourceTextForSearch(row)
+		phrase := deriveConciseLiteralSearchPhrase(text, "")
+		if phrase == "" || !strings.Contains(text, phrase) {
+			continue
+		}
+		return runURL, signatureID, phrase, true
 	}
-	phrase := deriveConciseLiteralSearchPhrase(ref.RawTextExcerpt, "")
-	if phrase == "" || !strings.Contains(ref.RawTextExcerpt, phrase) {
-		return "", "", "", false
+	return "", "", "", false
+}
+
+func sourceTextForSearch(row semanticcontracts.Phase1WorksetRecord) string {
+	raw := strings.TrimSpace(row.RawText)
+	if raw != "" {
+		return raw
 	}
-	return runURL, signatureID, phrase, true
+	return strings.TrimSpace(row.NormalizedText)
 }
 
 func deriveConciseLiteralSearchPhrase(source string, hint string) string {
@@ -533,17 +558,17 @@ func joinCandidateFallback(rows []semanticcontracts.Phase1WorksetRecord) string 
 	return ""
 }
 
-func hasAmbiguousProviderMerge(cluster semanticcontracts.TestClusterRecord) bool {
+func hasAmbiguousProviderMergeFromRows(rows []semanticcontracts.Phase1WorksetRecord, canonical string, search string) bool {
 	providers := map[string]struct{}{}
-	for _, ref := range cluster.References {
-		if provider := providerAnchor(ref.RawTextExcerpt); provider != "" {
+	for _, row := range rows {
+		if provider := providerAnchor(sourceTextForSearch(row)); provider != "" {
 			providers[provider] = struct{}{}
 		}
 	}
 	if len(providers) <= 1 {
 		return false
 	}
-	return isGenericEvidenceText(cluster.CanonicalEvidencePhrase, cluster.SearchQueryPhrase)
+	return isGenericEvidenceText(canonical, search)
 }
 
 func isGenericEvidenceText(canonical string, search string) bool {
