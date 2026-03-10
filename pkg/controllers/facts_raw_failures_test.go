@@ -172,6 +172,59 @@ func TestFactsRawFailuresSyncOnceMaterializesSyntheticNonArtifactRows(t *testing
 	}
 }
 
+func TestFactsRawFailuresRunOnceTreatsTerminalArtifactMarkerAsSynthetic(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	runURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/5102/job/333333"
+	occurredAt := time.Now().UTC().Add(-45 * time.Minute).Format(time.RFC3339)
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      runURL,
+			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			Failed:      true,
+			OccurredAt:  occurredAt,
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+	if err := store.UpsertArtifactFailures(ctx, []contracts.ArtifactFailureRecord{
+		buildArtifactMissingMarkerRecord("dev", runURL),
+	}); err != nil {
+		t.Fatalf("upsert terminal artifact marker: %v", err)
+	}
+
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+	if err := controller.RunOnce(ctx, "dev|"+runURL); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	rows := mustReadRawFailureRows(t, filepath.Join(dataDir, "facts", "raw_failures.ndjson"))
+	if len(rows) != 1 {
+		t.Fatalf("unexpected raw failure row count: got=%d want=1", len(rows))
+	}
+	if !rows[0].NonArtifactBacked {
+		t.Fatalf("expected synthetic non_artifact_backed row for terminal marker, got row=%+v", rows[0])
+	}
+	if rows[0].OccurredAt != occurredAt {
+		t.Fatalf("expected occurred_at propagated from run metadata, got row=%+v", rows[0])
+	}
+}
+
 func TestFactsRawFailuresRunOnceUpgradesSyntheticRowToArtifactBacked(t *testing.T) {
 	t.Parallel()
 
@@ -287,7 +340,7 @@ func TestFactsRawFailuresRunOnceWithoutRunMetadata(t *testing.T) {
 	}
 }
 
-func TestFactsRawFailuresRunOnceSkipsAlreadyMaterializedRun(t *testing.T) {
+func TestFactsRawFailuresRunOnceReconcilesWhenExistingRowsMismatchExpected(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -344,8 +397,84 @@ func TestFactsRawFailuresRunOnceSkipsAlreadyMaterializedRun(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("unexpected raw failure row count: got=%d want=1", len(rows))
 	}
-	if rows[0].RawText != "already materialized" || rows[0].NormalizedText != "already materialized" || rows[0].SignatureID != "sig-existing" {
-		t.Fatalf("expected existing raw row to be preserved when skipping rematerialization, got row=%+v", rows[0])
+	if rows[0].RawText != "new failure text that should not overwrite" {
+		t.Fatalf("expected raw row to be reconciled from artifact source text, got row=%+v", rows[0])
+	}
+	if rows[0].NormalizedText == "already materialized" || rows[0].SignatureID == "sig-existing" {
+		t.Fatalf("expected normalized/signature fields to be recomputed from expected state, got row=%+v", rows[0])
+	}
+	if rows[0].TestName != "test-existing" || rows[0].TestSuite != "suite-existing" {
+		t.Fatalf("expected test metadata from artifact row, got row=%+v", rows[0])
+	}
+}
+
+func TestFactsRawFailuresRunOnceBackfillsOccurredAtWhenRunMetadataArrives(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	runURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/5002/job/556677"
+	if err := store.UpsertArtifactFailures(ctx, []contracts.ArtifactFailureRecord{
+		{
+			Environment:   "dev",
+			ArtifactRowID: "dev-row-late-run",
+			RunURL:        runURL,
+			TestName:      "test-late-run",
+			TestSuite:     "suite-late-run",
+			SignatureID:   "sig-late-run",
+			FailureText:   "context deadline exceeded",
+		},
+	}); err != nil {
+		t.Fatalf("upsert artifact failures: %v", err)
+	}
+
+	controller, err := newFactsRawFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptions(t, []string{"dev"}),
+	})
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+
+	if err := controller.RunOnce(ctx, "dev|"+runURL); err != nil {
+		t.Fatalf("run once before run metadata: %v", err)
+	}
+	rows := mustReadRawFailureRows(t, filepath.Join(dataDir, "facts", "raw_failures.ndjson"))
+	if len(rows) != 1 {
+		t.Fatalf("unexpected raw failure row count before run metadata: got=%d want=1", len(rows))
+	}
+	if rows[0].OccurredAt != "" {
+		t.Fatalf("expected empty occurred_at before run metadata arrives, got row=%+v", rows[0])
+	}
+
+	occurredAt := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339)
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      runURL,
+			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			Failed:      true,
+			OccurredAt:  occurredAt,
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+
+	if err := controller.RunOnce(ctx, "dev|"+runURL); err != nil {
+		t.Fatalf("run once after run metadata: %v", err)
+	}
+	rows = mustReadRawFailureRows(t, filepath.Join(dataDir, "facts", "raw_failures.ndjson"))
+	if len(rows) != 1 {
+		t.Fatalf("unexpected raw failure row count after run metadata: got=%d want=1", len(rows))
+	}
+	if rows[0].OccurredAt != occurredAt {
+		t.Fatalf("expected occurred_at to be reconciled from run metadata, got row=%+v", rows[0])
 	}
 }
 

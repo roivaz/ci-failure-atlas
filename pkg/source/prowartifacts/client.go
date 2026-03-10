@@ -119,6 +119,9 @@ func (c *HTTPClient) ListFailures(ctx context.Context, environment string, runUR
 		}
 	}
 
+	if len(fetchErrors) > 0 {
+		return nil, errors.Join(fetchErrors...)
+	}
 	if len(failures) > 0 {
 		sort.Slice(failures, func(i, j int) bool {
 			if failures[i].ArtifactURL != failures[j].ArtifactURL {
@@ -133,9 +136,6 @@ func (c *HTTPClient) ListFailures(ctx context.Context, environment string, runUR
 			return failures[i].FailureText < failures[j].FailureText
 		})
 		return failures, nil
-	}
-	if len(fetchErrors) > 0 {
-		return nil, errors.Join(fetchErrors...)
 	}
 	return []Failure{}, nil
 }
@@ -193,7 +193,7 @@ func (c *HTTPClient) fetchArtifact(ctx context.Context, artifactURL string) ([]b
 		}
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("fetch artifact %q returned status %d: %s", artifactURL, resp.StatusCode, strings.TrimSpace(string(limitBytes(body, 2048))))
-			if attempt < maxAttempts && resp.StatusCode >= 500 {
+			if attempt < maxAttempts && isRetryableStatusCode(resp.StatusCode) {
 				time.Sleep(time.Duration(attempt) * time.Second)
 				continue
 			}
@@ -202,7 +202,12 @@ func (c *HTTPClient) fetchArtifact(ctx context.Context, artifactURL string) ([]b
 
 		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 		if strings.Contains(contentType, "text/html") || looksLikeHTML(body) {
-			return nil, false, nil
+			lastErr = fmt.Errorf("fetch artifact %q returned HTML content instead of junit XML", artifactURL)
+			if attempt < maxAttempts {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
+			}
+			return nil, false, lastErr
 		}
 
 		return body, true, nil
@@ -212,6 +217,12 @@ func (c *HTTPClient) fetchArtifact(ctx context.Context, artifactURL string) ([]b
 		return nil, false, lastErr
 	}
 	return nil, false, fmt.Errorf("fetch artifact %q failed without explicit error", artifactURL)
+}
+
+func isRetryableStatusCode(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests ||
+		statusCode == http.StatusRequestTimeout ||
+		statusCode >= http.StatusInternalServerError
 }
 
 func artifactPrefixFromRunURL(runURL string) (string, error) {

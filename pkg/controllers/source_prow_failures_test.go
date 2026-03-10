@@ -135,6 +135,68 @@ func TestSourceProwFailuresSyncOnceUpsertsArtifactRows(t *testing.T) {
 	}
 }
 
+func TestSourceProwFailuresSyncOnceWritesTerminalMarkerForMissingJUnit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	runURL := "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4321/job/987654321"
+	if err := store.UpsertRuns(ctx, []contracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      runURL,
+			JobName:     "job",
+			Failed:      true,
+			OccurredAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatalf("upsert runs: %v", err)
+	}
+
+	fakeClient := &fakeProwArtifactsClient{
+		failuresByKey: map[string][]prowartifacts.Failure{
+			"dev|" + runURL: []prowartifacts.Failure{},
+		},
+	}
+	controller, err := newSourceProwFailuresController(logr.Discard(), Dependencies{
+		Store:  store,
+		Source: mustCompleteSourceOptionsForProw(t),
+	}, fakeClient)
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+
+	if err := controller.SyncOnce(ctx); err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+
+	rows := mustReadArtifactFailureRows(t, filepath.Join(dataDir, "facts", "artifact_failures.ndjson"))
+	if len(rows) != 1 {
+		t.Fatalf("unexpected artifact row count: got=%d want=1", len(rows))
+	}
+	if rows[0].FailureText != "" {
+		t.Fatalf("expected terminal marker with empty failure_text, got row=%+v", rows[0])
+	}
+	if rows[0].TestSuite != artifactMissingMarkerTestSuite || rows[0].TestName != artifactMissingMarkerTestName {
+		t.Fatalf("expected terminal marker test metadata, got row=%+v", rows[0])
+	}
+
+	// The marker should stop future retries for this key.
+	if err := controller.SyncOnce(ctx); err != nil {
+		t.Fatalf("second sync once: %v", err)
+	}
+	if len(fakeClient.calls) != 1 {
+		t.Fatalf("expected second sync to skip prow download due marker, calls=%+v", fakeClient.calls)
+	}
+}
+
 func TestSourceProwFailuresRunOnceRejectsInvalidKey(t *testing.T) {
 	t.Parallel()
 

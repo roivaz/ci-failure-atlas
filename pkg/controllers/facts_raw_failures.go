@@ -241,89 +241,111 @@ func (c *factsRawFailuresController) processKey(ctx context.Context, key string)
 		occurredAt = strings.TrimSpace(runRecord.OccurredAt)
 	}
 
-	existingRawRows, err := c.store.ListRawFailuresByRun(ctx, environment, runURL)
-	if err != nil {
-		return fmt.Errorf("list existing raw failures for key %q: %w", key, err)
-	}
 	artifactRows, err := c.store.ListArtifactFailuresByRun(ctx, environment, runURL)
 	if err != nil {
 		return fmt.Errorf("list artifact failures for key %q: %w", key, err)
 	}
-
-	if len(existingRawRows) > 0 {
-		if !rawFailuresNeedRefresh(existingRawRows, len(artifactRows) > 0) {
-			c.logger.V(1).Info("Skipping run; raw failures already materialized.", "key", key, "existing_rows", len(existingRawRows))
-			return nil
-		}
-		c.logger.V(1).Info(
-			"Refreshing raw failures for run due source updates.",
-			"key", key,
-			"existing_rows", len(existingRawRows),
-			"artifact_rows", len(artifactRows),
-		)
-	}
-
-	rawRows := []contracts.RawFailureRecord{}
-	switch {
-	case len(artifactRows) > 0:
-		rawRows = buildRawFailureRecords(environment, runURL, occurredAt, artifactRows)
-	case len(existingRawRows) > 0:
-		rawRows = refreshRawFailureSignals(existingRawRows, occurredAt)
-	default:
-		rawRows = []contracts.RawFailureRecord{
-			buildSyntheticRawFailureRecord(environment, runURL, occurredAt),
-		}
-	}
-	if len(rawRows) == 0 {
-		c.logger.V(1).Info("No raw failures produced for run.", "key", key)
+	expectedRows := expectedRawFailureRows(environment, runURL, occurredAt, artifactRows, runMetadataFound)
+	if len(expectedRows) == 0 {
+		c.logger.V(1).Info("No expected raw failures produced for run.", "key", key)
 		return nil
 	}
 
-	if err := c.store.UpsertRawFailures(ctx, rawRows); err != nil {
-		return fmt.Errorf("upsert %d raw failure records for key %q: %w", len(rawRows), key, err)
+	existingRows, err := c.store.ListRawFailuresByRun(ctx, environment, runURL)
+	if err != nil {
+		return fmt.Errorf("list existing raw failures for key %q: %w", key, err)
+	}
+	if rawFailureRowsMatch(existingRows, expectedRows) {
+		c.logger.V(1).Info(
+			"Skipping run; raw failures already match expected state.",
+			"key", key,
+			"rows", len(expectedRows),
+			"run_metadata_found", runMetadataFound,
+			"artifact_rows", len(artifactRows),
+		)
+		return nil
+	}
+
+	if err := c.store.UpsertRawFailures(ctx, expectedRows); err != nil {
+		return fmt.Errorf("upsert %d raw failure records for key %q: %w", len(expectedRows), key, err)
 	}
 
 	c.logger.Info(
-		"Materialized raw failures for run.",
+		"Materialized raw failures for run from expected state.",
 		"key", key,
-		"rows", len(rawRows),
+		"rows", len(expectedRows),
 		"run_metadata_found", runMetadataFound,
+		"artifact_rows", len(artifactRows),
 	)
 	return nil
 }
 
-func rawFailuresNeedRefresh(existingRows []contracts.RawFailureRecord, hasArtifactRows bool) bool {
-	existingOnlySynthetic := len(existingRows) > 0
-	for _, row := range existingRows {
-		if !row.NonArtifactBacked {
-			existingOnlySynthetic = false
+func expectedRawFailureRows(environment, runURL, occurredAt string, artifactRows []contracts.ArtifactFailureRecord, runMetadataFound bool) []contracts.RawFailureRecord {
+	if len(artifactRows) > 0 {
+		rows := buildRawFailureRecords(environment, runURL, occurredAt, artifactRows)
+		if len(rows) > 0 {
+			return rows
 		}
 	}
-	if existingOnlySynthetic && hasArtifactRows {
-		return true
+	if runMetadataFound {
+		return []contracts.RawFailureRecord{
+			buildSyntheticRawFailureRecord(environment, runURL, occurredAt),
+		}
 	}
-	return false
+	return []contracts.RawFailureRecord{}
 }
 
-func refreshRawFailureSignals(existingRows []contracts.RawFailureRecord, occurredAt string) []contracts.RawFailureRecord {
-	out := make([]contracts.RawFailureRecord, 0, len(existingRows))
-	for _, row := range existingRows {
-		next := row
-		if strings.TrimSpace(occurredAt) != "" {
-			next.OccurredAt = strings.TrimSpace(occurredAt)
-		}
-		out = append(out, next)
+func rawFailureRowsMatch(existingRows []contracts.RawFailureRecord, expectedRows []contracts.RawFailureRecord) bool {
+	if len(existingRows) != len(expectedRows) {
+		return false
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].OccurredAt != out[j].OccurredAt {
-			return out[i].OccurredAt < out[j].OccurredAt
+	if len(expectedRows) == 0 {
+		return true
+	}
+
+	existingByKey := map[string]contracts.RawFailureRecord{}
+	for _, row := range existingRows {
+		normalized := normalizeRawFailureForComparison(row)
+		if normalized.Environment == "" || normalized.RunURL == "" || normalized.RowID == "" {
+			return false
 		}
-		if out[i].RowID != out[j].RowID {
-			return out[i].RowID < out[j].RowID
+		key := normalized.Environment + "|" + normalized.RunURL + "|" + normalized.RowID
+		if _, exists := existingByKey[key]; exists {
+			return false
 		}
-		return out[i].SignatureID < out[j].SignatureID
-	})
-	return out
+		existingByKey[key] = normalized
+	}
+
+	for _, row := range expectedRows {
+		normalized := normalizeRawFailureForComparison(row)
+		if normalized.Environment == "" || normalized.RunURL == "" || normalized.RowID == "" {
+			return false
+		}
+		key := normalized.Environment + "|" + normalized.RunURL + "|" + normalized.RowID
+		existing, found := existingByKey[key]
+		if !found {
+			return false
+		}
+		if existing != normalized {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeRawFailureForComparison(row contracts.RawFailureRecord) contracts.RawFailureRecord {
+	return contracts.RawFailureRecord{
+		Environment:       normalizeEnvironment(row.Environment),
+		RowID:             strings.TrimSpace(row.RowID),
+		RunURL:            strings.TrimSpace(row.RunURL),
+		NonArtifactBacked: row.NonArtifactBacked,
+		TestName:          strings.TrimSpace(row.TestName),
+		TestSuite:         strings.TrimSpace(row.TestSuite),
+		SignatureID:       strings.TrimSpace(row.SignatureID),
+		OccurredAt:        strings.TrimSpace(row.OccurredAt),
+		RawText:           strings.TrimSpace(row.RawText),
+		NormalizedText:    strings.TrimSpace(row.NormalizedText),
+	}
 }
 
 func buildRawFailureRecords(environment, runURL, occurredAt string, artifactRows []contracts.ArtifactFailureRecord) []contracts.RawFailureRecord {

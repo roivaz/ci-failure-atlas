@@ -112,11 +112,35 @@ Runtime semantics mirror `release-dashboard`:
 - graceful shutdown via context cancellation
 - crash protection (`utilruntime.HandleCrash`)
 
+### 6.1 Reconcile Policy Classes
+
+To avoid stale/partial facts, controllers follow one of three reconcile classes:
+
+1. **source-immutable**
+   - Use `key existence + active window` short-circuiting.
+   - Assumption: once a key is written, source data for that key is complete and immutable.
+   - Current controllers: `source.sippy.runs`, `source.sippy.tests-daily`, `source.prow.failures`.
+
+2. **source-mutable**
+   - Do incremental reconciliation from source-side update markers/checkpoints.
+   - Do **not** treat key existence as final.
+   - Current controller: `source.github.pull-requests` (PR state can change after first ingest).
+
+3. **derived**
+   - Reconcile as `stored state == expected state` within active window.
+   - Only write when computed expected rows differ from current stored rows.
+   - Current controllers: `facts.runs`, `facts.raw-failures`, `metrics.rollup.daily`.
+
+Controller ownership note:
+
+- Source controllers own externally sourced fields only.
+- Derived controllers own computed/enriched fields and must remain correct under out-of-order controller execution.
+
 ## 7) V1 Controller Registry
 
 1. `source.sippy.runs`
    - key: `environment|run_url`
-   - responsibility: discover runs from Sippy, filter to the environment's canonical job name, persist failed run metadata, and persist hourly run-count baselines (`total/success/failure`) for metric denominators.
+   - responsibility: discover runs from Sippy, filter to the environment's canonical job name, and persist run metadata.
 
 2. `source.prow.failures`
    - key: `environment|run_url`

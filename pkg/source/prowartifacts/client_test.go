@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -208,5 +209,100 @@ func TestArtifactPrefixFromRunURL(t *testing.T) {
 				t.Fatalf("artifactPrefixFromRunURL(%q) mismatch: got=%q want=%q", tt.runURL, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHTTPClientListFailuresReturnsErrorWhenOneDeterministicPathFails(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gcs/test-bucket/job/999/artifacts/e2e-parallel/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml":
+			_, _ = w.Write([]byte(`<testsuite name="entrypoint">
+<testcase classname="entry.suite" name="entry-test">
+	<failure message="entrypoint failed">infra step failed</failure>
+</testcase>
+</testsuite>`))
+			return
+		case "/gcs/test-bucket/job/999/prowjob_junit.xml":
+			_, _ = w.Write([]byte(`<html><body>temporary gateway page</body></html>`))
+			return
+		case "/gcs/test-bucket/job/999/artifacts/e2e-parallel/aro-hcp-test-local/artifacts/junit.xml":
+			http.NotFound(w, r)
+			return
+		default:
+			http.NotFound(w, r)
+			return
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client := NewHTTPClient(server.URL + "/gcs")
+	failures, err := client.ListFailures(context.Background(), "dev", "https://prow.ci.openshift.org/view/gs/test-bucket/job/999")
+	if err == nil {
+		t.Fatalf("expected error when one deterministic junit path fails, failures=%v", failures)
+	}
+	if !strings.Contains(err.Error(), "prowjob_junit.xml") {
+		t.Fatalf("expected error to reference failing junit path, got=%v", err)
+	}
+}
+
+func TestHTTPClientListFailuresRetries429AndSucceeds(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	requestCountByPath := map[string]int{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCountByPath[r.URL.Path]++
+		count := requestCountByPath[r.URL.Path]
+		mu.Unlock()
+
+		switch r.URL.Path {
+		case "/gcs/test-bucket/job/1000/artifacts/e2e-parallel/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml":
+			if count < 3 {
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+				return
+			}
+			_, _ = w.Write([]byte(`<testsuite name="entrypoint">
+<testcase classname="entry.suite" name="entry-test">
+	<failure message="entrypoint failed">infra step failed</failure>
+</testcase>
+</testsuite>`))
+			return
+		case "/gcs/test-bucket/job/1000/prowjob_junit.xml":
+			http.NotFound(w, r)
+			return
+		case "/gcs/test-bucket/job/1000/artifacts/e2e-parallel/aro-hcp-test-local/artifacts/junit.xml":
+			http.NotFound(w, r)
+			return
+		default:
+			http.NotFound(w, r)
+			return
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client := NewHTTPClient(server.URL + "/gcs")
+	failures, err := client.ListFailures(context.Background(), "dev", "https://prow.ci.openshift.org/view/gs/test-bucket/job/1000")
+	if err != nil {
+		t.Fatalf("expected retries to eventually succeed, got err=%v", err)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("unexpected failure count after retry success: got=%d want=1", len(failures))
+	}
+
+	mu.Lock()
+	entrypointRequests := requestCountByPath["/gcs/test-bucket/job/1000/artifacts/e2e-parallel/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml"]
+	mu.Unlock()
+	if entrypointRequests != 3 {
+		t.Fatalf("expected 3 attempts for retryable 429, got=%d", entrypointRequests)
 	}
 }

@@ -22,6 +22,12 @@ import (
 const sourceProwFailuresReconcileInterval = 2 * time.Minute
 const sourceProwFailuresListFailuresTimeout = 45 * time.Second
 
+const (
+	artifactMissingMarkerTestSuite = "__terminal__"
+	artifactMissingMarkerTestName  = "__missing_junit_artifact__"
+	artifactMissingMarkerSeed      = "missing_junit_artifact"
+)
+
 type sourceProwFailuresController struct {
 	logger              logr.Logger
 	reconcileInterval   time.Duration
@@ -138,12 +144,13 @@ func (c *sourceProwFailuresController) processNextWorkItem(ctx context.Context) 
 	}
 	defer c.queue.Done(key)
 
-	if err := c.processKey(ctx, key); err == nil {
+	err := c.processKey(ctx, key)
+	if err == nil {
 		c.queue.Forget(key)
 		return true
 	}
 
-	utilruntime.HandleErrorWithContext(ctx, fmt.Errorf("failed processing key %q", key), "Error syncing; requeuing for later retry", "controller", SourceProwFailuresControllerName, "key", key)
+	utilruntime.HandleErrorWithContext(ctx, fmt.Errorf("failed processing key %q: %w", key, err), "Error syncing; requeuing for later retry", "controller", SourceProwFailuresControllerName, "key", key)
 	c.queue.AddRateLimited(key)
 	return true
 }
@@ -235,7 +242,11 @@ func (c *sourceProwFailuresController) processKey(ctx context.Context, key strin
 
 	records := buildArtifactFailureRecords(environment, runURL, failures)
 	if len(records) == 0 {
-		c.logger.V(1).Info("No junit failures extracted for run.", "key", key)
+		marker := buildArtifactMissingMarkerRecord(environment, runURL)
+		if err := c.store.UpsertArtifactFailures(ctx, []contracts.ArtifactFailureRecord{marker}); err != nil {
+			return fmt.Errorf("upsert terminal missing-artifact marker for key %q: %w", key, err)
+		}
+		c.logger.V(1).Info("No junit failures extracted for run; wrote terminal missing-artifact marker.", "key", key)
 		return nil
 	}
 
@@ -329,6 +340,25 @@ func buildArtifactFailureRecords(environment, runURL string, failures []prowarti
 	}
 
 	return rows
+}
+
+func buildArtifactMissingMarkerRecord(environment string, runURL string) contracts.ArtifactFailureRecord {
+	normalizedEnvironment := normalizeEnvironment(environment)
+	normalizedRunURL := strings.TrimSpace(runURL)
+	base := strings.Join([]string{
+		normalizedEnvironment,
+		normalizedRunURL,
+		artifactMissingMarkerSeed,
+	}, "|")
+	return contracts.ArtifactFailureRecord{
+		Environment:   normalizedEnvironment,
+		ArtifactRowID: sha256Hex(base),
+		RunURL:        normalizedRunURL,
+		TestName:      artifactMissingMarkerTestName,
+		TestSuite:     artifactMissingMarkerTestSuite,
+		SignatureID:   sha256Hex(artifactMissingMarkerSeed),
+		FailureText:   "",
+	}
 }
 
 func signatureIDForFailureText(failureText string) string {
