@@ -15,6 +15,7 @@ import (
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
+	"ci-failure-atlas/pkg/testrules"
 	"k8s.io/utils/set"
 )
 
@@ -260,7 +261,7 @@ func parse(args []string) (Options, error) {
 	fs.StringVar(&opts.OutputPath, "output", opts.OutputPath, "path to output markdown summary")
 	fs.IntVar(&opts.TopTests, "top", opts.TopTests, "max number of tests to render (0 renders all)")
 	fs.IntVar(&opts.RecentRuns, "recent", opts.RecentRuns, "recent failing runs to render per signature")
-	fs.IntVar(&opts.MinRuns, "min-runs", opts.MinRuns, "minimum observed runs required to include a test in report (0 disables filter)")
+	fs.IntVar(&opts.MinRuns, "min-runs", opts.MinRuns, "minimum current test runs required to include a test in report (from sippy daily metadata when available; 0 disables filter)")
 	fs.StringVar(&sourceEnvs, "source.envs", sourceEnvs, "environments to include (comma-separated, e.g. dev,int,stg,prod)")
 	fs.BoolVar(&opts.SplitByEnvironment, "split-by-env", opts.SplitByEnvironment, "write one output file per environment using <output>.<env>.<ext>")
 
@@ -558,8 +559,118 @@ func loadRawMetadataFromStore(
 	for key, runs := range noSuiteRunsByTest {
 		noSuite[key] = testMetadata{Runs: len(runs)}
 	}
+	if err := mergeLatestTestMetadataDaily(ctx, store, testClusters, full, noSuite); err != nil {
+		return nil, nil, nil, err
+	}
 
 	return full, noSuite, fullErrorsByReference, nil
+}
+
+func mergeLatestTestMetadataDaily(
+	ctx context.Context,
+	store storecontracts.Store,
+	testClusters []testCluster,
+	metadataByFull map[testKey]testMetadata,
+	metadataByNoSuite map[testKeyNoSuite]testMetadata,
+) error {
+	if len(testClusters) == 0 {
+		return nil
+	}
+
+	fullByLaneAndSuite := map[string][]testKey{}
+	fullBySuite := map[string][]testKey{}
+	noSuiteByLane := map[string][]testKeyNoSuite{}
+	noSuiteByName := map[string][]testKeyNoSuite{}
+	candidateDatesByEnv := map[string]map[string]struct{}{}
+
+	addCandidateDate := func(environment string, date string) {
+		env := normalizeReportEnvironment(environment)
+		normalizedDate := strings.TrimSpace(date)
+		if env == "" || normalizedDate == "" {
+			return
+		}
+		if _, ok := candidateDatesByEnv[env]; !ok {
+			candidateDatesByEnv[env] = map[string]struct{}{}
+		}
+		candidateDatesByEnv[env][normalizedDate] = struct{}{}
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+	yesterday := time.Now().UTC().Add(-24 * time.Hour).Format("2006-01-02")
+
+	for _, cluster := range testClusters {
+		environment := normalizeReportEnvironment(cluster.Environment)
+		if environment == "" {
+			continue
+		}
+		lane := normalizeKeyPart(cluster.Lane)
+		testName := normalizeKeyPart(cluster.TestName)
+		testSuite := strings.TrimSpace(cluster.TestSuite)
+		fullKey := toTestKey(cluster.Lane, cluster.JobName, cluster.TestName, cluster.TestSuite)
+		noSuiteKey := testKeyNoSuite{
+			Lane:     lane,
+			JobName:  normalizeKeyPart(cluster.JobName),
+			TestName: testName,
+		}
+
+		fullByLaneAndSuite[testMetadataLaneSuiteKey(environment, lane, testSuite, testName)] = append(fullByLaneAndSuite[testMetadataLaneSuiteKey(environment, lane, testSuite, testName)], fullKey)
+		fullBySuite[testMetadataSuiteKey(environment, testSuite, testName)] = append(fullBySuite[testMetadataSuiteKey(environment, testSuite, testName)], fullKey)
+		noSuiteByLane[testMetadataLaneNameKey(environment, lane, testName)] = append(noSuiteByLane[testMetadataLaneNameKey(environment, lane, testName)], noSuiteKey)
+		noSuiteByName[testMetadataNameKey(environment, testName)] = append(noSuiteByName[testMetadataNameKey(environment, testName)], noSuiteKey)
+
+		addCandidateDate(environment, today)
+		addCandidateDate(environment, yesterday)
+		for _, ref := range cluster.References {
+			if ts, ok := parseTimestamp(ref.OccurredAt); ok {
+				addCandidateDate(environment, ts.UTC().Format("2006-01-02"))
+			}
+		}
+	}
+
+	for environment, dateSet := range candidateDatesByEnv {
+		dates := sortedDateList(dateSet)
+		for _, date := range dates {
+			rows, err := store.ListTestMetadataDailyByDate(ctx, environment, date)
+			if err != nil {
+				return fmt.Errorf("list test metadata daily rows for env=%q date=%q: %w", environment, date, err)
+			}
+			for _, row := range rows {
+				testName := normalizeKeyPart(row.TestName)
+				testSuite := strings.TrimSpace(row.TestSuite)
+				if testName == "" || testSuite == "" {
+					continue
+				}
+				lane := normalizeKeyPart(string(testrules.ClassifyLane(environment, testSuite, testName)))
+				candidate := testMetadata{
+					Runs: row.CurrentRuns,
+				}
+				candidate.PassRate = float64Ptr(row.CurrentPassPercentage)
+
+				fullMatches := fullByLaneAndSuite[testMetadataLaneSuiteKey(environment, lane, testSuite, testName)]
+				if len(fullMatches) == 0 {
+					fullMatches = fullBySuite[testMetadataSuiteKey(environment, testSuite, testName)]
+				}
+				for _, key := range fullMatches {
+					existing := metadataByFull[key]
+					if preferMetadata(candidate, existing) {
+						metadataByFull[key] = cloneMetadata(candidate)
+					}
+				}
+
+				noSuiteMatches := noSuiteByLane[testMetadataLaneNameKey(environment, lane, testName)]
+				if len(noSuiteMatches) == 0 {
+					noSuiteMatches = noSuiteByName[testMetadataNameKey(environment, testName)]
+				}
+				for _, key := range noSuiteMatches {
+					existing := metadataByNoSuite[key]
+					if preferMetadata(candidate, existing) {
+						metadataByNoSuite[key] = cloneMetadata(candidate)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func insertRunEnvironment(runURLEnvironments map[string]map[string]struct{}, runURL string, environment string) {
@@ -588,6 +699,54 @@ func sortedEnvironmentList(setByEnvironment map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func sortedDateList(dateSet map[string]struct{}) []string {
+	if len(dateSet) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(dateSet))
+	for value := range dateSet {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func testMetadataLaneSuiteKey(environment, lane, suite, name string) string {
+	return strings.Join([]string{
+		normalizeReportEnvironment(environment),
+		normalizeKeyPart(lane),
+		strings.TrimSpace(suite),
+		normalizeKeyPart(name),
+	}, "|")
+}
+
+func testMetadataSuiteKey(environment, suite, name string) string {
+	return strings.Join([]string{
+		normalizeReportEnvironment(environment),
+		strings.TrimSpace(suite),
+		normalizeKeyPart(name),
+	}, "|")
+}
+
+func testMetadataLaneNameKey(environment, lane, name string) string {
+	return strings.Join([]string{
+		normalizeReportEnvironment(environment),
+		normalizeKeyPart(lane),
+		normalizeKeyPart(name),
+	}, "|")
+}
+
+func testMetadataNameKey(environment, name string) string {
+	return strings.Join([]string{
+		normalizeReportEnvironment(environment),
+		normalizeKeyPart(name),
+	}, "|")
 }
 
 func loggerFromContext(ctx context.Context) logr.Logger {

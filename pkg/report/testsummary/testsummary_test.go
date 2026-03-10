@@ -599,3 +599,104 @@ func TestGenerateWritesPerEnvironmentFilesWhenSplitEnabled(t *testing.T) {
 		t.Fatalf("did not expect int report to include dev test: %q", string(intReport))
 	}
 }
+
+func TestGenerateMinRunsUsesLatestSippyTestMetadataRuns(t *testing.T) {
+	t.Parallel()
+
+	ctx := logr.NewContext(context.Background(), logr.Discard())
+	store, err := ndjson.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const (
+		environment = "dev"
+		runURL      = "https://prow.example/run/dev-1"
+		testName    = "dev test"
+		testSuite   = "rp-api-compat-all/parallel"
+	)
+
+	if err := store.UpsertTestClusters(ctx, []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             environment,
+			Phase1ClusterID:         "cluster-dev",
+			Lane:                    "e2e",
+			JobName:                 "job-dev",
+			TestName:                testName,
+			TestSuite:               testSuite,
+			CanonicalEvidencePhrase: "dev failure phrase",
+			SearchQueryPhrase:       "dev query",
+			SupportCount:            1,
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:         runURL,
+					OccurredAt:     "2026-03-05T10:00:00Z",
+					SignatureID:    "sig-dev",
+					PRNumber:       4242,
+					PostGoodCommit: false,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed test clusters: %v", err)
+	}
+
+	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment:    environment,
+			RowID:          "dev-row-1",
+			RunURL:         runURL,
+			SignatureID:    "sig-dev",
+			OccurredAt:     "2026-03-05T10:00:00Z",
+			RawText:        "full dev error",
+			NormalizedText: "full dev error",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	metadataDate := time.Now().UTC().Format("2006-01-02")
+	if err := store.UpsertTestMetadataDaily(ctx, []storecontracts.TestMetadataDailyRecord{
+		{
+			Environment:            environment,
+			Date:                   metadataDate,
+			Release:                "4.20",
+			Period:                 "default",
+			TestName:               testName,
+			TestSuite:              testSuite,
+			CurrentPassPercentage:  92.5,
+			CurrentRuns:            25,
+			PreviousPassPercentage: 88.0,
+			PreviousRuns:           25,
+			NetImprovement:         4.5,
+			IngestedAt:             time.Now().UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatalf("seed test metadata daily: %v", err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "test-failure-summary.md")
+	opts := DefaultOptions()
+	opts.OutputPath = outputPath
+	opts.Environments = []string{environment}
+	opts.TopTests = 0
+	opts.MinRuns = 10
+
+	if err := Generate(ctx, store, opts); err != nil {
+		t.Fatalf("generate test summary: %v", err)
+	}
+
+	report, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	text := string(report)
+	if !strings.Contains(text, "## 1. "+testName) {
+		t.Fatalf("expected test to survive min-runs filter via sippy metadata, got report=%q", text)
+	}
+	if !strings.Contains(text, "Current success rate: **92.50%** over **25** runs") {
+		t.Fatalf("expected report to include sippy runs/passrate, got report=%q", text)
+	}
+}
