@@ -24,8 +24,12 @@ var (
 	reCleanResourceGroupBare      = regexp.MustCompile(`(?i)\bresource group [a-z0-9-]+\b`)
 	reCleanClusterQuoted          = regexp.MustCompile(`(?i)cluster="[^"]+"`)
 	reCleanClusterPhraseQuoted    = regexp.MustCompile(`(?i)\bcluster "[^"]+"`)
+	reCleanClusterCreationQuoted  = regexp.MustCompile(`(?i)\bcluster creation ["'][^"']+["']`)
 	reCleanForClusterPhrase       = regexp.MustCompile(`(?i)\bfor cluster [a-z0-9-]+\b`)
+	reCleanInClusterPhrase        = regexp.MustCompile(`(?i)\bin cluster [a-z0-9-]+\b`)
 	reCleanHCPClusterPhrase       = regexp.MustCompile(`(?i)\bhcp cluster [a-z0-9-]+\b`)
+	reCleanExternalAuthQuoted     = regexp.MustCompile(`(?i)external auth "[^"]+"`)
+	reCleanExternalAuthBare       = regexp.MustCompile(`(?i)\bexternal auth [a-z0-9-]+\b`)
 	reCleanNodePoolQuoted         = regexp.MustCompile(`(?i)nodepool="[^"]+"`)
 	reCleanNodePoolPhrase         = regexp.MustCompile(`(?i)\bnode pool [a-z0-9-]+\b`)
 	reBoolAssertionContext        = regexp.MustCompile(`(?is)Timed out after [0-9.]+s\.\s*\n(?P<context>[^\n]+)\s*\nExpected\s*\n\s*<bool>:\s*false\s*\n\s*to be true`)
@@ -36,6 +40,7 @@ var (
 	reCauseBySplit                = regexp.MustCompile(`(?i)caused by:`)
 	reErrorCode                   = regexp.MustCompile(`(?i)ERROR CODE:\s*([A-Za-z0-9_]+)`)
 	rePickErrorSignal             = regexp.MustCompile(`(?i)(error|failed|timeout|forbidden|denied|conflict|deadline|not found)`)
+	reHTTPResponseStatusLine      = regexp.MustCompile(`(?i)^response [45][0-9]{2}:\s*.+$`)
 	reUnexpectedOnly              = regexp.MustCompile(`(?i)unexpected error:?`)
 	rePhase1Placeholder           = regexp.MustCompile(`<uuid>|<hex>|<url>`)
 	reDeserializationLiteral      = regexp.MustCompile(`(?i)Deserializaion Error:[^\n]+`)
@@ -188,6 +193,10 @@ func extractEvidence(text string) extractedEvidence {
 	}
 
 	if picked == "" {
+		picked = bestHTTPResponseStatusLine(raw)
+	}
+
+	if picked == "" {
 		parts := reCauseBySplit.Split(raw, -1)
 		if len(parts) > 1 {
 			picked = truncateText(parts[len(parts)-1], 260)
@@ -242,6 +251,9 @@ func extractEvidence(text string) extractedEvidence {
 
 	if strings.Contains(lowered, "context deadline exceeded") && strings.Contains(lowered, "createhcpclusterfromparam") {
 		canonical = "timeout during CreateHCPClusterFromParam; context deadline exceeded"
+	}
+	if strings.Contains(lowered, "getadminrestconfigforhcpcluster") && strings.Contains(lowered, "timeout") {
+		canonical = "timeout during GetAdminRESTConfigForHCPCluster while waiting for hcpcluster creds"
 	}
 	if strings.Contains(lowered, "interrupted by user") {
 		canonical = "Interrupted by User"
@@ -338,15 +350,31 @@ func cleanCanonical(value string) string {
 	text = reCleanResourceGroupBare.ReplaceAllString(text, "resource group <resource-group>")
 	text = reCleanClusterQuoted.ReplaceAllString(text, `cluster="<cluster>"`)
 	text = reCleanClusterPhraseQuoted.ReplaceAllString(text, `cluster "<cluster>"`)
+	text = reCleanClusterCreationQuoted.ReplaceAllString(text, `cluster creation "<cluster>"`)
 	text = reCleanForClusterPhrase.ReplaceAllString(text, "for cluster <cluster>")
+	text = reCleanInClusterPhrase.ReplaceAllString(text, "in cluster <cluster>")
 	text = reCleanHCPClusterPhrase.ReplaceAllString(text, "HCP cluster <cluster>")
+	text = reCleanExternalAuthQuoted.ReplaceAllString(text, `external auth "<external-auth>"`)
+	text = reCleanExternalAuthBare.ReplaceAllString(text, "external auth <external-auth>")
 	text = reCleanNodePoolQuoted.ReplaceAllString(text, `nodepool="<nodepool>"`)
 	text = reCleanNodePoolPhrase.ReplaceAllString(text, "node pool <nodepool>")
 	text = collapseWS(text)
 	if len(text) > 260 {
-		text = strings.TrimRight(text[:260], " ,;:")
+		text = truncateCanonical(text, 260)
 	}
 	return text
+}
+
+func truncateCanonical(value string, max int) string {
+	trimmed := strings.TrimSpace(value)
+	if max <= 0 || len(trimmed) <= max {
+		return strings.TrimRight(trimmed, " ,;:-")
+	}
+	cut := strings.TrimSpace(trimmed[:max])
+	if lastSpace := strings.LastIndex(cut, " "); lastSpace >= max/2 {
+		cut = cut[:lastSpace]
+	}
+	return strings.TrimRight(cut, " ,;:-")
 }
 
 func extractAssertionContext(text string) string {
@@ -572,6 +600,17 @@ func bestSignalErrorLine(text string) string {
 	return ""
 }
 
+func bestHTTPResponseStatusLine(text string) string {
+	lines := splitNonEmptyLines(text)
+	for _, line := range lines {
+		token := collapseWS(line)
+		if reHTTPResponseStatusLine.MatchString(token) {
+			return truncateText(token, 260)
+		}
+	}
+	return ""
+}
+
 func isStructBoundaryLine(line string) bool {
 	switch strings.TrimSpace(line) {
 	case "{", "}", "},", "[", "]", "],":
@@ -589,7 +628,8 @@ func isWrapperNoiseLine(line string) bool {
 	return strings.HasPrefix(normalized, "fail [") ||
 		strings.HasPrefix(normalized, "unexpected error") ||
 		strings.HasPrefix(normalized, "<*fmt.wraperror") ||
-		strings.HasPrefix(normalized, "<*errors.errorstring")
+		strings.HasPrefix(normalized, "<*errors.errorstring") ||
+		strings.HasPrefix(normalized, "<*")
 }
 
 func isStructFieldNoiseLine(line string) bool {

@@ -504,6 +504,7 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 		"Full failure examples",
 		"Show 1 full failures",
 		"raw dev timeout sample",
+		"full signature:",
 		"context type stub leaked",
 		"https://prow.example/run/dev-1",
 		">INT<",
@@ -535,5 +536,28 @@ func TestGlobalQualityIssueCodesFlagsSourceDeserializationNoOutput(t *testing.T)
 	score := globalQualityScore(codes)
 	if score < 9 {
 		t.Fatalf("expected source deserialization issue to be high severity (>=9), got %d", score)
+	}
+}
+
+func TestGlobalQualityIssueCodesFlagsGenericFailurePhrase(t *testing.T) {
+	t.Parallel()
+
+	phrase := "failure"
+	codes := globalQualityIssueCodes(phrase)
+
+	found := false
+	for _, code := range codes {
+		if code == "generic_failure_phrase" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected generic_failure_phrase issue code, got %v", codes)
+	}
+
+	score := globalQualityScore(codes)
+	if score < 5 {
+		t.Fatalf("expected generic failure phrase score >=5, got %d", score)
 	}
 }

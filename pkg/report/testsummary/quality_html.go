@@ -759,6 +759,9 @@ func qualityIssueCodes(cluster testCluster, fullErrorSamples []string) []string 
 	if phrase == "" {
 		add("empty_phrase")
 	}
+	if isGenericFailurePhrase(phrase) {
+		add("generic_failure_phrase")
+	}
 	if len([]rune(strings.TrimSpace(phrase))) > 0 && len([]rune(strings.TrimSpace(phrase))) <= 3 {
 		add("too_short_phrase")
 	}
@@ -800,6 +803,8 @@ func qualityIssueLabel(code string) string {
 		return "empty phrase"
 	case "too_short_phrase":
 		return "very short phrase"
+	case "generic_failure_phrase":
+		return "generic fallback phrase"
 	case "context_type_stub":
 		return "context type stub leaked"
 	case "empty_error_code":
@@ -838,6 +843,8 @@ func qualityIssueWeight(code string) int {
 		return 4
 	case "too_short_phrase":
 		return 3
+	case "generic_failure_phrase":
+		return 5
 	case "mostly_punctuation":
 		return 3
 	case "source_deserialization_no_output":
@@ -890,6 +897,16 @@ func isMostlyPunctuation(input string) bool {
 	}
 	wordCount := len(strings.Fields(trimmed))
 	return punctuationCount >= (alphaNumericCount*2) && wordCount <= 4
+}
+
+func isGenericFailurePhrase(input string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(input)), " "))
+	switch normalized {
+	case "failure", "failure occurred", "unknown failure":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSourceDeserializationNoOutput(phrase string, fullErrorSamples []string) bool {

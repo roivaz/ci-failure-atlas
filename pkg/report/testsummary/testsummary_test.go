@@ -1017,3 +1017,64 @@ func TestBuildQualitySignatureRowsFlagsSourceDeserializationNoOutput(t *testing.
 		t.Fatalf("expected deserialization no-output row to be flagged")
 	}
 }
+
+func TestBuildQualitySignatureRowsFlagsGenericFailurePhrase(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		Environment:             "stg",
+		Phase1ClusterID:         "cluster-generic-failure",
+		Lane:                    "e2e",
+		JobName:                 "periodic-stage-e2e-parallel",
+		TestName:                "Customer should be able to list available HCP OpenShift versions and validate response content",
+		TestSuite:               "stage/parallel",
+		CanonicalEvidencePhrase: "failure",
+		SupportCount:            2,
+		References: []reference{
+			{
+				RunURL:      "https://prow.example/run/generic-failure-1",
+				OccurredAt:  "2026-03-07T12:00:00Z",
+				SignatureID: "sig-generic-failure-1",
+			},
+		},
+		MemberSignatureIDs: []string{"sig-generic-failure-1"},
+	}
+
+	rows := buildQualitySignatureRows(
+		[]testCluster{cluster},
+		map[testKey]testMetadata{},
+		map[testKeyNoSuite]testMetadata{},
+		map[referenceKey]string{
+			{
+				RunURL:      "https://prow.example/run/generic-failure-1",
+				SignatureID: "sig-generic-failure-1",
+			}: "no better error context available",
+		},
+		reviewSignalIndex{},
+		time.Date(2026, 3, 7, 16, 30, 0, 0, time.UTC),
+		0,
+		4,
+		0,
+	)
+	if len(rows) != 1 {
+		t.Fatalf("expected one quality row, got %d", len(rows))
+	}
+
+	row := rows[0]
+	hasIssueCode := false
+	for _, code := range row.IssueCodes {
+		if code == "generic_failure_phrase" {
+			hasIssueCode = true
+			break
+		}
+	}
+	if !hasIssueCode {
+		t.Fatalf("expected generic_failure_phrase issue code, got %v", row.IssueCodes)
+	}
+	if row.QualityScore < 5 {
+		t.Fatalf("expected generic failure issue to score at least 5, got %d", row.QualityScore)
+	}
+	if !row.isFlagged() {
+		t.Fatalf("expected generic failure row to be flagged")
+	}
+}

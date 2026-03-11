@@ -175,8 +175,9 @@ func buildGlobalTriageHTML(
 			latestRuns := renderLatestRunLinks(row.References, 3)
 
 			b.WriteString("        <tr>")
-			b.WriteString(fmt.Sprintf("<td><details><summary>%s</summary><div class=\"muted\">cluster: %s</div><div class=\"muted\">query: %s</div></details></td>",
+			b.WriteString(fmt.Sprintf("<td><details><summary>%s</summary><div class=\"muted\">full signature:</div><pre>%s</pre><div class=\"muted\">cluster: %s</div><div class=\"muted\">query: %s</div></details></td>",
 				html.EscapeString(cleanInline(phrase, 180)),
+				html.EscapeString(phrase),
 				html.EscapeString(strings.TrimSpace(row.Phase2ClusterID)),
 				html.EscapeString(cleanInline(row.SearchQueryPhrase, 180)),
 			))
@@ -430,6 +431,9 @@ func globalQualityIssueCodes(phrase string) []string {
 	if trimmed == "" {
 		add("empty_phrase")
 	}
+	if globalIsGenericFailurePhrase(trimmed) {
+		add("generic_failure_phrase")
+	}
 	if len([]rune(trimmed)) > 0 && len([]rune(trimmed)) <= 3 {
 		add("too_short_phrase")
 	}
@@ -481,6 +485,8 @@ func globalQualityIssueWeight(code string) int {
 		return 4
 	case "too_short_phrase":
 		return 3
+	case "generic_failure_phrase":
+		return 5
 	case "mostly_punctuation":
 		return 3
 	case "source_deserialization_no_output":
@@ -496,6 +502,8 @@ func globalQualityIssueLabel(code string) string {
 		return "empty phrase"
 	case "too_short_phrase":
 		return "very short phrase"
+	case "generic_failure_phrase":
+		return "generic fallback phrase"
 	case "context_type_stub":
 		return "context type stub leaked"
 	case "empty_error_code":
@@ -552,6 +560,16 @@ func globalPhraseMostlyPunctuation(input string) bool {
 	}
 	wordCount := len(strings.Fields(trimmed))
 	return punctuationCount >= (alphaNumericCount*2) && wordCount <= 4
+}
+
+func globalIsGenericFailurePhrase(input string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(input)), " "))
+	switch normalized {
+	case "failure", "failure occurred", "unknown failure":
+		return true
+	default:
+		return false
+	}
 }
 
 func globalContainsDeserializationNoOutputSignal(value string) bool {

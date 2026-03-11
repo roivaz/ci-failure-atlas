@@ -102,3 +102,47 @@ func TestSafeSearchFromTextSkipsFrameworkWrapperLine(t *testing.T) {
 		t.Fatalf("expected safe search phrase to include actionable failure line, got=%q", got)
 	}
 }
+
+func TestExtractEvidenceCollapsesGetAdminRESTConfigTimeoutVariants(t *testing.T) {
+	t.Parallel()
+
+	rawA := `failed waiting for hcpcluster="ea-list" in resourcegroup="external-auth-rg-pxk72q" to finish getting creds, caused by: timeout '10.000000' minutes exceeded during GetAdminRESTConfigForHCPCluster for cluster ea-list`
+	rawB := `failed waiting for hcpcluster="ea-list" in resourcegroup="external-auth-rg-pxk72q" to finish getting creds, caused by: timeout '10.000000' minutes exceeded during GetAdminRESTConfigForHCPCluster for cluster ea-list in resource group external-auth-rg-pxk72q`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	want := "timeout during GetAdminRESTConfigForHCPCluster while waiting for hcpcluster creds"
+
+	if gotA != want {
+		t.Fatalf("unexpected canonical for short variant: got=%q want=%q", gotA, want)
+	}
+	if gotB != want {
+		t.Fatalf("unexpected canonical for long variant: got=%q want=%q", gotB, want)
+	}
+}
+
+func TestExtractEvidenceUsesHTTP502StatusLineWhenOnlySignal(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/cluster_versions.go:42]: Unexpected error:
+    <*exported.ResponseError | 0xc000736630>:
+    GET https://management.azure.com/subscriptions/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX/providers/Microsoft.RedHatOpenShift/locations/uksouth/hcpOpenShiftVersions
+    --------------------------------------------------------------------------------
+    RESPONSE 502: 502 Bad Gateway
+    ERROR CODE UNAVAILABLE
+    --------------------------------------------------------------------------------
+    Response contained no body
+    --------------------------------------------------------------------------------
+    {
+        ErrorCode: "",
+        StatusCode: 502,
+    }`
+
+	evidence := extractEvidence(raw)
+	if evidence.CanonicalEvidencePhrase != "RESPONSE 502: 502 Bad Gateway" {
+		t.Fatalf("expected canonical phrase to use HTTP response status line, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+	if evidence.SearchQueryPhrase != "RESPONSE 502: 502 Bad Gateway" {
+		t.Fatalf("expected search phrase to use HTTP response status line, got=%q", evidence.SearchQueryPhrase)
+	}
+}
