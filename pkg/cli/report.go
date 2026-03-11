@@ -120,7 +120,9 @@ func NewReportCommand() (*cobra.Command, error) {
 	if err := ndjsonoptions.BindNDJSONOptions(testSummaryNDJSONOpts, testSummaryCmd); err != nil {
 		return nil, fmt.Errorf("bind NDJSON options for report test-summary: %w", err)
 	}
-	testSummaryCmd.Flags().StringVar(&testSummaryOpts.OutputPath, "output", testSummaryOpts.OutputPath, "path to output markdown report")
+	testSummaryCmd.Flags().StringVar(&testSummaryOpts.OutputPath, "output", testSummaryOpts.OutputPath, "path to output report")
+	testSummaryCmd.Flags().StringVar(&testSummaryOpts.Format, "format", testSummaryOpts.Format, "output format: markdown|html")
+	testSummaryCmd.Flags().StringVar(&testSummaryOpts.QualityExportPath, "quality-export", testSummaryOpts.QualityExportPath, "optional path to write flagged semantic signatures as NDJSON")
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.TopTests, "top", testSummaryOpts.TopTests, "max number of tests to render (0 = all)")
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.RecentRuns, "recent", testSummaryOpts.RecentRuns, "recent failing runs to render per signature")
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.MinRuns, "min-runs", testSummaryOpts.MinRuns, "minimum runs threshold for including a test")

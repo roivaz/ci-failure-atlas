@@ -21,6 +21,8 @@ import (
 
 type Options struct {
 	OutputPath         string
+	Format             string
+	QualityExportPath  string
 	TopTests           int
 	RecentRuns         int
 	MinRuns            int
@@ -122,6 +124,11 @@ type testAggregate struct {
 
 const sparklineWindowDays = 7
 
+const (
+	reportFormatMarkdown = "markdown"
+	reportFormatHTML     = "html"
+)
+
 func Run(ctx context.Context, args []string) error {
 	_ = ctx
 	_ = args
@@ -131,6 +138,8 @@ func Run(ctx context.Context, args []string) error {
 func DefaultOptions() Options {
 	return Options{
 		OutputPath:         "data/reports/test-failure-summary.md",
+		Format:             reportFormatMarkdown,
+		QualityExportPath:  "",
 		TopTests:           0,
 		RecentRuns:         4,
 		MinRuns:            0,
@@ -157,6 +166,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	if err != nil {
 		return fmt.Errorf("read review queue: %w", err)
 	}
+	allFlaggedExports := make([]qualityFlaggedSignatureExport, 0)
 	if validated.SplitByEnvironment {
 		targetEnvs := resolveTestSummaryTargetEnvironments(validated.Environments, storedClusters, reviewItems)
 		if len(targetEnvs) == 0 {
@@ -171,6 +181,21 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			}
 			filteredReviewItems := filterReviewItemsByEnvironment(reviewItems, environment)
 			reviewIndex := buildReviewSignalIndex(filteredReviewItems)
+			generatedAt := time.Now().UTC()
+			var qualityRows []qualitySignatureRow
+			if validated.Format == reportFormatHTML || strings.TrimSpace(validated.QualityExportPath) != "" {
+				qualityRows = buildQualitySignatureRows(
+					testClusters,
+					metadataByFull,
+					metadataByNoSuite,
+					fullErrorsByReference,
+					reviewIndex,
+					generatedAt,
+					validated.TopTests,
+					validated.RecentRuns,
+					validated.MinRuns,
+				)
+			}
 			report := buildMarkdown(
 				testClusters,
 				metadataByFull,
@@ -179,18 +204,28 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 				reviewIndex,
 				"store:test_clusters",
 				"store:raw_failures",
-				time.Now().UTC(),
+				generatedAt,
 				validated.TopTests,
 				validated.RecentRuns,
 				validated.MinRuns,
 			)
+			if validated.Format == reportFormatHTML {
+				report = buildHTML(
+					qualityRows,
+					"store:test_clusters",
+					"store:raw_failures",
+					generatedAt,
+				)
+			}
+			allFlaggedExports = append(allFlaggedExports, toQualityFlaggedSignatureExports(qualityRows)...)
 			outputPath := outputPathForEnvironment(validated.OutputPath, environment)
 			if err := writeTestSummary(outputPath, report); err != nil {
 				return err
 			}
 			logger.Info(
-				"Wrote per-test summary markdown.",
+				"Wrote per-test summary report.",
 				"output", outputPath,
+				"format", validated.Format,
 				"environment", environment,
 				"testClusters", len(testClusters),
 				"metadataByFull", len(metadataByFull),
@@ -200,6 +235,16 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 				"topTests", validated.TopTests,
 				"recentRuns", validated.RecentRuns,
 				"minRuns", validated.MinRuns,
+			)
+		}
+		if strings.TrimSpace(validated.QualityExportPath) != "" {
+			if err := writeQualityFlaggedSignatures(validated.QualityExportPath, allFlaggedExports); err != nil {
+				return err
+			}
+			logger.Info(
+				"Wrote quality export artifact.",
+				"output", validated.QualityExportPath,
+				"flaggedSignatures", len(allFlaggedExports),
 			)
 		}
 		return nil
@@ -221,6 +266,21 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		return fmt.Errorf("load raw failure metadata: %w", err)
 	}
 	reviewIndex := buildReviewSignalIndex(filteredReviewItems)
+	generatedAt := time.Now().UTC()
+	var qualityRows []qualitySignatureRow
+	if validated.Format == reportFormatHTML || strings.TrimSpace(validated.QualityExportPath) != "" {
+		qualityRows = buildQualitySignatureRows(
+			testClusters,
+			metadataByFull,
+			metadataByNoSuite,
+			fullErrorsByReference,
+			reviewIndex,
+			generatedAt,
+			validated.TopTests,
+			validated.RecentRuns,
+			validated.MinRuns,
+		)
+	}
 	report := buildMarkdown(
 		testClusters,
 		metadataByFull,
@@ -229,18 +289,38 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		reviewIndex,
 		"store:test_clusters",
 		"store:raw_failures",
-		time.Now().UTC(),
+		generatedAt,
 		validated.TopTests,
 		validated.RecentRuns,
 		validated.MinRuns,
 	)
+	if validated.Format == reportFormatHTML {
+		report = buildHTML(
+			qualityRows,
+			"store:test_clusters",
+			"store:raw_failures",
+			generatedAt,
+		)
+	}
 	if err := writeTestSummary(validated.OutputPath, report); err != nil {
 		return err
 	}
+	if strings.TrimSpace(validated.QualityExportPath) != "" {
+		flaggedExports := toQualityFlaggedSignatureExports(qualityRows)
+		if err := writeQualityFlaggedSignatures(validated.QualityExportPath, flaggedExports); err != nil {
+			return err
+		}
+		logger.Info(
+			"Wrote quality export artifact.",
+			"output", validated.QualityExportPath,
+			"flaggedSignatures", len(flaggedExports),
+		)
+	}
 
 	logger.Info(
-		"Wrote per-test summary markdown.",
+		"Wrote per-test summary report.",
 		"output", validated.OutputPath,
+		"format", validated.Format,
 		"testClusters", len(testClusters),
 		"metadataByFull", len(metadataByFull),
 		"metadataByNoSuite", len(metadataByNoSuite),
@@ -258,7 +338,9 @@ func parse(args []string) (Options, error) {
 	sourceEnvs := strings.Join(opts.Environments, ",")
 
 	fs := flag.NewFlagSet("test-summary", flag.ContinueOnError)
-	fs.StringVar(&opts.OutputPath, "output", opts.OutputPath, "path to output markdown summary")
+	fs.StringVar(&opts.OutputPath, "output", opts.OutputPath, "path to output report")
+	fs.StringVar(&opts.Format, "format", opts.Format, "output format: markdown|html")
+	fs.StringVar(&opts.QualityExportPath, "quality-export", opts.QualityExportPath, "optional path to write flagged semantic signatures as NDJSON")
 	fs.IntVar(&opts.TopTests, "top", opts.TopTests, "max number of tests to render (0 renders all)")
 	fs.IntVar(&opts.RecentRuns, "recent", opts.RecentRuns, "recent failing runs to render per signature")
 	fs.IntVar(&opts.MinRuns, "min-runs", opts.MinRuns, "minimum current test runs required to include a test in report (from sippy daily metadata when available; 0 disables filter)")
@@ -287,6 +369,15 @@ func validateOptions(opts Options) (Options, error) {
 	if opts.MinRuns < 0 {
 		return Options{}, errors.New("--min-runs must be >= 0")
 	}
+	switch strings.ToLower(strings.TrimSpace(opts.Format)) {
+	case reportFormatMarkdown:
+		opts.Format = reportFormatMarkdown
+	case reportFormatHTML:
+		opts.Format = reportFormatHTML
+	default:
+		return Options{}, fmt.Errorf("invalid --format %q (expected markdown or html)", strings.TrimSpace(opts.Format))
+	}
+	opts.QualityExportPath = strings.TrimSpace(opts.QualityExportPath)
 	opts.Environments = normalizeReportEnvironments(opts.Environments)
 	return opts, nil
 }
@@ -356,7 +447,7 @@ func writeTestSummary(outputPath string, report string) error {
 		return fmt.Errorf("create test summary output directory: %w", err)
 	}
 	if err := os.WriteFile(outputPath, []byte(report), 0o644); err != nil {
-		return fmt.Errorf("write test summary markdown: %w", err)
+		return fmt.Errorf("write test summary report: %w", err)
 	}
 	return nil
 }

@@ -700,3 +700,224 @@ func TestGenerateMinRunsUsesLatestSippyTestMetadataRuns(t *testing.T) {
 		t.Fatalf("expected report to include sippy runs/passrate, got report=%q", text)
 	}
 }
+
+func TestValidateOptionsRejectsUnknownFormat(t *testing.T) {
+	t.Parallel()
+
+	_, err := validateOptions(Options{
+		OutputPath: "data/reports/test-failure-summary.md",
+		Format:     "pdf",
+		RecentRuns: 4,
+	})
+	if err == nil {
+		t.Fatal("expected format validation error")
+	}
+	if !strings.Contains(err.Error(), "invalid --format") {
+		t.Fatalf("expected invalid format error, got %v", err)
+	}
+}
+
+func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
+	t.Parallel()
+
+	ctx := logr.NewContext(context.Background(), logr.Discard())
+	store, err := ndjson.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertTestClusters(ctx, []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase1ClusterID:         "cluster-suspicious-1",
+			Lane:                    "e2e",
+			JobName:                 "job-dev",
+			TestName:                "quality signal test one",
+			TestSuite:               "suite-dev",
+			CanonicalEvidencePhrase: "<context.deadlineExceededError>{},",
+			SearchQueryPhrase:       "deadline exceeded context",
+			SupportCount:            3,
+			PostGoodCommitCount:     1,
+			MemberSignatureIDs:      []string{"sig-suspicious-1"},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      "https://prow.example/run/suspicious-1",
+					OccurredAt:  "2026-03-07T12:00:00Z",
+					SignatureID: "sig-suspicious-1",
+					PRNumber:    4201,
+				},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase1ClusterID:         "cluster-suspicious-2",
+			Lane:                    "e2e",
+			JobName:                 "job-dev",
+			TestName:                "quality signal test two",
+			TestSuite:               "suite-dev",
+			CanonicalEvidencePhrase: "ErrorCode: \"\",",
+			SearchQueryPhrase:       "empty error code",
+			SupportCount:            2,
+			PostGoodCommitCount:     0,
+			MemberSignatureIDs:      []string{"sig-suspicious-2"},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      "https://prow.example/run/suspicious-2",
+					OccurredAt:  "2026-03-06T12:00:00Z",
+					SignatureID: "sig-suspicious-2",
+					PRNumber:    4202,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed test clusters: %v", err)
+	}
+
+	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment: "dev",
+			RowID:       "row-suspicious-1",
+			RunURL:      "https://prow.example/run/suspicious-1",
+			SignatureID: "sig-suspicious-1",
+			RawText:     "failed waiting for cluster create with context deadline exceeded",
+		},
+		{
+			Environment: "dev",
+			RowID:       "row-suspicious-2",
+			RunURL:      "https://prow.example/run/suspicious-2",
+			SignatureID: "sig-suspicious-2",
+			RawText:     "provider response contained empty ErrorCode field",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	if err := store.UpsertReviewQueue(ctx, []semanticcontracts.ReviewItemRecord{
+		{
+			SchemaVersion:          semanticcontracts.SchemaVersionV1,
+			Environment:            "dev",
+			ReviewItemID:           "review-1",
+			Phase:                  "phase1",
+			Reason:                 "low_confidence_evidence",
+			SourcePhase1ClusterIDs: []string{"cluster-suspicious-1"},
+		},
+	}); err != nil {
+		t.Fatalf("seed review queue: %v", err)
+	}
+
+	outputDir := t.TempDir()
+	opts := DefaultOptions()
+	opts.OutputPath = filepath.Join(outputDir, "semantic-quality.html")
+	opts.Format = reportFormatHTML
+	opts.QualityExportPath = filepath.Join(outputDir, "flagged-signatures.ndjson")
+	opts.RecentRuns = 2
+	opts.MinRuns = 0
+
+	if err := Generate(ctx, store, opts); err != nil {
+		t.Fatalf("generate html quality report: %v", err)
+	}
+
+	reportBytes, err := os.ReadFile(opts.OutputPath)
+	if err != nil {
+		t.Fatalf("read html report: %v", err)
+	}
+	report := string(reportBytes)
+	requiredReportSnippets := []string{
+		"CI Semantic Quality Report",
+		"Suspicious Signatures",
+		"Error Spread (last 7 days)",
+		"filter-env",
+		"Show 1 full errors",
+		"&lt;context.deadlineExceededError&gt;{},",
+		"context type stub leaked",
+		"contains empty ErrorCode",
+	}
+	for _, snippet := range requiredReportSnippets {
+		if !strings.Contains(report, snippet) {
+			t.Fatalf("expected html quality report to contain %q", snippet)
+		}
+	}
+
+	exportBytes, err := os.ReadFile(opts.QualityExportPath)
+	if err != nil {
+		t.Fatalf("read quality export: %v", err)
+	}
+	exportText := string(exportBytes)
+	requiredExportSnippets := []string{
+		"cluster-suspicious-1",
+		"cluster-suspicious-2",
+		"quality_issue_codes",
+		"context_type_stub",
+		"empty_error_code",
+	}
+	for _, snippet := range requiredExportSnippets {
+		if !strings.Contains(exportText, snippet) {
+			t.Fatalf("expected quality export to contain %q", snippet)
+		}
+	}
+}
+
+func TestBuildQualitySignatureRowsIgnoreCancellationReviewNoise(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		Environment:             "prod",
+		Phase1ClusterID:         "cluster-cancel",
+		Lane:                    "e2e",
+		JobName:                 "periodic-prod-e2e-parallel",
+		TestName:                "cluster cancellation test",
+		TestSuite:               "prod/parallel",
+		CanonicalEvidencePhrase: "Interrupted by User",
+		SupportCount:            3,
+		References: []reference{
+			{
+				RunURL:      "https://prow.example/run/cancel-1",
+				OccurredAt:  "2026-03-07T12:00:00Z",
+				SignatureID: "sig-cancel-1",
+			},
+		},
+		MemberSignatureIDs: []string{"sig-cancel-1"},
+	}
+	reviewIndex := buildReviewSignalIndex([]reviewItem{
+		{
+			Reason:                 "insufficient_inner_error",
+			SourcePhase1ClusterIDs: []string{"cluster-cancel"},
+		},
+		{
+			Reason:             "low_confidence_evidence",
+			MemberSignatureIDs: []string{"sig-cancel-1"},
+		},
+	})
+
+	rows := buildQualitySignatureRows(
+		[]testCluster{cluster},
+		map[testKey]testMetadata{},
+		map[testKeyNoSuite]testMetadata{},
+		map[referenceKey]string{
+			{
+				RunURL:      "https://prow.example/run/cancel-1",
+				SignatureID: "sig-cancel-1",
+			}: "job timeout cancellation",
+		},
+		reviewIndex,
+		time.Date(2026, 3, 7, 16, 30, 0, 0, time.UTC),
+		0,
+		4,
+		0,
+	)
+	if len(rows) != 1 {
+		t.Fatalf("expected one quality row, got %d", len(rows))
+	}
+	if len(rows[0].ReviewReasons) != 0 {
+		t.Fatalf("expected cancellation review noise to be filtered, got %v", rows[0].ReviewReasons)
+	}
+	if rows[0].QualityScore != 0 {
+		t.Fatalf("expected cancellation row score=0, got %d", rows[0].QualityScore)
+	}
+	if rows[0].isFlagged() {
+		t.Fatalf("expected cancellation row to not be flagged")
+	}
+}
