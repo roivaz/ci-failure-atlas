@@ -72,7 +72,10 @@ func NewReportCommand() (*cobra.Command, error) {
 	if err := ndjsonoptions.BindNDJSONOptions(summaryNDJSONOpts, summaryCmd); err != nil {
 		return nil, fmt.Errorf("bind NDJSON options for report summary: %w", err)
 	}
-	summaryCmd.Flags().StringVar(&summaryOpts.OutputPath, "output", summaryOpts.OutputPath, "path to output markdown summary")
+	summaryCmd.Flags().StringVar(&summaryOpts.OutputPath, "output", summaryOpts.OutputPath, "path to output report")
+	summaryCmd.Flags().StringVar(&summaryOpts.Format, "format", summaryOpts.Format, "output format: markdown|html")
+	summaryCmd.Flags().StringVar(&summaryOpts.WindowStart, "workflow.window.start", summaryOpts.WindowStart, "inclusive start of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
+	summaryCmd.Flags().StringVar(&summaryOpts.WindowEnd, "workflow.window.end", summaryOpts.WindowEnd, "exclusive end of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
 	summaryCmd.Flags().IntVar(&summaryOpts.Top, "top", summaryOpts.Top, "number of top rows to include in sections")
 	summaryCmd.Flags().Float64Var(&summaryOpts.MinPercent, "min-percent", summaryOpts.MinPercent, "minimum percent threshold for including rows")
 	summaryCmd.Flags().StringSliceVar(&summaryOpts.Environments, "source.envs", summaryOpts.Environments, "environments to include (e.g. dev,int,stg,prod)")
@@ -123,6 +126,8 @@ func NewReportCommand() (*cobra.Command, error) {
 	testSummaryCmd.Flags().StringVar(&testSummaryOpts.OutputPath, "output", testSummaryOpts.OutputPath, "path to output report")
 	testSummaryCmd.Flags().StringVar(&testSummaryOpts.Format, "format", testSummaryOpts.Format, "output format: markdown|html")
 	testSummaryCmd.Flags().StringVar(&testSummaryOpts.QualityExportPath, "quality-export", testSummaryOpts.QualityExportPath, "optional path to write flagged semantic signatures as NDJSON")
+	testSummaryCmd.Flags().StringVar(&testSummaryOpts.WindowStart, "workflow.window.start", testSummaryOpts.WindowStart, "inclusive start of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
+	testSummaryCmd.Flags().StringVar(&testSummaryOpts.WindowEnd, "workflow.window.end", testSummaryOpts.WindowEnd, "exclusive end of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.TopTests, "top", testSummaryOpts.TopTests, "max number of tests to render (0 = all)")
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.RecentRuns, "recent", testSummaryOpts.RecentRuns, "recent failing runs to render per signature")
 	testSummaryCmd.Flags().IntVar(&testSummaryOpts.MinRuns, "min-runs", testSummaryOpts.MinRuns, "minimum runs threshold for including a test")

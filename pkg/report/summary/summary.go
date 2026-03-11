@@ -21,15 +21,25 @@ type Options struct {
 	TestPath           string
 	ReviewPath         string
 	OutputPath         string
+	Format             string
+	WindowStart        string
+	WindowEnd          string
 	Top                int
 	MinPercent         float64
 	Environments       []string
 	SplitByEnvironment bool
 }
 
+const (
+	reportFormatMarkdown          = "markdown"
+	reportFormatHTML              = "html"
+	summaryFullErrorExamplesLimit = 3
+)
+
 func DefaultOptions() Options {
 	return Options{
 		OutputPath:         "data/reports/triage-summary.md",
+		Format:             reportFormatMarkdown,
 		Top:                10,
 		MinPercent:         1.0,
 		SplitByEnvironment: false,
@@ -52,6 +62,7 @@ type contributingTest struct {
 }
 
 type globalCluster struct {
+	Environment             string             `json:"environment"`
 	SchemaVersion           string             `json:"schema_version"`
 	Phase2ClusterID         string             `json:"phase2_cluster_id"`
 	CanonicalEvidencePhrase string             `json:"canonical_evidence_phrase"`
@@ -64,6 +75,7 @@ type globalCluster struct {
 	MemberPhase1ClusterIDs  []string           `json:"member_phase1_cluster_ids"`
 	MemberSignatureIDs      []string           `json:"member_signature_ids"`
 	References              []reference        `json:"references"`
+	FullErrorSamples        []string           `json:"full_error_samples,omitempty"`
 }
 
 type testCluster struct {
@@ -110,22 +122,40 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	if err != nil {
 		return fmt.Errorf("list global clusters: %w", err)
 	}
+	reportGlobalRows := toReportGlobalClusters(globalRows)
 	testRows, err := store.ListTestClusters(ctx)
 	if err != nil {
 		return fmt.Errorf("list test clusters: %w", err)
 	}
+	reportTestRows := toReportTestClusters(testRows)
 	reviewRows, err := store.ListReviewQueue(ctx)
 	if err != nil {
 		return fmt.Errorf("list review queue: %w", err)
 	}
+	reportReviewRows := toReportReviewItems(reviewRows)
 
 	report := buildMarkdown(
-		toReportGlobalClusters(globalRows),
-		toReportTestClusters(testRows),
-		toReportReviewItems(reviewRows),
+		reportGlobalRows,
+		reportTestRows,
+		reportReviewRows,
 		validated.Top,
 		validated.MinPercent,
 	)
+	if validated.Format == reportFormatHTML {
+		htmlGlobalRows, htmlRowsErr := attachGlobalFullErrorSamples(ctx, store, reportGlobalRows, summaryFullErrorExamplesLimit)
+		if htmlRowsErr != nil {
+			return fmt.Errorf("attach global full-error samples: %w", htmlRowsErr)
+		}
+		report = buildGlobalTriageHTML(
+			htmlGlobalRows,
+			validated.Top,
+			validated.MinPercent,
+			time.Now().UTC(),
+			validated.Environments,
+			validated.WindowStart,
+			validated.WindowEnd,
+		)
+	}
 	if validated.SplitByEnvironment {
 		targetEnvs := resolveSummaryTargetEnvironments(validated.Environments, globalRows, testRows, reviewRows)
 		if len(targetEnvs) == 0 {
@@ -135,20 +165,37 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			filteredGlobalRows := filterGlobalClustersByEnvironment(globalRows, environment)
 			filteredTestRows := filterTestClustersByEnvironment(testRows, environment)
 			filteredReviewRows := filterReviewItemsByEnvironment(reviewRows, environment)
+			reportFilteredGlobalRows := toReportGlobalClusters(filteredGlobalRows)
 			report := buildMarkdown(
-				toReportGlobalClusters(filteredGlobalRows),
+				reportFilteredGlobalRows,
 				toReportTestClusters(filteredTestRows),
 				toReportReviewItems(filteredReviewRows),
 				validated.Top,
 				validated.MinPercent,
 			)
+			if validated.Format == reportFormatHTML {
+				htmlGlobalRows, htmlRowsErr := attachGlobalFullErrorSamples(ctx, store, reportFilteredGlobalRows, summaryFullErrorExamplesLimit)
+				if htmlRowsErr != nil {
+					return fmt.Errorf("attach global full-error samples for env=%q: %w", environment, htmlRowsErr)
+				}
+				report = buildGlobalTriageHTML(
+					htmlGlobalRows,
+					validated.Top,
+					validated.MinPercent,
+					time.Now().UTC(),
+					[]string{environment},
+					validated.WindowStart,
+					validated.WindowEnd,
+				)
+			}
 			outputPath := outputPathForEnvironment(validated.OutputPath, environment)
 			if err := writeSummary(outputPath, report); err != nil {
 				return err
 			}
 			logger.Info(
-				"Wrote triage summary markdown.",
+				"Wrote triage summary report.",
 				"output", outputPath,
+				"format", validated.Format,
 				"environment", environment,
 				"globalClusters", len(filteredGlobalRows),
 				"testClusters", len(filteredTestRows),
@@ -170,20 +217,37 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		filteredGlobalRows = filterGlobalClustersByEnvironmentSet(globalRows, envSet)
 		filteredTestRows = filterTestClustersByEnvironmentSet(testRows, envSet)
 		filteredReviewRows = filterReviewItemsByEnvironmentSet(reviewRows, envSet)
+		reportFilteredGlobalRows := toReportGlobalClusters(filteredGlobalRows)
 		report = buildMarkdown(
-			toReportGlobalClusters(filteredGlobalRows),
+			reportFilteredGlobalRows,
 			toReportTestClusters(filteredTestRows),
 			toReportReviewItems(filteredReviewRows),
 			validated.Top,
 			validated.MinPercent,
 		)
+		if validated.Format == reportFormatHTML {
+			htmlGlobalRows, htmlRowsErr := attachGlobalFullErrorSamples(ctx, store, reportFilteredGlobalRows, summaryFullErrorExamplesLimit)
+			if htmlRowsErr != nil {
+				return fmt.Errorf("attach global full-error samples for selected environments: %w", htmlRowsErr)
+			}
+			report = buildGlobalTriageHTML(
+				htmlGlobalRows,
+				validated.Top,
+				validated.MinPercent,
+				time.Now().UTC(),
+				validated.Environments,
+				validated.WindowStart,
+				validated.WindowEnd,
+			)
+		}
 	}
 	if err := writeSummary(validated.OutputPath, report); err != nil {
 		return err
 	}
 	logger.Info(
-		"Wrote triage summary markdown.",
+		"Wrote triage summary report.",
 		"output", validated.OutputPath,
+		"format", validated.Format,
 		"globalClusters", len(filteredGlobalRows),
 		"testClusters", len(filteredTestRows),
 		"reviewItems", len(filteredReviewRows),
@@ -197,12 +261,26 @@ func validateOptions(opts Options) (Options, error) {
 	if strings.TrimSpace(opts.OutputPath) == "" {
 		return Options{}, errors.New("missing --output path")
 	}
+	switch strings.ToLower(strings.TrimSpace(opts.Format)) {
+	case "", reportFormatMarkdown:
+		opts.Format = reportFormatMarkdown
+	case reportFormatHTML:
+		opts.Format = reportFormatHTML
+	default:
+		return Options{}, fmt.Errorf("invalid --format %q (expected markdown or html)", strings.TrimSpace(opts.Format))
+	}
 	if opts.Top <= 0 {
 		return Options{}, errors.New("--top must be > 0")
 	}
 	if opts.MinPercent < 0 {
 		return Options{}, errors.New("--min-percent must be >= 0")
 	}
+	windowStart, windowEnd, err := normalizeReportWindow(opts.WindowStart, opts.WindowEnd)
+	if err != nil {
+		return Options{}, err
+	}
+	opts.WindowStart = windowStart
+	opts.WindowEnd = windowEnd
 	opts.Environments = normalizeReportEnvironments(opts.Environments)
 	return opts, nil
 }
@@ -212,7 +290,7 @@ func writeSummary(outputPath string, report string) error {
 		return fmt.Errorf("create summary output directory: %w", err)
 	}
 	if err := os.WriteFile(outputPath, []byte(report), 0o644); err != nil {
-		return fmt.Errorf("write summary markdown: %w", err)
+		return fmt.Errorf("write summary report: %w", err)
 	}
 	return nil
 }
@@ -366,6 +444,7 @@ func toReportGlobalClusters(rows []semanticcontracts.GlobalClusterRecord) []glob
 	out := make([]globalCluster, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, globalCluster{
+			Environment:             normalizeReportEnvironment(row.Environment),
 			SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
 			Phase2ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
 			CanonicalEvidencePhrase: strings.TrimSpace(row.CanonicalEvidencePhrase),
@@ -816,4 +895,145 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func attachGlobalFullErrorSamples(
+	ctx context.Context,
+	store storecontracts.Store,
+	clusters []globalCluster,
+	limit int,
+) ([]globalCluster, error) {
+	if len(clusters) == 0 || limit <= 0 {
+		return append([]globalCluster(nil), clusters...), nil
+	}
+	out := append([]globalCluster(nil), clusters...)
+	runFailureCache := map[string][]storecontracts.RawFailureRecord{}
+	for index := range out {
+		cluster := out[index]
+		signatureIDs := map[string]struct{}{}
+		for _, signatureID := range cluster.MemberSignatureIDs {
+			trimmed := strings.TrimSpace(signatureID)
+			if trimmed == "" {
+				continue
+			}
+			signatureIDs[trimmed] = struct{}{}
+		}
+		for _, ref := range cluster.References {
+			trimmed := strings.TrimSpace(ref.SignatureID)
+			if trimmed == "" {
+				continue
+			}
+			signatureIDs[trimmed] = struct{}{}
+		}
+
+		samples := make([]string, 0, limit)
+		orderedRefs := append([]reference(nil), cluster.References...)
+		sort.Slice(orderedRefs, func(i, j int) bool {
+			ti, okI := parseReferenceTimestamp(orderedRefs[i].OccurredAt)
+			tj, okJ := parseReferenceTimestamp(orderedRefs[j].OccurredAt)
+			switch {
+			case okI && okJ && !ti.Equal(tj):
+				return ti.After(tj)
+			case okI != okJ:
+				return okI
+			}
+			return strings.TrimSpace(orderedRefs[i].RunURL) < strings.TrimSpace(orderedRefs[j].RunURL)
+		})
+
+		environment := normalizeReportEnvironment(cluster.Environment)
+		for _, ref := range orderedRefs {
+			if len(samples) >= limit {
+				break
+			}
+			runURL := strings.TrimSpace(ref.RunURL)
+			if runURL == "" || environment == "" {
+				continue
+			}
+			cacheKey := environment + "|" + runURL
+			runRows, ok := runFailureCache[cacheKey]
+			if !ok {
+				loadedRows, err := store.ListRawFailuresByRun(ctx, environment, runURL)
+				if err != nil {
+					return nil, fmt.Errorf("list raw failures by run env=%q run=%q: %w", environment, runURL, err)
+				}
+				runRows = loadedRows
+				runFailureCache[cacheKey] = runRows
+			}
+			for _, runRow := range runRows {
+				if len(samples) >= limit {
+					break
+				}
+				signatureID := strings.TrimSpace(runRow.SignatureID)
+				if len(signatureIDs) > 0 {
+					if _, ok := signatureIDs[signatureID]; !ok {
+						continue
+					}
+				}
+				sample := strings.TrimSpace(runRow.RawText)
+				if sample == "" {
+					sample = strings.TrimSpace(runRow.NormalizedText)
+				}
+				samples = appendUniqueLimitedSample(samples, sample, limit)
+			}
+		}
+		out[index].FullErrorSamples = samples
+	}
+	return out, nil
+}
+
+func appendUniqueLimitedSample(existing []string, candidate string, limit int) []string {
+	trimmedCandidate := strings.TrimSpace(candidate)
+	if trimmedCandidate == "" {
+		return existing
+	}
+	for _, value := range existing {
+		if value == trimmedCandidate {
+			return existing
+		}
+	}
+	if limit > 0 && len(existing) >= limit {
+		return existing
+	}
+	return append(existing, trimmedCandidate)
+}
+
+func normalizeReportWindow(rawStart string, rawEnd string) (string, string, error) {
+	startRaw := strings.TrimSpace(rawStart)
+	endRaw := strings.TrimSpace(rawEnd)
+	if startRaw == "" && endRaw == "" {
+		return "", "", nil
+	}
+	if startRaw == "" || endRaw == "" {
+		return "", "", fmt.Errorf("both --workflow.window.start and --workflow.window.end must be set together")
+	}
+	start, err := parseReportWindowBoundary(startRaw, false)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid --workflow.window.start value: %w", err)
+	}
+	end, err := parseReportWindowBoundary(endRaw, true)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid --workflow.window.end value: %w", err)
+	}
+	if !start.Before(end) {
+		return "", "", fmt.Errorf("workflow window start must be before end (start=%s end=%s)", start.Format(time.RFC3339), end.Format(time.RFC3339))
+	}
+	return start.Format(time.RFC3339), end.Format(time.RFC3339), nil
+}
+
+func parseReportWindowBoundary(raw string, endBoundary bool) (time.Time, error) {
+	_ = endBoundary
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, fmt.Errorf("empty boundary")
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+		return parsed.UTC(), nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return parsed.UTC(), nil
+	}
+	if parsed, err := time.Parse("2006-01-02", trimmed); err == nil {
+		return parsed.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported time format %q (use RFC3339 or YYYY-MM-DD)", raw)
 }

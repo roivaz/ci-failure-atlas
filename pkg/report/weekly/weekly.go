@@ -28,12 +28,15 @@ const (
 	metricPostGoodFailedCIInfra   = "post_good_failed_ci_infra_run_count"
 	metricPostGoodFailedProvision = "post_good_failed_provision_run_count"
 
-	weeklyDrilldownTopLimit      = 5
-	weeklySippyDefaultPeriod     = "default"
-	weeklyTestSuccessTarget      = 95.0
-	weeklyTestSuccessMinRuns     = 10
-	weeklyPhrasePreviewMaxLength = 120
-	weeklySignatureExampleLimit  = 3
+	weeklyTestsBelowTargetTopLimit   = 5
+	weeklySignatureTopLimit          = 10
+	weeklySignatureMinSharePct       = 1.0
+	weeklySippyDefaultPeriod         = "default"
+	weeklyTestSuccessTarget          = 95.0
+	weeklyTestSuccessMinRuns         = 10
+	weeklyPhrasePreviewMaxLength     = 120
+	weeklySignatureExampleLimit      = 3
+	weeklySignatureFullErrorExamples = 3
 )
 
 var reportEnvironments = []string{"dev", "int", "stg", "prod"}
@@ -96,6 +99,8 @@ type semanticSnapshot struct {
 	PhraseSupportByEnv    map[string]map[string]int
 	PhrasePostGoodByEnv   map[string]map[string]int
 	PhraseLatestRunsByEnv map[string]map[string][]signatureRunExample
+	PhraseSignatureIDs    map[string]map[string]map[string]struct{}
+	PhraseFullErrorsByEnv map[string]map[string][]string
 }
 
 type belowTargetTest struct {
@@ -107,12 +112,13 @@ type belowTargetTest struct {
 }
 
 type topSignature struct {
-	Phrase          string
-	SupportCount    int
-	SupportShare    float64
-	PostGoodCount   int
-	SeenInOtherEnvs []string
-	LatestRuns      []signatureRunExample
+	Phrase           string
+	SupportCount     int
+	SupportShare     float64
+	PostGoodCount    int
+	SeenInOtherEnvs  []string
+	LatestRuns       []signatureRunExample
+	FullErrorSamples []string
 }
 
 type signatureRunExample struct {
@@ -163,6 +169,15 @@ func GenerateWithComparison(
 	if err != nil {
 		return fmt.Errorf("load current semantic snapshot: %w", err)
 	}
+	if err := loadSignatureFullErrorSamplesByEnvironment(
+		ctx,
+		store,
+		currentDates,
+		&currentSemantic,
+		weeklySignatureFullErrorExamples,
+	); err != nil {
+		return fmt.Errorf("load signature full-error samples: %w", err)
+	}
 	testsBelowTargetByEnv, err := loadBelowTargetTestsByEnvironment(
 		ctx,
 		store,
@@ -170,12 +185,12 @@ func GenerateWithComparison(
 		weeklySippyDefaultPeriod,
 		weeklyTestSuccessTarget,
 		weeklyTestSuccessMinRuns,
-		weeklyDrilldownTopLimit,
+		weeklyTestsBelowTargetTopLimit,
 	)
 	if err != nil {
 		return fmt.Errorf("load weekly tests below target: %w", err)
 	}
-	topSignaturesByEnv := rankTopSignaturesByEnvironment(currentSemantic, weeklyDrilldownTopLimit)
+	topSignaturesByEnv := rankTopSignaturesByEnvironment(currentSemantic, weeklySignatureTopLimit, weeklySignatureMinSharePct)
 	var previousSemantic semanticSnapshot
 	if previousSemanticStore != nil {
 		previousSemantic, err = loadSemanticSnapshot(ctx, previousSemanticStore)
@@ -241,6 +256,8 @@ func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (sema
 		PhraseSupportByEnv:    map[string]map[string]int{},
 		PhrasePostGoodByEnv:   map[string]map[string]int{},
 		PhraseLatestRunsByEnv: map[string]map[string][]signatureRunExample{},
+		PhraseSignatureIDs:    map[string]map[string]map[string]struct{}{},
+		PhraseFullErrorsByEnv: map[string]map[string][]string{},
 	}
 
 	globalClusters, err := store.ListGlobalClusters(ctx)
@@ -293,6 +310,31 @@ func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (sema
 			runExamplesFromGlobalCluster(row),
 			weeklySignatureExampleLimit,
 		)
+
+		if _, ok := out.PhraseSignatureIDs[environment]; !ok {
+			out.PhraseSignatureIDs[environment] = map[string]map[string]struct{}{}
+		}
+		if _, ok := out.PhraseSignatureIDs[environment][phrase]; !ok {
+			out.PhraseSignatureIDs[environment][phrase] = map[string]struct{}{}
+		}
+		signatureIDs := out.PhraseSignatureIDs[environment][phrase]
+		for _, signatureID := range row.MemberSignatureIDs {
+			trimmedSignatureID := strings.TrimSpace(signatureID)
+			if trimmedSignatureID == "" {
+				continue
+			}
+			signatureIDs[trimmedSignatureID] = struct{}{}
+		}
+		if sourceSignatureID := strings.TrimSpace(row.SearchQuerySourceSignatureID); sourceSignatureID != "" {
+			signatureIDs[sourceSignatureID] = struct{}{}
+		}
+		for _, ref := range row.References {
+			signatureID := strings.TrimSpace(ref.SignatureID)
+			if signatureID == "" {
+				continue
+			}
+			signatureIDs[signatureID] = struct{}{}
+		}
 	}
 
 	testClusters, err := store.ListTestClusters(ctx)
@@ -467,6 +509,9 @@ func buildHTML(
 	b.WriteString("    .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0 12px; }\n")
 	b.WriteString("    .detail-table th, .detail-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }\n")
 	b.WriteString("    .detail-table th { background: #f9fafb; color: #374151; font-weight: 700; }\n")
+	b.WriteString("    .detail-table details { margin: 0; }\n")
+	b.WriteString("    .detail-table summary { cursor: pointer; color: #1d4ed8; }\n")
+	b.WriteString("    .detail-table pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0 0; }\n")
 	b.WriteString("    body[data-chart-mode=\"count\"] .mode-percent { display: none; }\n")
 	b.WriteString("    body[data-chart-mode=\"percent\"] .mode-count { display: none; }\n")
 	b.WriteString("  </style>\n")
@@ -713,7 +758,7 @@ func buildHTML(
 		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(testsPanelID), html.EscapeString(environment)))
 		b.WriteString(fmt.Sprintf("      <p class=\"panel-note\">Source: Sippy test metadata (period: %s). Top %d tests below %.2f%% success; minimum %d runs. If the selected week has no metadata rows, this view falls back to the latest available metadata date.</p>\n",
 			html.EscapeString(weeklySippyDefaultPeriod),
-			weeklyDrilldownTopLimit,
+			weeklyTestsBelowTargetTopLimit,
 			weeklyTestSuccessTarget,
 			weeklyTestSuccessMinRuns,
 		))
@@ -743,18 +788,30 @@ func buildHTML(
 		b.WriteString("    </div>\n")
 
 		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(signaturesPanelID), html.EscapeString(environment)))
-		b.WriteString(fmt.Sprintf("      <p class=\"panel-note\">Top %d semantic signatures by support in this window; includes links to the latest Prow jobs where each pattern appears.</p>\n", weeklyDrilldownTopLimit))
+		b.WriteString(fmt.Sprintf("      <p class=\"panel-note\">Top %d semantic signatures by support in this window (minimum %.2f%% share); includes links to the latest Prow jobs where each pattern appears and embedded full failure examples.</p>\n", weeklySignatureTopLimit, weeklySignatureMinSharePct))
 		signatures := topSignaturesByEnv[environment]
 		if len(signatures) == 0 {
 			b.WriteString("      <p class=\"panel-empty\">No semantic signatures available for this environment in the selected semantic snapshot.</p>\n")
 		} else {
 			b.WriteString("      <table class=\"detail-table\">\n")
-			b.WriteString("        <thead><tr><th>Signature</th><th>Support</th><th>Share</th><th>Post-good support</th><th>Also seen in envs</th><th>Latest job examples</th></tr></thead>\n")
+			b.WriteString("        <thead><tr><th>Signature</th><th>Support</th><th>Share</th><th>Post-good support</th><th>Also seen in envs</th><th>Full failure examples</th><th>Latest job examples</th></tr></thead>\n")
 			b.WriteString("        <tbody>\n")
 			for _, item := range signatures {
 				otherEnvironments := "none"
 				if len(item.SeenInOtherEnvs) > 0 {
 					otherEnvironments = strings.Join(item.SeenInOtherEnvs, ", ")
+				}
+				fullFailuresCell := "n/a"
+				if len(item.FullErrorSamples) > 0 {
+					var fullFailures strings.Builder
+					fullFailures.WriteString(fmt.Sprintf("<details><summary>Show %d full failures</summary>", len(item.FullErrorSamples)))
+					for _, sample := range item.FullErrorSamples {
+						fullFailures.WriteString("<pre>")
+						fullFailures.WriteString(html.EscapeString(sample))
+						fullFailures.WriteString("</pre>")
+					}
+					fullFailures.WriteString("</details>")
+					fullFailuresCell = fullFailures.String()
 				}
 				latestExamplesCell := "n/a"
 				if len(item.LatestRuns) > 0 {
@@ -784,6 +841,7 @@ func buildHTML(
 				b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", item.SupportShare))
 				b.WriteString(fmt.Sprintf("<td>%d</td>", item.PostGoodCount))
 				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(otherEnvironments)))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", fullFailuresCell))
 				b.WriteString(fmt.Sprintf("<td>%s</td>", latestExamplesCell))
 				b.WriteString("</tr>\n")
 			}
@@ -1024,7 +1082,7 @@ func preferBelowTargetTest(candidate belowTargetTest, existing belowTargetTest) 
 	return candidate.TestName < existing.TestName
 }
 
-func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int) map[string][]topSignature {
+func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {
 	out := make(map[string][]topSignature, len(reportEnvironments))
 	for _, environment := range reportEnvironments {
 		supportByPhrase := snapshot.PhraseSupportByEnv[environment]
@@ -1055,13 +1113,17 @@ func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int) map[st
 			if totalSupport > 0 {
 				share = float64(support) * 100.0 / float64(totalSupport)
 			}
+			if minShare > 0 && share < minShare {
+				continue
+			}
 			rows = append(rows, topSignature{
-				Phrase:          strings.TrimSpace(phrase),
-				SupportCount:    support,
-				SupportShare:    share,
-				PostGoodCount:   postGoodByPhrase[phrase],
-				SeenInOtherEnvs: otherEnvironments,
-				LatestRuns:      append([]signatureRunExample(nil), snapshot.PhraseLatestRunsByEnv[environment][phrase]...),
+				Phrase:           strings.TrimSpace(phrase),
+				SupportCount:     support,
+				SupportShare:     share,
+				PostGoodCount:    postGoodByPhrase[phrase],
+				SeenInOtherEnvs:  otherEnvironments,
+				LatestRuns:       append([]signatureRunExample(nil), snapshot.PhraseLatestRunsByEnv[environment][phrase]...),
+				FullErrorSamples: append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
 			})
 		}
 		sort.Slice(rows, func(i, j int) bool {
@@ -1079,6 +1141,90 @@ func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int) map[st
 		out[environment] = rows
 	}
 	return out
+}
+
+func loadSignatureFullErrorSamplesByEnvironment(
+	ctx context.Context,
+	store storecontracts.Store,
+	dates []string,
+	snapshot *semanticSnapshot,
+	limit int,
+) error {
+	if snapshot == nil || limit <= 0 || len(dates) == 0 {
+		return nil
+	}
+	if snapshot.PhraseFullErrorsByEnv == nil {
+		snapshot.PhraseFullErrorsByEnv = map[string]map[string][]string{}
+	}
+	for environment, signatureIDsByPhrase := range snapshot.PhraseSignatureIDs {
+		if len(signatureIDsByPhrase) == 0 {
+			continue
+		}
+		signatureToPhrases := map[string][]string{}
+		for phrase, signatureIDs := range signatureIDsByPhrase {
+			for signatureID := range signatureIDs {
+				trimmedSignatureID := strings.TrimSpace(signatureID)
+				if trimmedSignatureID == "" {
+					continue
+				}
+				signatureToPhrases[trimmedSignatureID] = append(signatureToPhrases[trimmedSignatureID], phrase)
+			}
+		}
+		if len(signatureToPhrases) == 0 {
+			continue
+		}
+		if _, ok := snapshot.PhraseFullErrorsByEnv[environment]; !ok {
+			snapshot.PhraseFullErrorsByEnv[environment] = map[string][]string{}
+		}
+		for dateIndex := len(dates) - 1; dateIndex >= 0; dateIndex-- {
+			date := strings.TrimSpace(dates[dateIndex])
+			if date == "" {
+				continue
+			}
+			rows, err := store.ListRawFailuresByDate(ctx, environment, date)
+			if err != nil {
+				return fmt.Errorf("list raw failures for env=%q date=%q: %w", environment, date, err)
+			}
+			for _, row := range rows {
+				signatureID := strings.TrimSpace(row.SignatureID)
+				if signatureID == "" {
+					continue
+				}
+				phrases := signatureToPhrases[signatureID]
+				if len(phrases) == 0 {
+					continue
+				}
+				sample := strings.TrimSpace(row.RawText)
+				if sample == "" {
+					sample = strings.TrimSpace(row.NormalizedText)
+				}
+				if sample == "" {
+					continue
+				}
+				for _, phrase := range phrases {
+					existing := snapshot.PhraseFullErrorsByEnv[environment][phrase]
+					snapshot.PhraseFullErrorsByEnv[environment][phrase] = appendUniqueLimitedSample(existing, sample, limit)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func appendUniqueLimitedSample(existing []string, candidate string, limit int) []string {
+	trimmedCandidate := strings.TrimSpace(candidate)
+	if trimmedCandidate == "" {
+		return existing
+	}
+	for _, value := range existing {
+		if value == trimmedCandidate {
+			return existing
+		}
+	}
+	if limit > 0 && len(existing) >= limit {
+		return existing
+	}
+	return append(existing, trimmedCandidate)
 }
 
 func runExamplesFromGlobalCluster(row semanticcontracts.GlobalClusterRecord) []signatureRunExample {

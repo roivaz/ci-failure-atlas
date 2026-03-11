@@ -23,6 +23,8 @@ type Options struct {
 	OutputPath         string
 	Format             string
 	QualityExportPath  string
+	WindowStart        string
+	WindowEnd          string
 	TopTests           int
 	RecentRuns         int
 	MinRuns            int
@@ -215,6 +217,8 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 					"store:test_clusters",
 					"store:raw_failures",
 					generatedAt,
+					validated.WindowStart,
+					validated.WindowEnd,
 				)
 			}
 			allFlaggedExports = append(allFlaggedExports, toQualityFlaggedSignatureExports(qualityRows)...)
@@ -300,6 +304,8 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			"store:test_clusters",
 			"store:raw_failures",
 			generatedAt,
+			validated.WindowStart,
+			validated.WindowEnd,
 		)
 	}
 	if err := writeTestSummary(validated.OutputPath, report); err != nil {
@@ -341,6 +347,8 @@ func parse(args []string) (Options, error) {
 	fs.StringVar(&opts.OutputPath, "output", opts.OutputPath, "path to output report")
 	fs.StringVar(&opts.Format, "format", opts.Format, "output format: markdown|html")
 	fs.StringVar(&opts.QualityExportPath, "quality-export", opts.QualityExportPath, "optional path to write flagged semantic signatures as NDJSON")
+	fs.StringVar(&opts.WindowStart, "workflow.window.start", opts.WindowStart, "inclusive start of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
+	fs.StringVar(&opts.WindowEnd, "workflow.window.end", opts.WindowEnd, "exclusive end of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
 	fs.IntVar(&opts.TopTests, "top", opts.TopTests, "max number of tests to render (0 renders all)")
 	fs.IntVar(&opts.RecentRuns, "recent", opts.RecentRuns, "recent failing runs to render per signature")
 	fs.IntVar(&opts.MinRuns, "min-runs", opts.MinRuns, "minimum current test runs required to include a test in report (from sippy daily metadata when available; 0 disables filter)")
@@ -377,9 +385,56 @@ func validateOptions(opts Options) (Options, error) {
 	default:
 		return Options{}, fmt.Errorf("invalid --format %q (expected markdown or html)", strings.TrimSpace(opts.Format))
 	}
+	windowStart, windowEnd, err := normalizeReportWindow(opts.WindowStart, opts.WindowEnd)
+	if err != nil {
+		return Options{}, err
+	}
+	opts.WindowStart = windowStart
+	opts.WindowEnd = windowEnd
 	opts.QualityExportPath = strings.TrimSpace(opts.QualityExportPath)
 	opts.Environments = normalizeReportEnvironments(opts.Environments)
 	return opts, nil
+}
+
+func normalizeReportWindow(rawStart string, rawEnd string) (string, string, error) {
+	startRaw := strings.TrimSpace(rawStart)
+	endRaw := strings.TrimSpace(rawEnd)
+	if startRaw == "" && endRaw == "" {
+		return "", "", nil
+	}
+	if startRaw == "" || endRaw == "" {
+		return "", "", fmt.Errorf("both --workflow.window.start and --workflow.window.end must be set together")
+	}
+	start, err := parseReportWindowBoundary(startRaw, false)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid --workflow.window.start value: %w", err)
+	}
+	end, err := parseReportWindowBoundary(endRaw, true)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid --workflow.window.end value: %w", err)
+	}
+	if !start.Before(end) {
+		return "", "", fmt.Errorf("workflow window start must be before end (start=%s end=%s)", start.Format(time.RFC3339), end.Format(time.RFC3339))
+	}
+	return start.Format(time.RFC3339), end.Format(time.RFC3339), nil
+}
+
+func parseReportWindowBoundary(raw string, endBoundary bool) (time.Time, error) {
+	_ = endBoundary
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, fmt.Errorf("empty boundary")
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+		return parsed.UTC(), nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return parsed.UTC(), nil
+	}
+	if parsed, err := time.Parse("2006-01-02", trimmed); err == nil {
+		return parsed.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported time format %q (use RFC3339 or YYYY-MM-DD)", raw)
 }
 
 func toReportTestClusters(rows []semanticcontracts.TestClusterRecord) []testCluster {

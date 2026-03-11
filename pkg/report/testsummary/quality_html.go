@@ -37,12 +37,6 @@ type qualitySignatureRow struct {
 	SearchIndex         string
 }
 
-type qualityTrendDay struct {
-	Date    string
-	Total   int
-	Flagged int
-}
-
 type qualityFlaggedSignatureExport struct {
 	Environment             string             `json:"environment"`
 	Lane                    string             `json:"lane"`
@@ -256,8 +250,16 @@ func prepareSortedTestAggregates(
 	return aggregates
 }
 
-func buildHTML(rows []qualitySignatureRow, testPath string, rawPath string, generatedAt time.Time) string {
+func buildHTML(
+	rows []qualitySignatureRow,
+	testPath string,
+	rawPath string,
+	generatedAt time.Time,
+	configuredWindowStart string,
+	configuredWindowEnd string,
+) string {
 	var b strings.Builder
+	windowStart, windowEnd, hasWindow := resolvedQualityWindow(rows, configuredWindowStart, configuredWindowEnd)
 	b.WriteString("<!doctype html>\n")
 	b.WriteString("<html lang=\"en\">\n")
 	b.WriteString("<head>\n")
@@ -291,14 +293,20 @@ func buildHTML(rows []qualitySignatureRow, testPath string, rawPath string, gene
 	b.WriteString("    details { margin: 2px 0; }\n")
 	b.WriteString("    details summary { cursor: pointer; color: #1d4ed8; }\n")
 	b.WriteString("    pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; }\n")
-	b.WriteString("    .trend-table .bar { width: 180px; height: 8px; border-radius: 999px; background: #e5e7eb; position: relative; overflow: hidden; }\n")
-	b.WriteString("    .trend-table .bar-total { position: absolute; left: 0; top: 0; bottom: 0; background: #94a3b8; }\n")
-	b.WriteString("    .trend-table .bar-flagged { position: absolute; left: 0; top: 0; bottom: 0; background: #ef4444; }\n")
 	b.WriteString("    .muted { color: #6b7280; }\n")
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString("  <h1>CI Semantic Quality Report</h1>\n")
+	if hasWindow {
+		windowDays := inclusiveWindowDays(windowStart, windowEnd)
+		b.WriteString(fmt.Sprintf(
+			"  <p class=\"meta\">Window: <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
+			html.EscapeString(windowStart.Format("2006-01-02")),
+			html.EscapeString(windowEnd.Format("2006-01-02")),
+			windowDays,
+		))
+	}
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated: <strong>%s</strong></p>\n", html.EscapeString(generatedAt.Format(time.RFC3339))))
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Source semantic clusters: <code>%s</code></p>\n", html.EscapeString(strings.TrimSpace(testPath))))
 	if strings.TrimSpace(rawPath) != "" {
@@ -333,35 +341,6 @@ func buildHTML(rows []qualitySignatureRow, testPath string, rawPath string, gene
 	b.WriteString(qualityCardHTML("Distinct tests in scope", fmt.Sprintf("%d", len(uniqueTests))))
 	b.WriteString("  </div>\n")
 
-	trend := buildQualityTrend(rows, generatedAt, sparklineWindowDays)
-	maxTrend := 0
-	for _, day := range trend {
-		if day.Total > maxTrend {
-			maxTrend = day.Total
-		}
-	}
-	b.WriteString(fmt.Sprintf("  <h2>Error Spread (last %d days)</h2>\n", sparklineWindowDays))
-	b.WriteString("  <p class=\"muted\">Total signature occurrences and suspicious-signature occurrences by day.</p>\n")
-	b.WriteString("  <table class=\"quality-table trend-table\">\n")
-	b.WriteString("    <thead><tr><th>Date</th><th>Total occurrences</th><th>Suspicious occurrences</th><th>Visual</th></tr></thead>\n")
-	b.WriteString("    <tbody>\n")
-	for _, day := range trend {
-		totalWidth := 0.0
-		flaggedWidth := 0.0
-		if maxTrend > 0 {
-			totalWidth = (float64(day.Total) * 100.0) / float64(maxTrend)
-			flaggedWidth = (float64(day.Flagged) * 100.0) / float64(maxTrend)
-		}
-		b.WriteString("      <tr>")
-		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(day.Date)))
-		b.WriteString(fmt.Sprintf("<td>%d</td>", day.Total))
-		b.WriteString(fmt.Sprintf("<td>%d</td>", day.Flagged))
-		b.WriteString(fmt.Sprintf("<td><div class=\"bar\" title=\"total=%d suspicious=%d\"><span class=\"bar-total\" style=\"width: %.2f%%\"></span><span class=\"bar-flagged\" style=\"width: %.2f%%\"></span></div></td>", day.Total, day.Flagged, totalWidth, flaggedWidth))
-		b.WriteString("</tr>\n")
-	}
-	b.WriteString("    </tbody>\n")
-	b.WriteString("  </table>\n")
-
 	envOptions := sortedValuesFromRows(rows, func(row qualitySignatureRow) string {
 		return row.Environment
 	})
@@ -385,30 +364,16 @@ func buildHTML(rows []qualitySignatureRow, testPath string, rawPath string, gene
 	b.WriteString("    <label class=\"inline\"><input id=\"filter-flagged-only\" type=\"checkbox\" /> Suspicious only</label>\n")
 	b.WriteString("    <label class=\"inline\"><input id=\"filter-review-only\" type=\"checkbox\" /> Needs review only</label>\n")
 	b.WriteString("    <label>Search<input id=\"filter-search\" type=\"text\" placeholder=\"phrase, test, job, reason\" /></label>\n")
+	b.WriteString("    <label>Sort by<select id=\"sort-inspector\"><option value=\"default\">Default</option><option value=\"score\">Score</option><option value=\"env\">Env</option><option value=\"lane\">Lane</option><option value=\"support\">Support</option><option value=\"phrase\">Evidence phrase</option><option value=\"job_test\">Job/Test</option></select></label>\n")
 	b.WriteString("    <span class=\"results\" id=\"filter-count\"></span>\n")
 	b.WriteString("  </div>\n")
-
-	b.WriteString("  <h3>Suspicious Signatures</h3>\n")
-	b.WriteString("  <p class=\"muted\">Automatically flagged low-information or normalization-leak signatures. Use this section to drive semantic model/prompt improvements.</p>\n")
-	if len(flaggedRows) == 0 {
-		b.WriteString("  <p class=\"empty\">No suspicious signatures detected in the selected scope.</p>\n")
-	} else {
-		b.WriteString("  <table class=\"quality-table\" id=\"suspicious-table\">\n")
-		b.WriteString("    <thead><tr><th>Score</th><th>Env</th><th>Lane</th><th>Support</th><th>Why flagged</th><th>Evidence phrase</th><th>Example runs</th></tr></thead>\n")
-		b.WriteString("    <tbody>\n")
-		for _, row := range flaggedRows {
-			b.WriteString(signatureRowHTML(row, true))
-		}
-		b.WriteString("    </tbody>\n")
-		b.WriteString("  </table>\n")
-	}
 
 	b.WriteString("  <h3>All Signatures (Inspector)</h3>\n")
 	if len(rows) == 0 {
 		b.WriteString("  <p class=\"empty\">No signatures available for the selected scope.</p>\n")
 	} else {
 		b.WriteString("  <table class=\"quality-table\" id=\"inspector-table\">\n")
-		b.WriteString("    <thead><tr><th>Score</th><th>Env</th><th>Lane</th><th>Support</th><th>Post-good</th><th>Current success</th><th>Trend</th><th>Evidence phrase</th><th>Quality flags</th><th>Review flags</th><th>Job/Test</th><th>Full errors</th><th>Recent runs</th></tr></thead>\n")
+		b.WriteString("    <thead><tr><th>Score</th><th>Env</th><th>Lane</th><th>Support</th><th>Current success</th><th>Trend</th><th>Evidence phrase</th><th>Quality flags</th><th>Review flags</th><th>Job/Test</th><th>Full errors</th><th>Recent runs</th></tr></thead>\n")
 		b.WriteString("    <tbody>\n")
 		for _, row := range rows {
 			b.WriteString(signatureInspectorRowHTML(row))
@@ -425,8 +390,63 @@ func buildHTML(rows []qualitySignatureRow, testPath string, rawPath string, gene
 	b.WriteString("  var flaggedOnly = document.getElementById('filter-flagged-only');\n")
 	b.WriteString("  var reviewOnly = document.getElementById('filter-review-only');\n")
 	b.WriteString("  var searchInput = document.getElementById('filter-search');\n")
+	b.WriteString("  var sortSelect = document.getElementById('sort-inspector');\n")
 	b.WriteString("  var countEl = document.getElementById('filter-count');\n")
 	b.WriteString("  function parseSupport(value) { var v = parseInt(value || '0', 10); return isNaN(v) ? 0 : v; }\n")
+	b.WriteString("  function parseScore(value) { var v = parseInt(value || '0', 10); return isNaN(v) ? 0 : v; }\n")
+	b.WriteString("  function cmpString(a, b) { if (a === b) { return 0; } return a < b ? -1 : 1; }\n")
+	b.WriteString("  function compareDefault(a, b) {\n")
+	b.WriteString("    var scoreDiff = parseScore(b.getAttribute('data-score')) - parseScore(a.getAttribute('data-score'));\n")
+	b.WriteString("    if (scoreDiff !== 0) { return scoreDiff; }\n")
+	b.WriteString("    var supportDiff = parseSupport(b.getAttribute('data-support')) - parseSupport(a.getAttribute('data-support'));\n")
+	b.WriteString("    if (supportDiff !== 0) { return supportDiff; }\n")
+	b.WriteString("    var envDiff = cmpString(a.getAttribute('data-env') || '', b.getAttribute('data-env') || '');\n")
+	b.WriteString("    if (envDiff !== 0) { return envDiff; }\n")
+	b.WriteString("    var laneDiff = cmpString(a.getAttribute('data-lane') || '', b.getAttribute('data-lane') || '');\n")
+	b.WriteString("    if (laneDiff !== 0) { return laneDiff; }\n")
+	b.WriteString("    var jobDiff = cmpString(a.getAttribute('data-job') || '', b.getAttribute('data-job') || '');\n")
+	b.WriteString("    if (jobDiff !== 0) { return jobDiff; }\n")
+	b.WriteString("    var testDiff = cmpString(a.getAttribute('data-test') || '', b.getAttribute('data-test') || '');\n")
+	b.WriteString("    if (testDiff !== 0) { return testDiff; }\n")
+	b.WriteString("    return cmpString(a.getAttribute('data-phase1') || '', b.getAttribute('data-phase1') || '');\n")
+	b.WriteString("  }\n")
+	b.WriteString("  function compareInspectorRows(a, b) {\n")
+	b.WriteString("    var sortBy = sortSelect ? sortSelect.value : 'default';\n")
+	b.WriteString("    var diff = 0;\n")
+	b.WriteString("    switch (sortBy) {\n")
+	b.WriteString("      case 'score':\n")
+	b.WriteString("        diff = parseScore(b.getAttribute('data-score')) - parseScore(a.getAttribute('data-score'));\n")
+	b.WriteString("        break;\n")
+	b.WriteString("      case 'env':\n")
+	b.WriteString("        diff = cmpString(a.getAttribute('data-env') || '', b.getAttribute('data-env') || '');\n")
+	b.WriteString("        break;\n")
+	b.WriteString("      case 'lane':\n")
+	b.WriteString("        diff = cmpString(a.getAttribute('data-lane') || '', b.getAttribute('data-lane') || '');\n")
+	b.WriteString("        break;\n")
+	b.WriteString("      case 'support':\n")
+	b.WriteString("        diff = parseSupport(b.getAttribute('data-support')) - parseSupport(a.getAttribute('data-support'));\n")
+	b.WriteString("        break;\n")
+	b.WriteString("      case 'phrase':\n")
+	b.WriteString("        diff = cmpString(a.getAttribute('data-phrase') || '', b.getAttribute('data-phrase') || '');\n")
+	b.WriteString("        break;\n")
+	b.WriteString("      case 'job_test':\n")
+	b.WriteString("        diff = cmpString(a.getAttribute('data-jobtest') || '', b.getAttribute('data-jobtest') || '');\n")
+	b.WriteString("        break;\n")
+	b.WriteString("      default:\n")
+	b.WriteString("        break;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    if (diff !== 0) { return diff; }\n")
+	b.WriteString("    return compareDefault(a, b);\n")
+	b.WriteString("  }\n")
+	b.WriteString("  function sortInspectorRows() {\n")
+	b.WriteString("    var tbody = document.querySelector('#inspector-table tbody');\n")
+	b.WriteString("    if (!tbody) { return; }\n")
+	b.WriteString("    var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr.quality-row'));\n")
+	b.WriteString("    rows.sort(compareInspectorRows);\n")
+	b.WriteString("    for (var i = 0; i < rows.length; i++) {\n")
+	b.WriteString("      tbody.appendChild(rows[i]);\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
 	b.WriteString("  function rowMatches(row) {\n")
 	b.WriteString("    var env = envSelect ? envSelect.value : '';\n")
 	b.WriteString("    var lane = laneSelect ? laneSelect.value : '';\n")
@@ -446,8 +466,8 @@ func buildHTML(rows []qualitySignatureRow, testPath string, rawPath string, gene
 	b.WriteString("    return true;\n")
 	b.WriteString("  }\n")
 	b.WriteString("  function applyFilters() {\n")
+	b.WriteString("    sortInspectorRows();\n")
 	b.WriteString("    var inspectorRows = document.querySelectorAll('#inspector-table tbody tr.quality-row');\n")
-	b.WriteString("    var suspiciousRows = document.querySelectorAll('#suspicious-table tbody tr.quality-row');\n")
 	b.WriteString("    var visibleInspector = 0;\n")
 	b.WriteString("    for (var i = 0; i < inspectorRows.length; i++) {\n")
 	b.WriteString("      var row = inspectorRows[i];\n")
@@ -455,13 +475,9 @@ func buildHTML(rows []qualitySignatureRow, testPath string, rawPath string, gene
 	b.WriteString("      row.style.display = show ? '' : 'none';\n")
 	b.WriteString("      if (show) { visibleInspector++; }\n")
 	b.WriteString("    }\n")
-	b.WriteString("    for (var j = 0; j < suspiciousRows.length; j++) {\n")
-	b.WriteString("      var srow = suspiciousRows[j];\n")
-	b.WriteString("      srow.style.display = rowMatches(srow) ? '' : 'none';\n")
-	b.WriteString("    }\n")
 	b.WriteString("    if (countEl) { countEl.textContent = visibleInspector + ' signatures shown'; }\n")
 	b.WriteString("  }\n")
-	b.WriteString("  var controls = [envSelect, laneSelect, minSupportInput, flaggedOnly, reviewOnly, searchInput];\n")
+	b.WriteString("  var controls = [envSelect, laneSelect, minSupportInput, flaggedOnly, reviewOnly, searchInput, sortSelect];\n")
 	b.WriteString("  for (var k = 0; k < controls.length; k++) {\n")
 	b.WriteString("    var control = controls[k];\n")
 	b.WriteString("    if (!control) { continue; }\n")
@@ -474,6 +490,69 @@ func buildHTML(rows []qualitySignatureRow, testPath string, rawPath string, gene
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")
 	return b.String()
+}
+
+func observedQualityWindow(rows []qualitySignatureRow) (time.Time, time.Time, bool) {
+	var minTS time.Time
+	var maxTS time.Time
+	for _, row := range rows {
+		for _, ref := range row.References {
+			ts, ok := parseTimestamp(ref.OccurredAt)
+			if !ok {
+				continue
+			}
+			ts = ts.UTC()
+			if minTS.IsZero() || ts.Before(minTS) {
+				minTS = ts
+			}
+			if maxTS.IsZero() || ts.After(maxTS) {
+				maxTS = ts
+			}
+		}
+	}
+	if minTS.IsZero() || maxTS.IsZero() {
+		return time.Time{}, time.Time{}, false
+	}
+	return minTS, maxTS, true
+}
+
+func resolvedQualityWindow(rows []qualitySignatureRow, configuredStart string, configuredEnd string) (time.Time, time.Time, bool) {
+	if strings.TrimSpace(configuredStart) != "" && strings.TrimSpace(configuredEnd) != "" {
+		start, end, ok := configuredReportWindowDisplayBounds(configuredStart, configuredEnd)
+		if ok {
+			return start, end, true
+		}
+	}
+	return observedQualityWindow(rows)
+}
+
+func configuredReportWindowDisplayBounds(configuredStart string, configuredEnd string) (time.Time, time.Time, bool) {
+	start, err := time.Parse(time.RFC3339, strings.TrimSpace(configuredStart))
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	endExclusive, err := time.Parse(time.RFC3339, strings.TrimSpace(configuredEnd))
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	if !start.Before(endExclusive) {
+		return time.Time{}, time.Time{}, false
+	}
+	endInclusive := endExclusive.Add(-time.Nanosecond)
+	return start.UTC(), endInclusive.UTC(), true
+}
+
+func inclusiveWindowDays(start time.Time, end time.Time) int {
+	startDay := start.UTC().Truncate(24 * time.Hour)
+	endDay := end.UTC().Truncate(24 * time.Hour)
+	if endDay.Before(startDay) {
+		return 0
+	}
+	days := int(endDay.Sub(startDay)/(24*time.Hour)) + 1
+	if days < 1 {
+		return 1
+	}
+	return days
 }
 
 func sortedValuesFromRows(rows []qualitySignatureRow, valueFn func(qualitySignatureRow) string) []string {
@@ -528,11 +607,22 @@ func signatureRowHTML(row qualitySignatureRow, suspiciousOnly bool) string {
 
 func signatureInspectorRowHTML(row qualitySignatureRow) string {
 	var b strings.Builder
+	phraseSortValue := strings.ToLower(strings.TrimSpace(row.Phrase))
+	jobSortValue := strings.ToLower(strings.TrimSpace(row.JobName))
+	testSortValue := strings.ToLower(strings.TrimSpace(row.TestName))
+	jobTestSortValue := strings.TrimSpace(testSortValue + "|" + jobSortValue)
+	phase1SortValue := strings.ToLower(strings.TrimSpace(row.Phase1ClusterID))
 	b.WriteString(fmt.Sprintf(
-		"      <tr class=\"quality-row inspector-row\" data-env=\"%s\" data-lane=\"%s\" data-support=\"%d\" data-flagged=\"%t\" data-review=\"%t\" data-search=\"%s\">",
+		"      <tr class=\"quality-row inspector-row\" data-env=\"%s\" data-lane=\"%s\" data-support=\"%d\" data-score=\"%d\" data-phrase=\"%s\" data-job=\"%s\" data-test=\"%s\" data-jobtest=\"%s\" data-phase1=\"%s\" data-flagged=\"%t\" data-review=\"%t\" data-search=\"%s\">",
 		html.EscapeString(row.Environment),
 		html.EscapeString(row.Lane),
 		row.SupportCount,
+		row.QualityScore,
+		html.EscapeString(phraseSortValue),
+		html.EscapeString(jobSortValue),
+		html.EscapeString(testSortValue),
+		html.EscapeString(jobTestSortValue),
+		html.EscapeString(phase1SortValue),
 		row.isFlagged(),
 		row.hasReviewSignals(),
 		html.EscapeString(row.SearchIndex),
@@ -545,7 +635,6 @@ func signatureInspectorRowHTML(row qualitySignatureRow) string {
 	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(strings.ToUpper(row.Environment))))
 	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(row.Lane)))
 	b.WriteString(fmt.Sprintf("<td>%d</td>", row.SupportCount))
-	b.WriteString(fmt.Sprintf("<td>%d</td>", row.PostGoodCommitCount))
 	if row.PassRate != nil {
 		b.WriteString(fmt.Sprintf("<td>%.2f%% (%d runs)</td>", *row.PassRate, row.Runs))
 	} else {
@@ -822,46 +911,6 @@ func containsDeserializationNoOutputSignal(value string) bool {
 	}
 	hasDeserialization := strings.Contains(normalized, "deserializaion error") || strings.Contains(normalized, "deserialization error")
 	return hasDeserialization && strings.Contains(normalized, "no output from command")
-}
-
-func buildQualityTrend(rows []qualitySignatureRow, generatedAt time.Time, windowDays int) []qualityTrendDay {
-	if windowDays <= 0 {
-		return nil
-	}
-	endDay := generatedAt.UTC().Truncate(24 * time.Hour)
-	if endDay.IsZero() {
-		endDay = time.Now().UTC().Truncate(24 * time.Hour)
-	}
-	startDay := endDay.AddDate(0, 0, -(windowDays - 1))
-	out := make([]qualityTrendDay, windowDays)
-	for i := 0; i < windowDays; i++ {
-		day := startDay.AddDate(0, 0, i)
-		out[i] = qualityTrendDay{
-			Date: day.Format("2006-01-02"),
-		}
-	}
-	for _, row := range rows {
-		flagged := row.isFlagged()
-		for _, ref := range row.References {
-			ts, ok := parseTimestamp(ref.OccurredAt)
-			if !ok {
-				continue
-			}
-			day := ts.UTC().Truncate(24 * time.Hour)
-			if day.Before(startDay) || day.After(endDay) {
-				continue
-			}
-			index := int(day.Sub(startDay).Hours() / 24)
-			if index < 0 || index >= len(out) {
-				continue
-			}
-			out[index].Total++
-			if flagged {
-				out[index].Flagged++
-			}
-		}
-	}
-	return out
 }
 
 func toQualityFlaggedSignatureExports(rows []qualitySignatureRow) []qualityFlaggedSignatureExport {

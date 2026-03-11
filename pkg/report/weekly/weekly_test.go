@@ -70,9 +70,10 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 			SupportCount:            7,
 			PostGoodCommitCount:     2,
 			CanonicalEvidencePhrase: "timeout during CreateHCPClusterFromParam",
+			MemberSignatureIDs:      []string{"sig-dev-timeout"},
 			References: []semanticcontracts.ReferenceRecord{
-				{RunURL: "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-dev-latest/1", OccurredAt: "2026-03-06T12:00:00Z"},
-				{RunURL: "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-dev-older/1", OccurredAt: "2026-03-05T12:00:00Z"},
+				{RunURL: "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-dev-latest/1", OccurredAt: "2026-03-06T12:00:00Z", SignatureID: "sig-dev-timeout"},
+				{RunURL: "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-dev-older/1", OccurredAt: "2026-03-05T12:00:00Z", SignatureID: "sig-dev-timeout"},
 			},
 		},
 		{
@@ -82,8 +83,9 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 			SupportCount:            5,
 			PostGoodCommitCount:     0,
 			CanonicalEvidencePhrase: "timeout during CreateHCPClusterFromParam",
+			MemberSignatureIDs:      []string{"sig-int-timeout"},
 			References: []semanticcontracts.ReferenceRecord{
-				{RunURL: "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-int-latest/1", OccurredAt: "2026-03-04T08:00:00Z"},
+				{RunURL: "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-int-latest/1", OccurredAt: "2026-03-04T08:00:00Z", SignatureID: "sig-int-timeout"},
 			},
 		},
 		{
@@ -93,9 +95,38 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 			SupportCount:            4,
 			PostGoodCommitCount:     0,
 			CanonicalEvidencePhrase: "image pull backoff on bootstrap",
+			MemberSignatureIDs:      []string{"sig-int-image-pull"},
 		},
 	}); err != nil {
 		t.Fatalf("seed global clusters: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment: "dev",
+			RowID:       "raw-dev-1",
+			RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-dev-latest/1",
+			SignatureID: "sig-dev-timeout",
+			OccurredAt:  "2026-03-06T12:00:00Z",
+			RawText:     "panic: timed out waiting for cluster API\ncontext deadline exceeded",
+		},
+		{
+			Environment: "int",
+			RowID:       "raw-int-1",
+			RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-int-latest/1",
+			SignatureID: "sig-int-timeout",
+			OccurredAt:  "2026-03-04T08:00:00Z",
+			RawText:     "panic: timed out waiting for cluster API in int",
+		},
+		{
+			Environment: "int",
+			RowID:       "raw-int-2",
+			RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-int-latest/2",
+			SignatureID: "sig-int-image-pull",
+			OccurredAt:  "2026-03-04T09:00:00Z",
+			RawText:     "failed to pull image from registry",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
 	}
 
 	outputPath := filepath.Join(dataDir, "reports", "weekly.html")
@@ -134,13 +165,17 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"Provision step success rate (CI/Infra excluded)",
 		"88.89% (8/9)",
 		"Source: Sippy test metadata (period: default). Top 5 tests below 95.00% success; minimum 10 runs. If the selected week has no metadata rows, this view falls back to the latest available metadata date.",
+		"Top 10 semantic signatures by support in this window (minimum 1.00% share)",
 		"dev flaky scenario",
 		"83.00%",
 		"int flaky scenario",
 		"92.00%",
 		"Also seen in envs",
+		"Full failure examples",
+		"Show 1 full failures",
 		"Latest job examples",
 		"example-dev-latest",
+		"panic: timed out waiting for cluster API",
 		"timeout during CreateHCPClusterFromParam",
 		"Success Rate",
 		"E2E Jobs (after last push of merged PR)",
@@ -348,5 +383,48 @@ func TestGenerateFallsBackToLatestSippyMetadataWhenWindowHasNoRows(t *testing.T)
 		if !strings.Contains(report, snippet) {
 			t.Fatalf("expected fallback weekly report to contain %q", snippet)
 		}
+	}
+}
+
+func TestRankTopSignaturesByEnvironmentAppliesMinShareThreshold(t *testing.T) {
+	t.Parallel()
+
+	snapshot := semanticSnapshot{
+		PhraseSupportByEnv: map[string]map[string]int{
+			"dev": {
+				"high-impact signature": 99,
+				"low-signal signature":  1,
+			},
+		},
+		PhrasePostGoodByEnv: map[string]map[string]int{
+			"dev": {
+				"high-impact signature": 5,
+				"low-signal signature":  0,
+			},
+		},
+		PhraseLatestRunsByEnv: map[string]map[string][]signatureRunExample{
+			"dev": {
+				"high-impact signature": {
+					{RunURL: "https://prow.example/dev/high", OccurredAt: "2026-03-06T10:00:00Z"},
+				},
+			},
+		},
+		PhraseFullErrorsByEnv: map[string]map[string][]string{
+			"dev": {
+				"high-impact signature": {"high-impact full error"},
+			},
+		},
+	}
+
+	rowsByEnvironment := rankTopSignaturesByEnvironment(snapshot, 10, 2.0)
+	rows := rowsByEnvironment["dev"]
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly one signature above min share, got %d", len(rows))
+	}
+	if rows[0].Phrase != "high-impact signature" {
+		t.Fatalf("expected high-impact signature to remain, got %q", rows[0].Phrase)
+	}
+	if len(rows[0].FullErrorSamples) != 1 || rows[0].FullErrorSamples[0] != "high-impact full error" {
+		t.Fatalf("expected full error sample to be attached to ranked signature, got %#v", rows[0].FullErrorSamples)
 	}
 }

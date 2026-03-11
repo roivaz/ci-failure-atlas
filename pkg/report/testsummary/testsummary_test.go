@@ -717,6 +717,24 @@ func TestValidateOptionsRejectsUnknownFormat(t *testing.T) {
 	}
 }
 
+func TestValidateOptionsRejectsPartialWindow(t *testing.T) {
+	t.Parallel()
+
+	_, err := validateOptions(Options{
+		OutputPath:        "data/reports/test-failure-summary.md",
+		Format:            reportFormatHTML,
+		WindowStart:       "2026-03-01",
+		RecentRuns:        4,
+		QualityExportPath: "",
+	})
+	if err == nil {
+		t.Fatal("expected workflow window validation error")
+	}
+	if !strings.Contains(err.Error(), "both --workflow.window.start and --workflow.window.end must be set together") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 	t.Parallel()
 
@@ -813,6 +831,8 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 	opts.OutputPath = filepath.Join(outputDir, "semantic-quality.html")
 	opts.Format = reportFormatHTML
 	opts.QualityExportPath = filepath.Join(outputDir, "flagged-signatures.ndjson")
+	opts.WindowStart = "2026-03-01"
+	opts.WindowEnd = "2026-03-08"
 	opts.RecentRuns = 2
 	opts.MinRuns = 0
 
@@ -827,9 +847,15 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 	report := string(reportBytes)
 	requiredReportSnippets := []string{
 		"CI Semantic Quality Report",
-		"Suspicious Signatures",
-		"Error Spread (last 7 days)",
+		"Window: <strong>2026-03-01</strong> to <strong>2026-03-07</strong> (7 days)",
 		"filter-env",
+		"sort-inspector",
+		"option value=\"score\">Score",
+		"option value=\"env\">Env",
+		"option value=\"lane\">Lane",
+		"option value=\"support\">Support",
+		"option value=\"phrase\">Evidence phrase",
+		"option value=\"job_test\">Job/Test",
 		"Show 1 full errors",
 		"&lt;context.deadlineExceededError&gt;{},",
 		"context type stub leaked",
@@ -838,6 +864,15 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 	for _, snippet := range requiredReportSnippets {
 		if !strings.Contains(report, snippet) {
 			t.Fatalf("expected html quality report to contain %q", snippet)
+		}
+	}
+	for _, snippet := range []string{
+		"<h3>Suspicious Signatures</h3>",
+		"<th>Post-good</th>",
+		"Error Spread (last",
+	} {
+		if strings.Contains(report, snippet) {
+			t.Fatalf("expected html quality report to not contain %q", snippet)
 		}
 	}
 
