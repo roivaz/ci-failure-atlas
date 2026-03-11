@@ -1152,6 +1152,72 @@ func TestUpsertSemanticArtifactsReplaceTargetEnvironment(t *testing.T) {
 	}
 }
 
+func TestUpsertGlobalClustersReplaceTargetEnvironment(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "dev-old",
+			CanonicalEvidencePhrase: "{",
+			SearchQueryPhrase:       "{",
+			SupportCount:            5,
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "int",
+			Phase2ClusterID:         "int-keep",
+			CanonicalEvidencePhrase: "timeout during CreateHCPClusterFromParam; context deadline exceeded",
+			SearchQueryPhrase:       "timeout during CreateHCPClusterFromParam",
+			SupportCount:            8,
+		},
+	}); err != nil {
+		t.Fatalf("initial upsert global clusters: %v", err)
+	}
+
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "dev-new",
+			CanonicalEvidencePhrase: "Deserializaion Error: no output from command",
+			SearchQueryPhrase:       "Deserializaion Error: no output from command",
+			SupportCount:            7,
+		},
+	}); err != nil {
+		t.Fatalf("replacement upsert global clusters: %v", err)
+	}
+
+	rows, err := store.ListGlobalClusters(ctx)
+	if err != nil {
+		t.Fatalf("list global clusters: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("unexpected global cluster row count: got=%d want=2", len(rows))
+	}
+
+	seen := map[string]semanticcontracts.GlobalClusterRecord{}
+	for _, row := range rows {
+		seen[row.Environment+"|"+row.Phase2ClusterID] = row
+	}
+	if _, ok := seen["dev|dev-old"]; ok {
+		t.Fatalf("expected old dev global cluster to be replaced, rows=%+v", rows)
+	}
+	if _, ok := seen["dev|dev-new"]; !ok {
+		t.Fatalf("expected new dev global cluster after replacement, rows=%+v", rows)
+	}
+	if _, ok := seen["int|int-keep"]; !ok {
+		t.Fatalf("expected non-target environment global cluster to be preserved, rows=%+v", rows)
+	}
+}
+
 func TestUpsertRequiresEnvironment(t *testing.T) {
 	t.Parallel()
 

@@ -1554,21 +1554,32 @@ func (s *Store) UpsertGlobalClusters(ctx context.Context, rows []semanticcontrac
 		return err
 	}
 
+	normalizedIncoming := make([]semanticcontracts.GlobalClusterRecord, 0, len(rows))
+	targetEnvironments := map[string]struct{}{}
+	for _, row := range rows {
+		normalized := normalizeGlobalClusterRecord(row)
+		key := globalClusterKey(normalized)
+		if key == "" {
+			return fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
+		}
+		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
+		normalizedIncoming = append(normalizedIncoming, normalized)
+	}
+
 	mergedByKey := map[string]semanticcontracts.GlobalClusterRecord{}
 	for _, row := range existing {
 		normalized := normalizeGlobalClusterRecord(row)
+		if _, replaceEnvironment := targetEnvironments[strings.TrimSpace(normalized.Environment)]; replaceEnvironment {
+			continue
+		}
 		key := globalClusterKey(normalized)
 		if key == "" {
 			continue
 		}
 		mergedByKey[key] = normalized
 	}
-	for _, row := range rows {
-		normalized := normalizeGlobalClusterRecord(row)
+	for _, normalized := range normalizedIncoming {
 		key := globalClusterKey(normalized)
-		if key == "" {
-			return fmt.Errorf("global cluster record missing phase2_cluster_id")
-		}
 		mergedByKey[key] = normalized
 	}
 

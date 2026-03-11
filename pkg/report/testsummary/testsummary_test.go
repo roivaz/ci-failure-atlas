@@ -921,3 +921,64 @@ func TestBuildQualitySignatureRowsIgnoreCancellationReviewNoise(t *testing.T) {
 		t.Fatalf("expected cancellation row to not be flagged")
 	}
 }
+
+func TestBuildQualitySignatureRowsFlagsSourceDeserializationNoOutput(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		Environment:             "dev",
+		Phase1ClusterID:         "cluster-deserialization",
+		Lane:                    "e2e",
+		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		TestName:                "Customer should be able to create several HCP clusters in their customer resource group, but not in the same managed resource group",
+		TestSuite:               "rp-api-compat-all/parallel",
+		CanonicalEvidencePhrase: "Deserializaion Error: no output from command",
+		SupportCount:            7,
+		References: []reference{
+			{
+				RunURL:      "https://prow.example/run/deserialization-1",
+				OccurredAt:  "2026-03-07T12:00:00Z",
+				SignatureID: "sig-deserialization-1",
+			},
+		},
+		MemberSignatureIDs: []string{"sig-deserialization-1"},
+	}
+
+	rows := buildQualitySignatureRows(
+		[]testCluster{cluster},
+		map[testKey]testMetadata{},
+		map[testKeyNoSuite]testMetadata{},
+		map[referenceKey]string{
+			{
+				RunURL:      "https://prow.example/run/deserialization-1",
+				SignatureID: "sig-deserialization-1",
+			}: "Deserializaion Error: no output from command",
+		},
+		reviewSignalIndex{},
+		time.Date(2026, 3, 7, 16, 30, 0, 0, time.UTC),
+		0,
+		4,
+		0,
+	)
+	if len(rows) != 1 {
+		t.Fatalf("expected one quality row, got %d", len(rows))
+	}
+
+	row := rows[0]
+	hasIssueCode := false
+	for _, code := range row.IssueCodes {
+		if code == "source_deserialization_no_output" {
+			hasIssueCode = true
+			break
+		}
+	}
+	if !hasIssueCode {
+		t.Fatalf("expected source_deserialization_no_output issue code, got %v", row.IssueCodes)
+	}
+	if row.QualityScore < 9 {
+		t.Fatalf("expected source deserialization issue to be high severity (>=9), got %d", row.QualityScore)
+	}
+	if !row.isFlagged() {
+		t.Fatalf("expected deserialization no-output row to be flagged")
+	}
+}

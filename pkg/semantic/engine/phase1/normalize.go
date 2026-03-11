@@ -184,6 +184,10 @@ func extractEvidence(text string) extractedEvidence {
 	}
 
 	if picked == "" {
+		picked = bestSignalErrorLine(raw)
+	}
+
+	if picked == "" {
 		parts := reCauseBySplit.Split(raw, -1)
 		if len(parts) > 1 {
 			picked = truncateText(parts[len(parts)-1], 260)
@@ -191,14 +195,14 @@ func extractEvidence(text string) extractedEvidence {
 			lines := splitNonEmptyLines(raw)
 			errorLines := make([]string, 0, len(lines))
 			for _, line := range lines {
-				if rePickErrorSignal.MatchString(line) && !isAssertionTail(line) {
+				if rePickErrorSignal.MatchString(line) && !isAssertionTail(line) && !isWrapperNoiseLine(line) && !isStructFieldNoiseLine(line) && !isStatusBannerLine(line) {
 					errorLines = append(errorLines, line)
 				}
 			}
 			fallback := "failure occurred"
 			if len(lines) > 0 {
 				for i := len(lines) - 1; i >= 0; i-- {
-					if !isAssertionTail(lines[i]) {
+					if !isAssertionTail(lines[i]) && !isStructFieldNoiseLine(lines[i]) && !isStatusBannerLine(lines[i]) {
 						fallback = lines[i]
 						break
 					}
@@ -256,6 +260,11 @@ func extractEvidence(text string) extractedEvidence {
 		parts := reCauseBySplit.Split(raw, -1)
 		if len(parts) > 1 {
 			canonical = cleanCanonical(truncateText(parts[len(parts)-1], 260))
+		}
+	}
+	if isLowInformationCanonical(canonical) {
+		if refined := bestSignalErrorLine(raw); refined != "" {
+			canonical = cleanCanonical(refined)
 		}
 	}
 
@@ -470,7 +479,7 @@ func safeSearchFromText(text string) string {
 
 	for _, line := range strings.Split(text, "\n") {
 		token := strings.TrimSpace(line)
-		if token == "" || isAssertionTail(token) || containsPlaceholderToken(token) {
+		if token == "" || isAssertionTail(token) || containsPlaceholderToken(token) || isWrapperNoiseLine(token) || isStructFieldNoiseLine(token) || isStatusBannerLine(token) {
 			continue
 		}
 		if reSafeErrorLineSignal.MatchString(token) {
@@ -521,6 +530,113 @@ func splitNonEmptyLines(text string) []string {
 
 func containsPlaceholderToken(value string) bool {
 	return strings.Contains(value, "<") && strings.Contains(value, ">")
+}
+
+func bestSignalErrorLine(text string) string {
+	lines := splitNonEmptyLines(text)
+	if len(lines) == 0 {
+		return ""
+	}
+
+	preStruct := make([]string, 0, len(lines))
+	postStruct := make([]string, 0, len(lines))
+	inStructBlock := false
+	for _, line := range lines {
+		token := strings.TrimSpace(line)
+		if token == "" {
+			continue
+		}
+		if isStructBoundaryLine(token) {
+			inStructBlock = true
+			continue
+		}
+		if !rePickErrorSignal.MatchString(token) || isAssertionTail(token) {
+			continue
+		}
+		if isWrapperNoiseLine(token) || isStructFieldNoiseLine(token) || isStatusBannerLine(token) {
+			continue
+		}
+		if inStructBlock {
+			postStruct = append(postStruct, token)
+		} else {
+			preStruct = append(preStruct, token)
+		}
+	}
+
+	if len(preStruct) > 0 {
+		return truncateText(preStruct[len(preStruct)-1], 260)
+	}
+	if len(postStruct) > 0 {
+		return truncateText(postStruct[len(postStruct)-1], 260)
+	}
+	return ""
+}
+
+func isStructBoundaryLine(line string) bool {
+	switch strings.TrimSpace(line) {
+	case "{", "}", "},", "[", "]", "],":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWrapperNoiseLine(line string) bool {
+	normalized := strings.ToLower(collapseWS(line))
+	if normalized == "" {
+		return true
+	}
+	return strings.HasPrefix(normalized, "fail [") ||
+		strings.HasPrefix(normalized, "unexpected error") ||
+		strings.HasPrefix(normalized, "<*fmt.wraperror") ||
+		strings.HasPrefix(normalized, "<*errors.errorstring")
+}
+
+func isStructFieldNoiseLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	normalized := strings.ToLower(collapseWS(trimmed))
+	switch normalized {
+	case "", "{", "}", "},", "[]", "{}", "{},", "null":
+		return true
+	}
+	if strings.HasPrefix(normalized, "msg:") || strings.HasPrefix(normalized, "err:") {
+		return true
+	}
+	if strings.HasPrefix(normalized, "errorcode:\"\"") || strings.HasPrefix(normalized, "errorcode: \"\"") || strings.HasPrefix(normalized, "errorcode:''") || strings.HasPrefix(normalized, "errorcode: ''") {
+		return true
+	}
+	if strings.Contains(normalized, "<context.") && strings.Contains(normalized, "{") {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "<*") && strings.Contains(trimmed, "{")
+}
+
+func isStatusBannerLine(line string) bool {
+	normalized := strings.ToLower(collapseWS(line))
+	return strings.HasPrefix(normalized, "response ") ||
+		strings.HasPrefix(normalized, "error code unavailable") ||
+		strings.HasPrefix(normalized, "response contained no body")
+}
+
+func isLowInformationCanonical(value string) bool {
+	canonical := strings.TrimSpace(value)
+	normalized := strings.ToLower(collapseWS(canonical))
+	if normalized == "" {
+		return true
+	}
+	if _, found := wrapperOnly[normalized]; found {
+		return true
+	}
+	if reUnexpectedOnly.MatchString(canonical) {
+		return true
+	}
+	if isStructBoundaryLine(canonical) || isStructFieldNoiseLine(canonical) {
+		return true
+	}
+	if strings.Contains(normalized, "<context.") && strings.Contains(normalized, "{") {
+		return true
+	}
+	return strings.Contains(normalized, "errorcode:\"\"") || strings.Contains(normalized, "errorcode: \"\"") || strings.Contains(normalized, "errorcode:''") || strings.Contains(normalized, "errorcode: ''")
 }
 
 func truncateText(value string, max int) string {
