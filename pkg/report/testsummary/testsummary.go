@@ -184,6 +184,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			filteredReviewItems := filterReviewItemsByEnvironment(reviewItems, environment)
 			reviewIndex := buildReviewSignalIndex(filteredReviewItems)
 			generatedAt := time.Now().UTC()
+			trendAnchor := qualityTrendAnchor(generatedAt, validated.WindowEnd)
 			var qualityRows []qualitySignatureRow
 			if validated.Format == reportFormatHTML || strings.TrimSpace(validated.QualityExportPath) != "" {
 				qualityRows = buildQualitySignatureRows(
@@ -192,7 +193,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 					metadataByNoSuite,
 					fullErrorsByReference,
 					reviewIndex,
-					generatedAt,
+					trendAnchor,
 					validated.TopTests,
 					validated.RecentRuns,
 					validated.MinRuns,
@@ -271,6 +272,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	}
 	reviewIndex := buildReviewSignalIndex(filteredReviewItems)
 	generatedAt := time.Now().UTC()
+	trendAnchor := qualityTrendAnchor(generatedAt, validated.WindowEnd)
 	var qualityRows []qualitySignatureRow
 	if validated.Format == reportFormatHTML || strings.TrimSpace(validated.QualityExportPath) != "" {
 		qualityRows = buildQualitySignatureRows(
@@ -279,7 +281,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			metadataByNoSuite,
 			fullErrorsByReference,
 			reviewIndex,
-			generatedAt,
+			trendAnchor,
 			validated.TopTests,
 			validated.RecentRuns,
 			validated.MinRuns,
@@ -435,6 +437,24 @@ func parseReportWindowBoundary(raw string, endBoundary bool) (time.Time, error) 
 		return parsed.UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("unsupported time format %q (use RFC3339 or YYYY-MM-DD)", raw)
+}
+
+func qualityTrendAnchor(generatedAt time.Time, configuredWindowEnd string) time.Time {
+	anchor := generatedAt.UTC()
+	if anchor.IsZero() {
+		anchor = time.Now().UTC()
+	}
+	trimmedEnd := strings.TrimSpace(configuredWindowEnd)
+	if trimmedEnd == "" {
+		return anchor
+	}
+	if parsedEnd, err := time.Parse(time.RFC3339Nano, trimmedEnd); err == nil {
+		return parsedEnd.UTC().Add(-time.Nanosecond)
+	}
+	if parsedEnd, err := time.Parse(time.RFC3339, trimmedEnd); err == nil {
+		return parsedEnd.UTC().Add(-time.Nanosecond)
+	}
+	return anchor
 }
 
 func toReportTestClusters(rows []semanticcontracts.TestClusterRecord) []testCluster {

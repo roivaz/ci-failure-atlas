@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ci-failure-atlas/pkg/report/triagehtml"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
@@ -34,8 +35,6 @@ const (
 	weeklySippyDefaultPeriod         = "default"
 	weeklyTestSuccessTarget          = 95.0
 	weeklyTestSuccessMinRuns         = 10
-	weeklyPhrasePreviewMaxLength     = 120
-	weeklySignatureExampleLimit      = 3
 	weeklySignatureFullErrorExamples = 3
 )
 
@@ -95,12 +94,16 @@ type semanticEnvSummary struct {
 }
 
 type semanticSnapshot struct {
-	ByEnvironment         map[string]semanticEnvSummary
-	PhraseSupportByEnv    map[string]map[string]int
-	PhrasePostGoodByEnv   map[string]map[string]int
-	PhraseLatestRunsByEnv map[string]map[string][]signatureRunExample
-	PhraseSignatureIDs    map[string]map[string]map[string]struct{}
-	PhraseFullErrorsByEnv map[string]map[string][]string
+	ByEnvironment                    map[string]semanticEnvSummary
+	PhraseSupportByEnv               map[string]map[string]int
+	PhrasePostGoodByEnv              map[string]map[string]int
+	PhraseReferencesByEnv            map[string]map[string][]triagehtml.RunReference
+	PhraseContributingTestsByEnv     map[string]map[string][]triagehtml.ContributingTest
+	PhraseClusterIDByEnv             map[string]map[string]string
+	PhraseSearchQueryByEnv           map[string]map[string]string
+	PhraseRepresentativeSupportByEnv map[string]map[string]int
+	PhraseSignatureIDs               map[string]map[string]map[string]struct{}
+	PhraseFullErrorsByEnv            map[string]map[string][]string
 }
 
 type belowTargetTest struct {
@@ -112,18 +115,18 @@ type belowTargetTest struct {
 }
 
 type topSignature struct {
-	Phrase           string
-	SupportCount     int
-	SupportShare     float64
-	PostGoodCount    int
-	SeenInOtherEnvs  []string
-	LatestRuns       []signatureRunExample
-	FullErrorSamples []string
-}
-
-type signatureRunExample struct {
-	RunURL     string
-	OccurredAt string
+	Phrase            string
+	ClusterID         string
+	SearchQuery       string
+	SupportCount      int
+	SupportShare      float64
+	PostGoodCount     int
+	SeenInOtherEnvs   []string
+	QualityScore      int
+	QualityNoteLabels []string
+	ContributingTests []triagehtml.ContributingTest
+	References        []triagehtml.RunReference
+	FullErrorSamples  []string
 }
 
 func DefaultOptions() Options {
@@ -252,12 +255,16 @@ func buildEnvReports(ctx context.Context, store storecontracts.Store, dates []st
 
 func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (semanticSnapshot, error) {
 	out := semanticSnapshot{
-		ByEnvironment:         map[string]semanticEnvSummary{},
-		PhraseSupportByEnv:    map[string]map[string]int{},
-		PhrasePostGoodByEnv:   map[string]map[string]int{},
-		PhraseLatestRunsByEnv: map[string]map[string][]signatureRunExample{},
-		PhraseSignatureIDs:    map[string]map[string]map[string]struct{}{},
-		PhraseFullErrorsByEnv: map[string]map[string][]string{},
+		ByEnvironment:                    map[string]semanticEnvSummary{},
+		PhraseSupportByEnv:               map[string]map[string]int{},
+		PhrasePostGoodByEnv:              map[string]map[string]int{},
+		PhraseReferencesByEnv:            map[string]map[string][]triagehtml.RunReference{},
+		PhraseContributingTestsByEnv:     map[string]map[string][]triagehtml.ContributingTest{},
+		PhraseClusterIDByEnv:             map[string]map[string]string{},
+		PhraseSearchQueryByEnv:           map[string]map[string]string{},
+		PhraseRepresentativeSupportByEnv: map[string]map[string]int{},
+		PhraseSignatureIDs:               map[string]map[string]map[string]struct{}{},
+		PhraseFullErrorsByEnv:            map[string]map[string][]string{},
 	}
 
 	globalClusters, err := store.ListGlobalClusters(ctx)
@@ -302,14 +309,46 @@ func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (sema
 		}
 		out.PhrasePostGoodByEnv[environment][phrase] += postGood
 
-		if _, ok := out.PhraseLatestRunsByEnv[environment]; !ok {
-			out.PhraseLatestRunsByEnv[environment] = map[string][]signatureRunExample{}
+		if _, ok := out.PhraseReferencesByEnv[environment]; !ok {
+			out.PhraseReferencesByEnv[environment] = map[string][]triagehtml.RunReference{}
 		}
-		out.PhraseLatestRunsByEnv[environment][phrase] = mergeSignatureRunExamples(
-			out.PhraseLatestRunsByEnv[environment][phrase],
-			runExamplesFromGlobalCluster(row),
-			weeklySignatureExampleLimit,
+		out.PhraseReferencesByEnv[environment][phrase] = append(
+			out.PhraseReferencesByEnv[environment][phrase],
+			toTriageRunReferences(row.References)...,
 		)
+		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
+			out.PhraseReferencesByEnv[environment][phrase] = append(
+				out.PhraseReferencesByEnv[environment][phrase],
+				triagehtml.RunReference{
+					RunURL:      sourceRunURL,
+					SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
+				},
+			)
+		}
+
+		if _, ok := out.PhraseContributingTestsByEnv[environment]; !ok {
+			out.PhraseContributingTestsByEnv[environment] = map[string][]triagehtml.ContributingTest{}
+		}
+		out.PhraseContributingTestsByEnv[environment][phrase] = mergeTriageContributingTests(
+			out.PhraseContributingTestsByEnv[environment][phrase],
+			toTriageContributingTests(row.ContributingTests),
+		)
+
+		if _, ok := out.PhraseRepresentativeSupportByEnv[environment]; !ok {
+			out.PhraseRepresentativeSupportByEnv[environment] = map[string]int{}
+		}
+		if _, ok := out.PhraseClusterIDByEnv[environment]; !ok {
+			out.PhraseClusterIDByEnv[environment] = map[string]string{}
+		}
+		if _, ok := out.PhraseSearchQueryByEnv[environment]; !ok {
+			out.PhraseSearchQueryByEnv[environment] = map[string]string{}
+		}
+		repSupport := out.PhraseRepresentativeSupportByEnv[environment][phrase]
+		if support > repSupport || strings.TrimSpace(out.PhraseClusterIDByEnv[environment][phrase]) == "" {
+			out.PhraseRepresentativeSupportByEnv[environment][phrase] = support
+			out.PhraseClusterIDByEnv[environment][phrase] = strings.TrimSpace(row.Phase2ClusterID)
+			out.PhraseSearchQueryByEnv[environment][phrase] = strings.TrimSpace(row.SearchQueryPhrase)
+		}
 
 		if _, ok := out.PhraseSignatureIDs[environment]; !ok {
 			out.PhraseSignatureIDs[environment] = map[string]map[string]struct{}{}
@@ -477,6 +516,9 @@ func buildHTML(
 	b.WriteString("    .status-off-track { color: #991b1b; font-weight: 700; }\n")
 	b.WriteString("    .status-near-track { color: #92400e; font-weight: 700; }\n")
 	b.WriteString("    .status-na { color: #6b7280; font-weight: 700; }\n")
+	b.WriteString("    .pp-positive { color: #166534; font-weight: 700; }\n")
+	b.WriteString("    .pp-negative { color: #991b1b; font-weight: 700; }\n")
+	b.WriteString("    .pp-neutral { color: #6b7280; font-weight: 700; }\n")
 	b.WriteString("    .cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }\n")
 	b.WriteString("    .cards.cards-post-good { margin-top: 0; }\n")
 	b.WriteString("    .card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px; min-width: 160px; }\n")
@@ -512,6 +554,7 @@ func buildHTML(
 	b.WriteString("    .detail-table details { margin: 0; }\n")
 	b.WriteString("    .detail-table summary { cursor: pointer; color: #1d4ed8; }\n")
 	b.WriteString("    .detail-table pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0 0; }\n")
+	b.WriteString(triagehtml.StylesCSS())
 	b.WriteString("    body[data-chart-mode=\"count\"] .mode-percent { display: none; }\n")
 	b.WriteString("    body[data-chart-mode=\"percent\"] .mode-count { display: none; }\n")
 	b.WriteString("  </style>\n")
@@ -538,13 +581,15 @@ func buildHTML(
 	b.WriteString(executiveHeaderHTML("Runs", "Number of job runs in the selected goal basis for this environment."))
 	b.WriteString(executiveHeaderHTML("Success", "Success rate on the goal basis: (runs - failed runs) / runs * 100."))
 	b.WriteString(executiveHeaderHTML("Gap vs target", "Difference in percentage points between current success and the configured target rate."))
-	b.WriteString(executiveHeaderHTML("Change from last week", "How much the success rate changed compared with last week, using the same run scope as this row."))
-	b.WriteString(executiveHeaderHTML("Provision success (DEV)", "DEV-only estimate. CI/Infra failures are excluded because provisioning never started. Successful runs and E2E-failed runs count as provisioning success. Formula: (successful + e2e_failed) / (successful + provision_failed + e2e_failed)."))
-	b.WriteString(executiveHeaderHTML("Provision change from last week (DEV)", "DEV-only change in percentage points compared with last week, using the same provision-step estimate."))
-	b.WriteString(executiveHeaderHTML("Main reason for failed runs", "The failure category with the most failed runs in this environment (CI/infra, provisioning, or tests)."))
-	b.WriteString(executiveHeaderHTML("Most common failure pattern", "The failure message pattern that appeared most often in this environment. The value also shows how much it changed from the comparison snapshot."))
+	b.WriteString(executiveHeaderHTML("Change WoW", "How much the success rate changed compared with last week, using the same run scope as this row."))
+	b.WriteString(executiveHeaderHTML("Provision success", "Provision-step estimate. Other failures are excluded because provisioning never started. Successful runs and E2E-failed runs count as provisioning success. Formula: (successful + e2e_failed) / (successful + provision_failed + e2e_failed)."))
+	b.WriteString(executiveHeaderHTML("Provision change WoW", "Week-over-week change in provision-step success, in percentage points."))
+	b.WriteString(executiveHeaderHTML("E2E success", "E2E-step success based on runs that reached E2E execution. Formula: successful / (successful + e2e_failed)."))
+	b.WriteString(executiveHeaderHTML("E2E success WoW", "Week-over-week change in E2E-step success, in percentage points."))
 	b.WriteString("</tr></thead>\n")
 	b.WriteString("      <tbody>\n")
+	_ = currentSemantic
+	_ = previousSemantic
 	for _, report := range reports {
 		environment := normalizeReportEnvironment(report.Environment)
 		goalBasis, goalRuns, currentSuccess, goalAvailable := goalBasisKPI(report)
@@ -553,20 +598,14 @@ func buildHTML(
 		gapCell := "n/a"
 		if goalAvailable {
 			statusClass, statusLabel = targetStatus(currentSuccess, targetRate)
-			gapCell = fmt.Sprintf("%+.2fpp", currentSuccess-targetRate)
+			gapCell = formatSignedPercentPointCell(currentSuccess - targetRate)
 		}
 		prevCell := "n/a"
 		if prev, ok := previousByEnvironment[environment]; ok {
 			_, _, prevSuccess, prevAvailable := goalBasisKPI(prev)
 			if goalAvailable && prevAvailable {
-				prevCell = fmt.Sprintf("%+.2fpp", currentSuccess-prevSuccess)
+				prevCell = formatSignedPercentPointCell(currentSuccess - prevSuccess)
 			}
-		}
-
-		primaryFailedLane, primaryFailedCount := topFailedLaneForGoalBasis(report)
-		primaryFailedLaneCell := fmt.Sprintf("%s (%d)", html.EscapeString(primaryFailedLane), primaryFailedCount)
-		if !goalAvailable || primaryFailedCount <= 0 {
-			primaryFailedLaneCell = "n/a"
 		}
 
 		successCell := fmt.Sprintf("<span class=\"%s\">n/a (%s)</span>", statusClass, html.EscapeString(statusLabel))
@@ -574,36 +613,34 @@ func buildHTML(
 			successCell = fmt.Sprintf("<span class=\"%s\">%.2f%% (%s)</span>", statusClass, currentSuccess, html.EscapeString(statusLabel))
 		}
 
+		currentProvision := summarizeProvisionStepOutcomes(report.Days)
 		provisionSuccessCell := "n/a"
 		provisionWoWCell := "n/a"
-		if environment == "dev" {
-			currentProvision := summarizeProvisionStepOutcomes(report.Days)
-			if currentProvision.TotalAttempted > 0 {
-				currentProvisionSuccess := successPct(currentProvision.TotalAttempted, currentProvision.Failed)
-				provisionSuccessCell = fmt.Sprintf("%.2f%% (%d/%d)", currentProvisionSuccess, currentProvision.Successful, currentProvision.TotalAttempted)
-				if prev, ok := previousByEnvironment[environment]; ok {
-					previousProvision := summarizeProvisionStepOutcomes(prev.Days)
-					if previousProvision.TotalAttempted > 0 {
-						previousProvisionSuccess := successPct(previousProvision.TotalAttempted, previousProvision.Failed)
-						provisionWoWCell = fmt.Sprintf("%+.2fpp", currentProvisionSuccess-previousProvisionSuccess)
-					}
+		if currentProvision.TotalAttempted > 0 {
+			currentProvisionSuccess := successPct(currentProvision.TotalAttempted, currentProvision.Failed)
+			provisionSuccessCell = fmt.Sprintf("%.2f%% (%d/%d)", currentProvisionSuccess, currentProvision.Successful, currentProvision.TotalAttempted)
+			if prev, ok := previousByEnvironment[environment]; ok {
+				previousProvision := summarizeProvisionStepOutcomes(prev.Days)
+				if previousProvision.TotalAttempted > 0 {
+					previousProvisionSuccess := successPct(previousProvision.TotalAttempted, previousProvision.Failed)
+					provisionWoWCell = formatSignedPercentPointCell(currentProvisionSuccess - previousProvisionSuccess)
 				}
 			}
 		}
 
-		semanticSummary := currentSemantic.ByEnvironment[environment]
-		signatureCell := "n/a"
-		if semanticSummary.TopPhrase != "" {
-			previousSupport := 0
-			if previousByPhrase, ok := previousSemantic.PhraseSupportByEnv[environment]; ok {
-				previousSupport = previousByPhrase[semanticSummary.TopPhrase]
+		currentE2E := summarizeE2EStepOutcomes(report.Days)
+		e2eSuccessCell := "n/a"
+		e2eWoWCell := "n/a"
+		if currentE2E.TotalAttempted > 0 {
+			currentE2ESuccess := successPct(currentE2E.TotalAttempted, currentE2E.Failed)
+			e2eSuccessCell = fmt.Sprintf("%.2f%% (%d/%d)", currentE2ESuccess, currentE2E.Successful, currentE2E.TotalAttempted)
+			if prev, ok := previousByEnvironment[environment]; ok {
+				previousE2E := summarizeE2EStepOutcomes(prev.Days)
+				if previousE2E.TotalAttempted > 0 {
+					previousE2ESuccess := successPct(previousE2E.TotalAttempted, previousE2E.Failed)
+					e2eWoWCell = formatSignedPercentPointCell(currentE2ESuccess - previousE2ESuccess)
+				}
 			}
-			signatureCell = fmt.Sprintf(
-				"`%s` (%d, %s)",
-				html.EscapeString(cleanInline(semanticSummary.TopPhrase, 88)),
-				semanticSummary.TopSupport,
-				formatSignedInt(semanticSummary.TopSupport-previousSupport),
-			)
 		}
 
 		b.WriteString("        <tr>")
@@ -611,12 +648,12 @@ func buildHTML(
 		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(goalBasis)))
 		b.WriteString(fmt.Sprintf("<td>%d</td>", goalRuns))
 		b.WriteString(fmt.Sprintf("<td>%s</td>", successCell))
-		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(gapCell)))
-		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(prevCell)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", gapCell))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", prevCell))
 		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(provisionSuccessCell)))
-		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(provisionWoWCell)))
-		b.WriteString(fmt.Sprintf("<td>%s</td>", primaryFailedLaneCell))
-		b.WriteString(fmt.Sprintf("<td>%s</td>", signatureCell))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", provisionWoWCell))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(e2eSuccessCell)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", e2eWoWCell))
 		b.WriteString("</tr>\n")
 	}
 	b.WriteString("      </tbody>\n")
@@ -654,7 +691,7 @@ func buildHTML(
 			if provisionStep.TotalAttempted > 0 {
 				provisionStepValue = fmt.Sprintf("%.2f%% (%d/%d)", successPct(provisionStep.TotalAttempted, provisionStep.Failed), provisionStep.Successful, provisionStep.TotalAttempted)
 			}
-			b.WriteString(cardHTML("Provision step success rate (CI/Infra excluded)", provisionStepValue))
+			b.WriteString(cardHTML("Provision step success rate (Other excluded)", provisionStepValue))
 		}
 		b.WriteString("    </div>\n")
 		if report.Environment == "dev" {
@@ -669,7 +706,7 @@ func buildHTML(
 		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-success\"></span>Successful runs</span>\n")
 		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-provision\"></span>Provision failures</span>\n")
 		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-e2e\"></span>E2E failures</span>\n")
-		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-ciinfra\"></span>CI/Infra failures</span>\n")
+		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-ciinfra\"></span>Other failures</span>\n")
 		b.WriteString("    </div>\n")
 		b.WriteString("    <div class=\"outcomes\">\n")
 		for _, day := range report.Days {
@@ -684,19 +721,19 @@ func buildHTML(
 				b.WriteString(outcomeSegmentHTML("seg-success", successfulRuns, totalRuns, envMaxRuns, "Successful runs"))
 				b.WriteString(outcomeSegmentHTML("seg-provision", provisionFailedRuns, totalRuns, envMaxRuns, "Provision failures"))
 				b.WriteString(outcomeSegmentHTML("seg-e2e", e2eFailedRuns, totalRuns, envMaxRuns, "E2E failures"))
-				b.WriteString(outcomeSegmentHTML("seg-ciinfra", ciInfraFailedRuns, totalRuns, envMaxRuns, "CI/Infra failures"))
+				b.WriteString(outcomeSegmentHTML("seg-ciinfra", ciInfraFailedRuns, totalRuns, envMaxRuns, "Other failures"))
 				b.WriteString("</div>")
 			}
 			b.WriteString("<div class=\"outcome-values\">")
 			b.WriteString(fmt.Sprintf(
-				"<span class=\"mode-count\">S:%d &nbsp; P:%d &nbsp; E2E:%d &nbsp; CI:%d</span>",
+				"<span class=\"mode-count\">S:%d &nbsp; P:%d &nbsp; E2E:%d &nbsp; Other:%d</span>",
 				successfulRuns,
 				provisionFailedRuns,
 				e2eFailedRuns,
 				ciInfraFailedRuns,
 			))
 			b.WriteString(fmt.Sprintf(
-				"<span class=\"mode-percent\">S:%.2f%% &nbsp; P:%.2f%% &nbsp; E2E:%.2f%% &nbsp; CI:%.2f%%</span>",
+				"<span class=\"mode-percent\">S:%.2f%% &nbsp; P:%.2f%% &nbsp; E2E:%.2f%% &nbsp; Other:%.2f%%</span>",
 				outcomePct(successfulRuns, totalRuns),
 				outcomePct(provisionFailedRuns, totalRuns),
 				outcomePct(e2eFailedRuns, totalRuns),
@@ -712,7 +749,7 @@ func buildHTML(
 			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-success\"></span>Successful runs (after last push of merged PR)</span>\n")
 			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-provision\"></span>Provision failures</span>\n")
 			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-e2e\"></span>E2E failures</span>\n")
-			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-ciinfra\"></span>CI/Infra failures</span>\n")
+			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-ciinfra\"></span>Other failures</span>\n")
 			b.WriteString("    </div>\n")
 			b.WriteString("    <div class=\"outcomes\">\n")
 			for _, day := range report.Days {
@@ -730,19 +767,19 @@ func buildHTML(
 					b.WriteString(outcomeSegmentHTML("seg-success", successfulRuns, totalRuns, envMaxRuns, "Successful runs (after last push of merged PR)"))
 					b.WriteString(outcomeSegmentHTML("seg-provision", provisionFailedRuns, totalRuns, envMaxRuns, "Provision failures"))
 					b.WriteString(outcomeSegmentHTML("seg-e2e", e2eFailedRuns, totalRuns, envMaxRuns, "E2E failures"))
-					b.WriteString(outcomeSegmentHTML("seg-ciinfra", ciInfraFailedRuns, totalRuns, envMaxRuns, "CI/Infra failures"))
+					b.WriteString(outcomeSegmentHTML("seg-ciinfra", ciInfraFailedRuns, totalRuns, envMaxRuns, "Other failures"))
 					b.WriteString("</div>")
 				}
 				b.WriteString("<div class=\"outcome-values\">")
 				b.WriteString(fmt.Sprintf(
-					"<span class=\"mode-count\">S:%d &nbsp; P:%d &nbsp; E2E:%d &nbsp; CI:%d</span>",
+					"<span class=\"mode-count\">S:%d &nbsp; P:%d &nbsp; E2E:%d &nbsp; Other:%d</span>",
 					successfulRuns,
 					provisionFailedRuns,
 					e2eFailedRuns,
 					ciInfraFailedRuns,
 				))
 				b.WriteString(fmt.Sprintf(
-					"<span class=\"mode-percent\">S:%.2f%% &nbsp; P:%.2f%% &nbsp; E2E:%.2f%% &nbsp; CI:%.2f%%</span>",
+					"<span class=\"mode-percent\">S:%.2f%% &nbsp; P:%.2f%% &nbsp; E2E:%.2f%% &nbsp; Other:%.2f%%</span>",
 					outcomePct(successfulRuns, totalRuns),
 					outcomePct(provisionFailedRuns, totalRuns),
 					outcomePct(e2eFailedRuns, totalRuns),
@@ -756,7 +793,7 @@ func buildHTML(
 		b.WriteString("    </div>\n")
 
 		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(testsPanelID), html.EscapeString(environment)))
-		b.WriteString(fmt.Sprintf("      <p class=\"panel-note\">Source: Sippy test metadata (period: %s). Top %d tests below %.2f%% success; minimum %d runs. If the selected week has no metadata rows, this view falls back to the latest available metadata date.</p>\n",
+		b.WriteString(fmt.Sprintf("      <p class=\"panel-note\">Source: Sippy test metadata (period: %s, rolling 7-day window). Top %d tests below %.2f%% success; minimum %d runs. This view uses the first metadata datapoint available after the report window end date; if unavailable, it falls back to the latest datapoint before the end date.</p>\n",
 			html.EscapeString(weeklySippyDefaultPeriod),
 			weeklyTestsBelowTargetTopLimit,
 			weeklyTestSuccessTarget,
@@ -793,60 +830,39 @@ func buildHTML(
 		if len(signatures) == 0 {
 			b.WriteString("      <p class=\"panel-empty\">No semantic signatures available for this environment in the selected semantic snapshot.</p>\n")
 		} else {
-			b.WriteString("      <table class=\"detail-table\">\n")
-			b.WriteString("        <thead><tr><th>Signature</th><th>Support</th><th>Share</th><th>Post-good support</th><th>Also seen in envs</th><th>Full failure examples</th><th>Latest job examples</th></tr></thead>\n")
-			b.WriteString("        <tbody>\n")
+			triageRows := make([]triagehtml.SignatureRow, 0, len(signatures))
 			for _, item := range signatures {
-				otherEnvironments := "none"
-				if len(item.SeenInOtherEnvs) > 0 {
-					otherEnvironments = strings.Join(item.SeenInOtherEnvs, ", ")
+				triageRow := triagehtml.SignatureRow{
+					Phrase:            item.Phrase,
+					ClusterID:         item.ClusterID,
+					SearchQuery:       item.SearchQuery,
+					SupportCount:      item.SupportCount,
+					SupportShare:      item.SupportShare,
+					PostGoodCount:     item.PostGoodCount,
+					AlsoSeenIn:        append([]string(nil), item.SeenInOtherEnvs...),
+					QualityScore:      item.QualityScore,
+					QualityNoteLabels: append([]string(nil), item.QualityNoteLabels...),
+					ContributingTests: append([]triagehtml.ContributingTest(nil), item.ContributingTests...),
+					FullErrorSamples:  append([]string(nil), item.FullErrorSamples...),
+					References:        append([]triagehtml.RunReference(nil), item.References...),
 				}
-				fullFailuresCell := "n/a"
-				if len(item.FullErrorSamples) > 0 {
-					var fullFailures strings.Builder
-					fullFailures.WriteString(fmt.Sprintf("<details><summary>Show %d full failures</summary>", len(item.FullErrorSamples)))
-					for _, sample := range item.FullErrorSamples {
-						fullFailures.WriteString("<pre>")
-						fullFailures.WriteString(html.EscapeString(sample))
-						fullFailures.WriteString("</pre>")
-					}
-					fullFailures.WriteString("</details>")
-					fullFailuresCell = fullFailures.String()
+				if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(
+					triageRow.References,
+					windowDays,
+					endDate,
+				); ok {
+					triageRow.TrendSparkline = sparkline
+					triageRow.TrendCounts = append([]int(nil), counts...)
+					triageRow.TrendRange = sparkRange
 				}
-				latestExamplesCell := "n/a"
-				if len(item.LatestRuns) > 0 {
-					links := make([]string, 0, len(item.LatestRuns))
-					for index, run := range item.LatestRuns {
-						url := strings.TrimSpace(run.RunURL)
-						if url == "" {
-							continue
-						}
-						label := fmt.Sprintf("Job %d", index+1)
-						if ts, ok := parseSignatureRunTimestamp(run.OccurredAt); ok {
-							label = ts.UTC().Format("2006-01-02 15:04Z")
-						}
-						links = append(links, fmt.Sprintf(
-							"<a href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">%s</a>",
-							html.EscapeString(url),
-							html.EscapeString(label),
-						))
-					}
-					if len(links) > 0 {
-						latestExamplesCell = strings.Join(links, " &middot; ")
-					}
-				}
-				b.WriteString("          <tr>")
-				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(cleanInline(item.Phrase, weeklyPhrasePreviewMaxLength))))
-				b.WriteString(fmt.Sprintf("<td>%d</td>", item.SupportCount))
-				b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", item.SupportShare))
-				b.WriteString(fmt.Sprintf("<td>%d</td>", item.PostGoodCount))
-				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(otherEnvironments)))
-				b.WriteString(fmt.Sprintf("<td>%s</td>", fullFailuresCell))
-				b.WriteString(fmt.Sprintf("<td>%s</td>", latestExamplesCell))
-				b.WriteString("</tr>\n")
+				triageRows = append(triageRows, triageRow)
 			}
-			b.WriteString("        </tbody>\n")
-			b.WriteString("      </table>\n")
+			b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
+				IncludeQualityNotes: false,
+				IncludeTrend:        true,
+				GitHubRepoOwner:     triagehtml.DefaultGitHubRepoOwner,
+				GitHubRepoName:      triagehtml.DefaultGitHubRepoName,
+			}))
 		}
 		b.WriteString("    </div>\n")
 		b.WriteString("  </section>\n")
@@ -929,17 +945,59 @@ func loadBelowTargetTestsByEnvironment(
 ) (map[string][]belowTargetTest, error) {
 	out := make(map[string][]belowTargetTest, len(reportEnvironments))
 	trimmedPeriod := strings.TrimSpace(period)
+	windowEndDate := ""
+	for i := len(dates) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(dates[i])
+		if candidate == "" {
+			continue
+		}
+		windowEndDate = candidate
+		break
+	}
+	if windowEndDate == "" {
+		return out, nil
+	}
+
 	metricDates, err := store.ListMetricDates(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list metric dates for test metadata fallback: %w", err)
+		return nil, fmt.Errorf("list metric dates for test metadata date selection: %w", err)
 	}
-	fallbackDates := metadataFallbackDates(metricDates, dates)
+	candidateDatesAfter := metadataDatesAfter(metricDates, windowEndDate)
+	candidateDatesBefore := metadataDatesBefore(metricDates, windowEndDate)
+
 	for _, environment := range reportEnvironments {
-		filtered, hadWindowRows, collectErr := collectBelowTargetTestsForDates(
+		selectedDate, selectErr := firstMetadataDateForEnvironment(
 			ctx,
 			store,
 			environment,
-			dates,
+			trimmedPeriod,
+			candidateDatesAfter,
+		)
+		if selectErr != nil {
+			return nil, selectErr
+		}
+		if selectedDate == "" {
+			selectedDate, selectErr = firstMetadataDateForEnvironment(
+				ctx,
+				store,
+				environment,
+				trimmedPeriod,
+				candidateDatesBefore,
+			)
+			if selectErr != nil {
+				return nil, selectErr
+			}
+		}
+		if selectedDate == "" {
+			out[environment] = nil
+			continue
+		}
+
+		filtered, _, collectErr := collectBelowTargetTestsForDates(
+			ctx,
+			store,
+			environment,
+			[]string{selectedDate},
 			trimmedPeriod,
 			targetPassRate,
 			minRuns,
@@ -947,21 +1005,6 @@ func loadBelowTargetTestsByEnvironment(
 		)
 		if collectErr != nil {
 			return nil, collectErr
-		}
-		if len(filtered) == 0 && !hadWindowRows && len(fallbackDates) > 0 {
-			filtered, _, collectErr = collectBelowTargetTestsForDates(
-				ctx,
-				store,
-				environment,
-				fallbackDates,
-				trimmedPeriod,
-				targetPassRate,
-				minRuns,
-				limit,
-			)
-			if collectErr != nil {
-				return nil, collectErr
-			}
 		}
 		out[environment] = filtered
 	}
@@ -1035,22 +1078,61 @@ func collectBelowTargetTestsForDates(
 	return filtered, hadRows, nil
 }
 
-func metadataFallbackDates(metricDates []string, primaryDates []string) []string {
-	exclude := map[string]struct{}{}
-	for _, date := range primaryDates {
-		trimmed := strings.TrimSpace(date)
-		if trimmed == "" {
-			continue
+func firstMetadataDateForEnvironment(
+	ctx context.Context,
+	store storecontracts.Store,
+	environment string,
+	period string,
+	candidateDates []string,
+) (string, error) {
+	for _, date := range candidateDates {
+		rows, err := store.ListTestMetadataDailyByDate(ctx, environment, date)
+		if err != nil {
+			return "", fmt.Errorf("list test metadata daily for env=%q date=%q: %w", environment, date, err)
 		}
-		exclude[trimmed] = struct{}{}
+		for _, row := range rows {
+			if period != "" && strings.TrimSpace(row.Period) != period {
+				continue
+			}
+			if strings.TrimSpace(row.TestName) == "" {
+				continue
+			}
+			return date, nil
+		}
 	}
+	return "", nil
+}
+
+func metadataDatesAfter(metricDates []string, threshold string) []string {
+	trimmedThreshold := strings.TrimSpace(threshold)
 	unique := map[string]struct{}{}
 	for _, date := range metricDates {
 		trimmed := strings.TrimSpace(date)
 		if trimmed == "" {
 			continue
 		}
-		if _, blocked := exclude[trimmed]; blocked {
+		if trimmedThreshold != "" && trimmed <= trimmedThreshold {
+			continue
+		}
+		unique[trimmed] = struct{}{}
+	}
+	out := make([]string, 0, len(unique))
+	for value := range unique {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func metadataDatesBefore(metricDates []string, threshold string) []string {
+	trimmedThreshold := strings.TrimSpace(threshold)
+	unique := map[string]struct{}{}
+	for _, date := range metricDates {
+		trimmed := strings.TrimSpace(date)
+		if trimmed == "" {
+			continue
+		}
+		if trimmedThreshold != "" && trimmed >= trimmedThreshold {
 			continue
 		}
 		unique[trimmed] = struct{}{}
@@ -1116,14 +1198,24 @@ func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int, minSha
 			if minShare > 0 && share < minShare {
 				continue
 			}
+			qualityCodes := triagehtml.QualityIssueCodes(strings.TrimSpace(phrase))
+			qualityLabels := make([]string, 0, len(qualityCodes))
+			for _, code := range qualityCodes {
+				qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+			}
 			rows = append(rows, topSignature{
-				Phrase:           strings.TrimSpace(phrase),
-				SupportCount:     support,
-				SupportShare:     share,
-				PostGoodCount:    postGoodByPhrase[phrase],
-				SeenInOtherEnvs:  otherEnvironments,
-				LatestRuns:       append([]signatureRunExample(nil), snapshot.PhraseLatestRunsByEnv[environment][phrase]...),
-				FullErrorSamples: append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
+				Phrase:            strings.TrimSpace(phrase),
+				ClusterID:         strings.TrimSpace(snapshot.PhraseClusterIDByEnv[environment][phrase]),
+				SearchQuery:       strings.TrimSpace(snapshot.PhraseSearchQueryByEnv[environment][phrase]),
+				SupportCount:      support,
+				SupportShare:      share,
+				PostGoodCount:     postGoodByPhrase[phrase],
+				SeenInOtherEnvs:   otherEnvironments,
+				QualityScore:      triagehtml.QualityScore(qualityCodes),
+				QualityNoteLabels: qualityLabels,
+				ContributingTests: append([]triagehtml.ContributingTest(nil), snapshot.PhraseContributingTestsByEnv[environment][phrase]...),
+				References:        append([]triagehtml.RunReference(nil), snapshot.PhraseReferencesByEnv[environment][phrase]...),
+				FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
 			})
 		}
 		sort.Slice(rows, func(i, j int) bool {
@@ -1141,6 +1233,70 @@ func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int, minSha
 		out[environment] = rows
 	}
 	return out
+}
+
+func toTriageRunReferences(rows []semanticcontracts.ReferenceRecord) []triagehtml.RunReference {
+	out := make([]triagehtml.RunReference, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.RunReference{
+			RunURL:      strings.TrimSpace(row.RunURL),
+			OccurredAt:  strings.TrimSpace(row.OccurredAt),
+			SignatureID: strings.TrimSpace(row.SignatureID),
+			PRNumber:    row.PRNumber,
+		})
+	}
+	return out
+}
+
+func toTriageContributingTests(rows []semanticcontracts.ContributingTestRecord) []triagehtml.ContributingTest {
+	out := make([]triagehtml.ContributingTest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.ContributingTest{
+			Lane:         strings.TrimSpace(row.Lane),
+			JobName:      strings.TrimSpace(row.JobName),
+			TestName:     strings.TrimSpace(row.TestName),
+			SupportCount: row.SupportCount,
+		})
+	}
+	return out
+}
+
+func mergeTriageContributingTests(existing []triagehtml.ContributingTest, incoming []triagehtml.ContributingTest) []triagehtml.ContributingTest {
+	if len(incoming) == 0 {
+		return existing
+	}
+	type key struct {
+		lane string
+		job  string
+		test string
+	}
+	merged := make(map[key]triagehtml.ContributingTest, len(existing)+len(incoming))
+	for _, item := range existing {
+		merged[key{
+			lane: strings.TrimSpace(item.Lane),
+			job:  strings.TrimSpace(item.JobName),
+			test: strings.TrimSpace(item.TestName),
+		}] = item
+	}
+	for _, item := range incoming {
+		k := key{
+			lane: strings.TrimSpace(item.Lane),
+			job:  strings.TrimSpace(item.JobName),
+			test: strings.TrimSpace(item.TestName),
+		}
+		existingItem, ok := merged[k]
+		if !ok {
+			merged[k] = item
+			continue
+		}
+		existingItem.SupportCount += item.SupportCount
+		merged[k] = existingItem
+	}
+	out := make([]triagehtml.ContributingTest, 0, len(merged))
+	for _, item := range merged {
+		out = append(out, item)
+	}
+	return triagehtml.OrderedContributingTests(out)
 }
 
 func loadSignatureFullErrorSamplesByEnvironment(
@@ -1227,101 +1383,6 @@ func appendUniqueLimitedSample(existing []string, candidate string, limit int) [
 	return append(existing, trimmedCandidate)
 }
 
-func runExamplesFromGlobalCluster(row semanticcontracts.GlobalClusterRecord) []signatureRunExample {
-	candidates := make([]signatureRunExample, 0, len(row.References)+1)
-	for _, ref := range row.References {
-		runURL := strings.TrimSpace(ref.RunURL)
-		if runURL == "" {
-			continue
-		}
-		candidates = append(candidates, signatureRunExample{
-			RunURL:     runURL,
-			OccurredAt: strings.TrimSpace(ref.OccurredAt),
-		})
-	}
-	if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
-		candidates = append(candidates, signatureRunExample{
-			RunURL: sourceRunURL,
-		})
-	}
-	return mergeSignatureRunExamples(nil, candidates, weeklySignatureExampleLimit)
-}
-
-func mergeSignatureRunExamples(existing []signatureRunExample, incoming []signatureRunExample, limit int) []signatureRunExample {
-	mergedByURL := map[string]signatureRunExample{}
-	for _, current := range existing {
-		runURL := strings.TrimSpace(current.RunURL)
-		if runURL == "" {
-			continue
-		}
-		current.RunURL = runURL
-		mergedByURL[runURL] = current
-	}
-	for _, candidate := range incoming {
-		runURL := strings.TrimSpace(candidate.RunURL)
-		if runURL == "" {
-			continue
-		}
-		candidate.RunURL = runURL
-		existingValue, exists := mergedByURL[runURL]
-		if !exists || preferSignatureRunExample(candidate, existingValue) {
-			mergedByURL[runURL] = candidate
-		}
-	}
-
-	merged := make([]signatureRunExample, 0, len(mergedByURL))
-	for _, value := range mergedByURL {
-		merged = append(merged, value)
-	}
-	sort.Slice(merged, func(i, j int) bool {
-		ti, okI := parseSignatureRunTimestamp(merged[i].OccurredAt)
-		tj, okJ := parseSignatureRunTimestamp(merged[j].OccurredAt)
-		switch {
-		case okI && okJ && !ti.Equal(tj):
-			return ti.After(tj)
-		case okI != okJ:
-			return okI
-		}
-		return merged[i].RunURL < merged[j].RunURL
-	})
-	if limit > 0 && len(merged) > limit {
-		merged = merged[:limit]
-	}
-	return merged
-}
-
-func preferSignatureRunExample(candidate signatureRunExample, existing signatureRunExample) bool {
-	candidateTime, candidateHasTime := parseSignatureRunTimestamp(candidate.OccurredAt)
-	existingTime, existingHasTime := parseSignatureRunTimestamp(existing.OccurredAt)
-	switch {
-	case candidateHasTime && existingHasTime && !candidateTime.Equal(existingTime):
-		return candidateTime.After(existingTime)
-	case candidateHasTime != existingHasTime:
-		return candidateHasTime
-	}
-	return len(strings.TrimSpace(candidate.OccurredAt)) > len(strings.TrimSpace(existing.OccurredAt))
-}
-
-func parseSignatureRunTimestamp(value string) (time.Time, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return time.Time{}, false
-	}
-	formats := []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		"2006-01-02 15:04:05",
-		"2006-01-02",
-	}
-	for _, layout := range formats {
-		parsed, err := time.Parse(layout, trimmed)
-		if err == nil {
-			return parsed.UTC(), true
-		}
-	}
-	return time.Time{}, false
-}
-
 func dailyRunOutcomeCounts(day counts) (successfulRuns int, ciInfraFailedRuns int, provisionFailedRuns int, e2eFailedRuns int) {
 	ciInfraFailedRuns = day.FailedCIInfraRunCount
 	provisionFailedRuns = day.FailedProvisionRunCount
@@ -1379,6 +1440,12 @@ type provisionStepTotals struct {
 	Failed         int
 }
 
+type e2eStepTotals struct {
+	TotalAttempted int
+	Successful     int
+	Failed         int
+}
+
 func summarizePostGoodRunOutcomes(days []dayReport) runOutcomesTotals {
 	out := runOutcomesTotals{}
 	for _, day := range days {
@@ -1410,6 +1477,29 @@ func summarizeProvisionStepOutcomes(days []dayReport) provisionStepTotals {
 		out.TotalAttempted += attempted
 		out.Successful += successfulProvision
 		out.Failed += failedProvision
+	}
+	return out
+}
+
+func summarizeE2EStepOutcomes(days []dayReport) e2eStepTotals {
+	out := e2eStepTotals{}
+	for _, day := range days {
+		successfulRuns, _, _, e2eFailedRuns := dailyRunOutcomeCounts(day.Counts)
+		attempted := successfulRuns + e2eFailedRuns
+		successfulE2E := successfulRuns
+		failedE2E := e2eFailedRuns
+		if attempted < 0 {
+			attempted = 0
+		}
+		if successfulE2E < 0 {
+			successfulE2E = 0
+		}
+		if failedE2E < 0 {
+			failedE2E = 0
+		}
+		out.TotalAttempted += attempted
+		out.Successful += successfulE2E
+		out.Failed += failedE2E
 	}
 	return out
 }
@@ -1473,6 +1563,16 @@ func successPct(total int, failed int) float64 {
 	return float64(successful) * 100.0 / float64(total)
 }
 
+func formatSignedPercentPointCell(value float64) string {
+	className := "pp-neutral"
+	if value > 0 {
+		className = "pp-positive"
+	} else if value < 0 {
+		className = "pp-negative"
+	}
+	return fmt.Sprintf("<span class=\"%s\">%+.2fpp</span>", className, value)
+}
+
 func normalizeReportEnvironment(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
@@ -1516,7 +1616,7 @@ func topFailedLane(total counts) (string, int) {
 }
 
 func topFailedLaneFromCounts(ciInfraCount, provisionCount, e2eCount int) (string, int) {
-	bestLane := "ci/infra"
+	bestLane := "other"
 	bestCount := ciInfraCount
 	if provisionCount > bestCount {
 		bestLane = "provision"

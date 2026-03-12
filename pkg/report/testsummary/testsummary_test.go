@@ -458,6 +458,17 @@ func TestClusterDailyDensitySparklineAnchorsToGeneratedAtWindow(t *testing.T) {
 	}
 }
 
+func TestQualityTrendAnchorUsesConfiguredWindowEnd(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	got := qualityTrendAnchor(generatedAt, "2026-03-08T00:00:00Z")
+	want := time.Date(2026, 3, 7, 23, 59, 59, int(time.Second-time.Nanosecond), time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("unexpected trend anchor: got %s want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+}
+
 func TestGenerateWritesPerEnvironmentFilesWhenSplitEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -761,7 +772,7 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 			MemberSignatureIDs:      []string{"sig-suspicious-1"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:      "https://prow.example/run/suspicious-1",
+					RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4201/pull-ci-Azure-ARO-HCP-main-e2e-parallel/10001",
 					OccurredAt:  "2026-03-07T12:00:00Z",
 					SignatureID: "sig-suspicious-1",
 					PRNumber:    4201,
@@ -783,7 +794,7 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 			MemberSignatureIDs:      []string{"sig-suspicious-2"},
 			References: []semanticcontracts.ReferenceRecord{
 				{
-					RunURL:      "https://prow.example/run/suspicious-2",
+					RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4202/pull-ci-Azure-ARO-HCP-main-e2e-parallel/10002",
 					OccurredAt:  "2026-03-06T12:00:00Z",
 					SignatureID: "sig-suspicious-2",
 					PRNumber:    4202,
@@ -798,14 +809,14 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 		{
 			Environment: "dev",
 			RowID:       "row-suspicious-1",
-			RunURL:      "https://prow.example/run/suspicious-1",
+			RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4201/pull-ci-Azure-ARO-HCP-main-e2e-parallel/10001",
 			SignatureID: "sig-suspicious-1",
 			RawText:     "failed waiting for cluster create with context deadline exceeded",
 		},
 		{
 			Environment: "dev",
 			RowID:       "row-suspicious-2",
-			RunURL:      "https://prow.example/run/suspicious-2",
+			RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4202/pull-ci-Azure-ARO-HCP-main-e2e-parallel/10002",
 			SignatureID: "sig-suspicious-2",
 			RawText:     "provider response contained empty ErrorCode field",
 		},
@@ -848,6 +859,7 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 	requiredReportSnippets := []string{
 		"CI Semantic Quality Report",
 		"Window: <strong>2026-03-01</strong> to <strong>2026-03-07</strong> (7 days)",
+		"2026-03-01..2026-03-07",
 		"filter-env",
 		"sort-inspector",
 		"option value=\"score\">Score",
@@ -856,7 +868,11 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 		"option value=\"support\">Support",
 		"option value=\"phrase\">Evidence phrase",
 		"option value=\"job_test\">Job/Test",
-		"Show 1 full errors",
+		"Full errors (1)",
+		"Affected runs (1)",
+		"Associated PR",
+		"https://github.com/Azure/ARO-HCP/pull/4201",
+		"prow job",
 		"&lt;context.deadlineExceededError&gt;{},",
 		"context type stub leaked",
 		"contains empty ErrorCode",
@@ -869,6 +885,8 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 	for _, snippet := range []string{
 		"<h3>Suspicious Signatures</h3>",
 		"<th>Post-good</th>",
+		"<th>Full errors</th>",
+		"<th>Recent runs</th>",
 		"Error Spread (last",
 	} {
 		if strings.Contains(report, snippet) {
@@ -1076,5 +1094,17 @@ func TestBuildQualitySignatureRowsFlagsGenericFailurePhrase(t *testing.T) {
 	}
 	if !row.isFlagged() {
 		t.Fatalf("expected generic failure row to be flagged")
+	}
+}
+
+func TestResolveInspectorGitHubPRURLFromProwRunFallbackToDefaultRepo(t *testing.T) {
+	t.Parallel()
+
+	got, ok := resolveInspectorGitHubPRURLFromProwRun("https://prow.example/run/unknown-format", 4313)
+	if !ok {
+		t.Fatalf("expected resolver fallback to succeed")
+	}
+	if got != "https://github.com/Azure/ARO-HCP/pull/4313" {
+		t.Fatalf("unexpected fallback URL: %q", got)
 	}
 }

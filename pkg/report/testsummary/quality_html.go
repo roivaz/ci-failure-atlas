@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"ci-failure-atlas/pkg/report/triagehtml"
 )
 
 type qualitySignatureRow struct {
@@ -62,6 +64,11 @@ type qualityExportRun struct {
 	OccurredAt string `json:"occurred_at"`
 	PRNumber   int    `json:"pr_number,omitempty"`
 }
+
+const (
+	defaultGitHubRepoOwner = "Azure"
+	defaultGitHubRepoName  = "ARO-HCP"
+)
 
 func buildQualitySignatureRows(
 	testClusters []testCluster,
@@ -283,6 +290,7 @@ func buildHTML(
 	b.WriteString("    .quality-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0 16px; }\n")
 	b.WriteString("    .quality-table th, .quality-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }\n")
 	b.WriteString("    .quality-table th { background: #f3f4f6; color: #374151; font-weight: 700; }\n")
+	b.WriteString("    .quality-table tr.inspector-errors-row td { background: #eff6ff; }\n")
 	b.WriteString("    .badge { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; margin: 1px 2px 1px 0; }\n")
 	b.WriteString("    .badge-issue { background: #fee2e2; color: #991b1b; }\n")
 	b.WriteString("    .badge-review { background: #fef3c7; color: #92400e; }\n")
@@ -292,6 +300,15 @@ func buildHTML(
 	b.WriteString("    .empty { color: #6b7280; font-size: 12px; }\n")
 	b.WriteString("    details { margin: 2px 0; }\n")
 	b.WriteString("    details summary { cursor: pointer; color: #1d4ed8; }\n")
+	b.WriteString("    .inspector-errors-row .inspector-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }\n")
+	b.WriteString("    .inspector-errors-row details.full-errors-toggle, .inspector-errors-row details.affected-runs-toggle { margin: 0; }\n")
+	b.WriteString("    .inspector-errors-row details.full-errors-toggle > summary, .inspector-errors-row details.affected-runs-toggle > summary { display: inline-flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 600; color: #1e3a8a; background: #dbeafe; border: 1px solid #93c5fd; border-radius: 999px; padding: 2px 10px; }\n")
+	b.WriteString("    .inspector-errors-row details.full-errors-toggle[open] > summary, .inspector-errors-row details.affected-runs-toggle[open] > summary { background: #bfdbfe; border-color: #60a5fa; color: #1e40af; }\n")
+	b.WriteString("    .inspector-errors-row .runs-scroll { margin-top: 6px; max-height: 172px; overflow-y: auto; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }\n")
+	b.WriteString("    .inspector-errors-row .runs-table { border-collapse: collapse; width: 100%; font-size: 11px; }\n")
+	b.WriteString("    .inspector-errors-row .runs-table th, .inspector-errors-row .runs-table td { padding: 4px 6px; border-bottom: 1px solid #dbeafe; text-align: left; vertical-align: top; }\n")
+	b.WriteString("    .inspector-errors-row .runs-table th { position: sticky; top: 0; background: #dbeafe; z-index: 1; }\n")
+	b.WriteString("    .signature-text { font-size: 13px; font-weight: 700; color: #111827; }\n")
 	b.WriteString("    pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; }\n")
 	b.WriteString("    .muted { color: #6b7280; }\n")
 	b.WriteString("  </style>\n")
@@ -372,11 +389,14 @@ func buildHTML(
 	if len(rows) == 0 {
 		b.WriteString("  <p class=\"empty\">No signatures available for the selected scope.</p>\n")
 	} else {
+		const inspectorColumnCount = 10
 		b.WriteString("  <table class=\"quality-table\" id=\"inspector-table\">\n")
-		b.WriteString("    <thead><tr><th>Score</th><th>Env</th><th>Lane</th><th>Support</th><th>Current success</th><th>Trend</th><th>Evidence phrase</th><th>Quality flags</th><th>Review flags</th><th>Job/Test</th><th>Full errors</th><th>Recent runs</th></tr></thead>\n")
+		b.WriteString("    <thead><tr><th>Score</th><th>Env</th><th>Lane</th><th>Support</th><th>Current success</th><th>Trend</th><th>Evidence phrase</th><th>Quality flags</th><th>Review flags</th><th>Job/Test</th></tr></thead>\n")
 		b.WriteString("    <tbody>\n")
-		for _, row := range rows {
-			b.WriteString(signatureInspectorRowHTML(row))
+		for i, row := range rows {
+			rowID := fmt.Sprintf("inspector-row-%d", i+1)
+			b.WriteString(signatureInspectorRowHTML(row, rowID))
+			b.WriteString(signatureInspectorDetailRowHTML(row, rowID, inspectorColumnCount))
 		}
 		b.WriteString("    </tbody>\n")
 		b.WriteString("  </table>\n")
@@ -441,10 +461,20 @@ func buildHTML(
 	b.WriteString("  function sortInspectorRows() {\n")
 	b.WriteString("    var tbody = document.querySelector('#inspector-table tbody');\n")
 	b.WriteString("    if (!tbody) { return; }\n")
-	b.WriteString("    var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr.quality-row'));\n")
+	b.WriteString("    var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr.quality-row.inspector-row'));\n")
+	b.WriteString("    var detailRows = {};\n")
+	b.WriteString("    var details = Array.prototype.slice.call(tbody.querySelectorAll('tr.inspector-errors-row'));\n")
+	b.WriteString("    for (var d = 0; d < details.length; d++) {\n")
+	b.WriteString("      var detail = details[d];\n")
+	b.WriteString("      var parentId = detail.getAttribute('data-parent-id') || '';\n")
+	b.WriteString("      if (parentId) { detailRows[parentId] = detail; }\n")
+	b.WriteString("    }\n")
 	b.WriteString("    rows.sort(compareInspectorRows);\n")
 	b.WriteString("    for (var i = 0; i < rows.length; i++) {\n")
-	b.WriteString("      tbody.appendChild(rows[i]);\n")
+	b.WriteString("      var row = rows[i];\n")
+	b.WriteString("      var rowId = row.getAttribute('data-row-id') || '';\n")
+	b.WriteString("      tbody.appendChild(row);\n")
+	b.WriteString("      if (rowId && detailRows[rowId]) { tbody.appendChild(detailRows[rowId]); }\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
 	b.WriteString("  function rowMatches(row) {\n")
@@ -467,12 +497,22 @@ func buildHTML(
 	b.WriteString("  }\n")
 	b.WriteString("  function applyFilters() {\n")
 	b.WriteString("    sortInspectorRows();\n")
-	b.WriteString("    var inspectorRows = document.querySelectorAll('#inspector-table tbody tr.quality-row');\n")
+	b.WriteString("    var inspectorRows = document.querySelectorAll('#inspector-table tbody tr.quality-row.inspector-row');\n")
+	b.WriteString("    var detailRows = document.querySelectorAll('#inspector-table tbody tr.inspector-errors-row');\n")
+	b.WriteString("    var detailByParent = {};\n")
+	b.WriteString("    for (var d = 0; d < detailRows.length; d++) {\n")
+	b.WriteString("      var detail = detailRows[d];\n")
+	b.WriteString("      var parentId = detail.getAttribute('data-parent-id') || '';\n")
+	b.WriteString("      if (parentId) { detailByParent[parentId] = detail; }\n")
+	b.WriteString("    }\n")
 	b.WriteString("    var visibleInspector = 0;\n")
 	b.WriteString("    for (var i = 0; i < inspectorRows.length; i++) {\n")
 	b.WriteString("      var row = inspectorRows[i];\n")
 	b.WriteString("      var show = rowMatches(row);\n")
 	b.WriteString("      row.style.display = show ? '' : 'none';\n")
+	b.WriteString("      var rowId = row.getAttribute('data-row-id') || '';\n")
+	b.WriteString("      var detail = detailByParent[rowId];\n")
+	b.WriteString("      if (detail) { detail.style.display = show ? '' : 'none'; }\n")
 	b.WriteString("      if (show) { visibleInspector++; }\n")
 	b.WriteString("    }\n")
 	b.WriteString("    if (countEl) { countEl.textContent = visibleInspector + ' signatures shown'; }\n")
@@ -605,7 +645,7 @@ func signatureRowHTML(row qualitySignatureRow, suspiciousOnly bool) string {
 	return b.String()
 }
 
-func signatureInspectorRowHTML(row qualitySignatureRow) string {
+func signatureInspectorRowHTML(row qualitySignatureRow, rowID string) string {
 	var b strings.Builder
 	phraseSortValue := strings.ToLower(strings.TrimSpace(row.Phrase))
 	jobSortValue := strings.ToLower(strings.TrimSpace(row.JobName))
@@ -613,7 +653,8 @@ func signatureInspectorRowHTML(row qualitySignatureRow) string {
 	jobTestSortValue := strings.TrimSpace(testSortValue + "|" + jobSortValue)
 	phase1SortValue := strings.ToLower(strings.TrimSpace(row.Phase1ClusterID))
 	b.WriteString(fmt.Sprintf(
-		"      <tr class=\"quality-row inspector-row\" data-env=\"%s\" data-lane=\"%s\" data-support=\"%d\" data-score=\"%d\" data-phrase=\"%s\" data-job=\"%s\" data-test=\"%s\" data-jobtest=\"%s\" data-phase1=\"%s\" data-flagged=\"%t\" data-review=\"%t\" data-search=\"%s\">",
+		"      <tr class=\"quality-row inspector-row\" data-row-id=\"%s\" data-env=\"%s\" data-lane=\"%s\" data-support=\"%d\" data-score=\"%d\" data-phrase=\"%s\" data-job=\"%s\" data-test=\"%s\" data-jobtest=\"%s\" data-phase1=\"%s\" data-flagged=\"%t\" data-review=\"%t\" data-search=\"%s\">",
+		html.EscapeString(strings.TrimSpace(rowID)),
 		html.EscapeString(row.Environment),
 		html.EscapeString(row.Lane),
 		row.SupportCount,
@@ -645,7 +686,7 @@ func signatureInspectorRowHTML(row qualitySignatureRow) string {
 	} else {
 		b.WriteString("<td>n/a</td>")
 	}
-	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(cleanInline(row.Phrase, 240))))
+	b.WriteString(fmt.Sprintf("<td><span class=\"signature-text\">%s</span></td>", html.EscapeString(cleanInline(row.Phrase, 240))))
 	b.WriteString("<td>")
 	if len(row.IssueLabels) == 0 {
 		b.WriteString("<span class=\"badge badge-ok\">ok</span>")
@@ -669,11 +710,25 @@ func signatureInspectorRowHTML(row qualitySignatureRow) string {
 		html.EscapeString(cleanInline(row.JobName, 80)),
 		html.EscapeString(cleanInline(row.TestSuite, 80)),
 	))
-	b.WriteString("<td>")
+	b.WriteString("</tr>\n")
+	return b.String()
+}
+
+func signatureInspectorDetailRowHTML(row qualitySignatureRow, rowID string, colSpan int) string {
+	var b strings.Builder
+	if colSpan <= 0 {
+		colSpan = 1
+	}
+	b.WriteString(fmt.Sprintf(
+		"      <tr class=\"inspector-errors-row\" data-parent-id=\"%s\"><td colspan=\"%d\">",
+		html.EscapeString(strings.TrimSpace(rowID)),
+		colSpan,
+	))
+	b.WriteString("<div class=\"inspector-detail-actions\">")
 	if len(row.FullErrorSamples) == 0 {
-		b.WriteString("n/a")
+		b.WriteString("<span class=\"muted\">Full errors: n/a</span>")
 	} else {
-		b.WriteString(fmt.Sprintf("<details><summary>Show %d full errors</summary>", len(row.FullErrorSamples)))
+		b.WriteString(fmt.Sprintf("<details class=\"full-errors-toggle\"><summary>Full errors (%d)</summary>", len(row.FullErrorSamples)))
 		for _, sample := range row.FullErrorSamples {
 			b.WriteString("<pre>")
 			b.WriteString(html.EscapeString(sample))
@@ -681,33 +736,79 @@ func signatureInspectorRowHTML(row qualitySignatureRow) string {
 		}
 		b.WriteString("</details>")
 	}
-	b.WriteString("</td>")
-	b.WriteString("<td>")
-	if len(row.RecentRuns) == 0 {
-		b.WriteString("n/a")
-	} else {
-		for index, run := range row.RecentRuns {
-			if index > 0 {
-				b.WriteString("<br/>")
-			}
-			label := run.OccurredAt
-			if strings.TrimSpace(label) == "" {
-				label = "unknown-time"
-			}
-			if run.PRNumber > 0 {
-				label = fmt.Sprintf("%s (PR #%d)", label, run.PRNumber)
-			}
-			runURL := strings.TrimSpace(run.RunURL)
-			if runURL == "" {
-				b.WriteString(html.EscapeString(label))
-				continue
-			}
-			b.WriteString(fmt.Sprintf("<a href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">%s</a>", html.EscapeString(runURL), html.EscapeString(cleanInline(label, 96))))
-		}
-	}
-	b.WriteString("</td>")
-	b.WriteString("</tr>\n")
+	b.WriteString(renderInspectorAffectedRunsDetails(row.References))
+	b.WriteString("</div>")
+	b.WriteString("</td></tr>\n")
 	return b.String()
+}
+
+func renderInspectorAffectedRunsDetails(rows []reference) string {
+	runs := triagehtml.OrderedUniqueReferences(toTriageRunReferences(rows))
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("<details class=\"affected-runs-toggle\"><summary>Affected runs (%d)</summary>", len(runs)))
+	if len(runs) == 0 {
+		b.WriteString("<span class=\"muted\">No affected runs available.</span>")
+		b.WriteString("</details>")
+		return b.String()
+	}
+	b.WriteString("<div class=\"runs-scroll\"><table class=\"runs-table\"><thead><tr><th>Date</th><th>Associated PR</th><th>Prow job</th></tr></thead><tbody>")
+	for _, row := range runs {
+		b.WriteString("<tr>")
+		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(triagehtml.FormatReferenceTimestampLabel(row.OccurredAt))))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", renderInspectorAssociatedPR(row)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", renderInspectorProwJobLink(row)))
+		b.WriteString("</tr>")
+	}
+	b.WriteString("</tbody></table></div></details>")
+	return b.String()
+}
+
+func renderInspectorAssociatedPR(row triagehtml.RunReference) string {
+	if row.PRNumber <= 0 {
+		return "<span class=\"muted\">n/a</span>"
+	}
+	label := fmt.Sprintf("PR #%d", row.PRNumber)
+	if prURL, ok := resolveInspectorGitHubPRURLFromProwRun(strings.TrimSpace(row.RunURL), row.PRNumber); ok {
+		return fmt.Sprintf(
+			"<a href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">%s</a>",
+			html.EscapeString(prURL),
+			html.EscapeString(label),
+		)
+	}
+	return html.EscapeString(label)
+}
+
+func renderInspectorProwJobLink(row triagehtml.RunReference) string {
+	runURL := strings.TrimSpace(row.RunURL)
+	if runURL == "" {
+		return "<span class=\"muted\">n/a</span>"
+	}
+	return fmt.Sprintf(
+		"<a href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">prow job</a>",
+		html.EscapeString(runURL),
+	)
+}
+
+func toTriageRunReferences(rows []reference) []triagehtml.RunReference {
+	out := make([]triagehtml.RunReference, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.RunReference{
+			RunURL:      strings.TrimSpace(row.RunURL),
+			OccurredAt:  strings.TrimSpace(row.OccurredAt),
+			SignatureID: strings.TrimSpace(row.SignatureID),
+			PRNumber:    row.PRNumber,
+		})
+	}
+	return out
+}
+
+func resolveInspectorGitHubPRURLFromProwRun(runURL string, prNumber int) (string, bool) {
+	return triagehtml.ResolveGitHubPRURLFromProwRun(
+		runURL,
+		prNumber,
+		defaultGitHubRepoOwner,
+		defaultGitHubRepoName,
+	)
 }
 
 func (row qualitySignatureRow) isFlagged() bool {

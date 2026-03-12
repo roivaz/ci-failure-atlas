@@ -411,7 +411,12 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 				{Lane: "e2e", JobName: "job-dev", TestName: "test-dev-a", SupportCount: 4},
 			},
 			References: []semanticcontracts.ReferenceRecord{
-				{RunURL: "https://prow.example/run/dev-1", OccurredAt: "2026-03-09T11:00:00Z", SignatureID: "sig-dev-1"},
+				{
+					RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4313/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029603943687917568",
+					OccurredAt:  "2026-03-09T11:00:00Z",
+					SignatureID: "sig-dev-1",
+					PRNumber:    4313,
+				},
 			},
 		},
 		{
@@ -453,7 +458,7 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 		{
 			Environment: "dev",
 			RowID:       "raw-dev-1",
-			RunURL:      "https://prow.example/run/dev-1",
+			RunURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4313/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029603943687917568",
 			SignatureID: "sig-dev-1",
 			RawText:     "raw dev timeout sample",
 		},
@@ -500,19 +505,32 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 		"Environment: INT",
 		"Environment: PROD",
 		"Also seen in",
+		"<th>Trend</th>",
+		"2026-03-01..2026-03-07",
 		"Quality score",
 		"Full failure examples",
-		"Show 1 full failures",
+		"Full failure examples (1)",
+		"Contributing tests (1)",
+		"<th>Lane</th><th>Job</th><th>Test</th><th>Support</th>",
+		"Affected runs (1)",
+		"Associated PR",
+		"https://github.com/Azure/ARO-HCP/pull/4313",
+		"prow job",
 		"raw dev timeout sample",
 		"full signature:",
 		"context type stub leaked",
-		"https://prow.example/run/dev-1",
 		">INT<",
 	}
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(report, snippet) {
 			t.Fatalf("expected HTML report to include %q", snippet)
 		}
+	}
+	if strings.Contains(report, "<th>Latest runs</th>") {
+		t.Fatalf("expected HTML report to not include latest runs main column")
+	}
+	if strings.Contains(report, "<th>Contributing tests</th>") {
+		t.Fatalf("expected HTML report to not include contributing tests main column")
 	}
 }
 
@@ -559,5 +577,17 @@ func TestGlobalQualityIssueCodesFlagsGenericFailurePhrase(t *testing.T) {
 	score := globalQualityScore(codes)
 	if score < 5 {
 		t.Fatalf("expected generic failure phrase score >=5, got %d", score)
+	}
+}
+
+func TestResolveGitHubPRURLFromProwRunFallbackToDefaultRepo(t *testing.T) {
+	t.Parallel()
+
+	got, ok := resolveGitHubPRURLFromProwRun("https://prow.example/run/unknown-format", 4249)
+	if !ok {
+		t.Fatalf("expected resolver fallback to succeed")
+	}
+	if got != "https://github.com/Azure/ARO-HCP/pull/4249" {
+		t.Fatalf("unexpected fallback URL: %q", got)
 	}
 }

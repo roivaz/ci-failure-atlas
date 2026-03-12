@@ -45,11 +45,13 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedE2EJobs, Value: 0},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedCIInfra, Value: 0},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedProvision, Value: 1},
+		{Environment: "dev", Date: "2026-03-08", Metric: metricRunCount, Value: 0},
 		{Environment: "int", Date: "2026-03-01", Metric: metricRunCount, Value: 8},
 		{Environment: "int", Date: "2026-03-01", Metric: metricFailureCount, Value: 2},
 		{Environment: "int", Date: "2026-03-01", Metric: metricFailedCIInfraRunCount, Value: 2},
 		{Environment: "int", Date: "2026-03-01", Metric: metricFailedProvisionRunCount, Value: 0},
 		{Environment: "int", Date: "2026-03-01", Metric: metricFailedE2ERunCount, Value: 0},
+		{Environment: "int", Date: "2026-03-08", Metric: metricRunCount, Value: 0},
 	}); err != nil {
 		t.Fatalf("seed metrics: %v", err)
 	}
@@ -57,6 +59,8 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		{Environment: "dev", Date: "2026-03-05", Period: "default", TestName: "dev flaky scenario", TestSuite: "suite/dev", CurrentPassPercentage: 83.0, CurrentRuns: 25},
 		{Environment: "dev", Date: "2026-03-06", Period: "default", TestName: "dev healthy scenario", TestSuite: "suite/dev", CurrentPassPercentage: 99.0, CurrentRuns: 25},
 		{Environment: "int", Date: "2026-03-04", Period: "default", TestName: "int flaky scenario", TestSuite: "suite/int", CurrentPassPercentage: 92.0, CurrentRuns: 12},
+		{Environment: "dev", Date: "2026-03-08", Period: "default", TestName: "dev flaky scenario", TestSuite: "suite/dev", CurrentPassPercentage: 83.0, CurrentRuns: 25},
+		{Environment: "int", Date: "2026-03-08", Period: "default", TestName: "int flaky scenario", TestSuite: "suite/int", CurrentPassPercentage: 92.0, CurrentRuns: 12},
 		{Environment: "int", Date: "2026-03-04", Period: "twoDay", TestName: "int flaky scenario", TestSuite: "suite/int", CurrentPassPercentage: 70.0, CurrentRuns: 99},
 		{Environment: "prod", Date: "2026-03-03", Period: "default", TestName: "tiny-sample ignored", TestSuite: "suite/prod", CurrentPassPercentage: 80.0, CurrentRuns: 2},
 	}); err != nil {
@@ -154,26 +158,30 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"Environment: PROD",
 		"<span class=\"exec-heading-help\" title=\"INT/STG/PROD use all E2E job runs. DEV uses runs after the last push of a PR that merges.\">Goal basis</span>",
 		"<span class=\"exec-heading-help\" title=\"Success rate on the goal basis: (runs - failed runs) / runs * 100.\">Success</span>",
-		"Provision success (DEV)",
-		"Provision change from last week (DEV)",
-		"Change from last week",
-		"Main reason for failed runs",
-		"Most common failure pattern",
+		"Provision success",
+		"Provision change WoW",
+		"E2E success",
+		"E2E success WoW",
+		"Change WoW",
+		"pp-negative",
 		"Lane outcomes",
 		"Tests below 95%",
 		"Top failure signatures",
-		"Provision step success rate (CI/Infra excluded)",
+		"Provision step success rate (Other excluded)",
 		"88.89% (8/9)",
-		"Source: Sippy test metadata (period: default). Top 5 tests below 95.00% success; minimum 10 runs. If the selected week has no metadata rows, this view falls back to the latest available metadata date.",
+		"Source: Sippy test metadata (period: default, rolling 7-day window). Top 5 tests below 95.00% success; minimum 10 runs. This view uses the first metadata datapoint available after the report window end date; if unavailable, it falls back to the latest datapoint before the end date.",
 		"Top 10 semantic signatures by support in this window (minimum 1.00% share)",
+		"<th>Trend</th>",
+		"2026-03-01..2026-03-07",
 		"dev flaky scenario",
 		"83.00%",
 		"int flaky scenario",
 		"92.00%",
-		"Also seen in envs",
+		"Also seen in",
 		"Full failure examples",
-		"Show 1 full failures",
-		"Latest job examples",
+		"Full failure examples (1)",
+		"Affected runs (",
+		"Contributing tests (",
 		"example-dev-latest",
 		"panic: timed out waiting for cluster API",
 		"timeout during CreateHCPClusterFromParam",
@@ -195,7 +203,7 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"S:6",
 		"P:1",
 		"E2E:2",
-		"CI:1",
+		"Other:1",
 	}
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(report, snippet) {
@@ -216,6 +224,12 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"Runs (goal basis)",
 		"Success (goal basis)",
 		"Top semantic signature (support delta)",
+		"Quality notes",
+		"Provision success (DEV)",
+		"Provision change from last week (DEV)",
+		"Change from last week",
+		"Main reason for failed runs",
+		"Most common failure pattern",
 		"tiny-sample ignored",
 		"70.00%",
 	}
@@ -316,12 +330,17 @@ func TestGenerateWithComparisonRendersExecutiveAndSemanticDeltas(t *testing.T) {
 		"e2e-integration, e2e-stage, e2e-prod job runs should each succeed 95% of the time",
 		"e2e-dev job runs should succeed 95% of the time after the last push of a PR that merges",
 		"timeout during CreateHCPClusterFromParam",
-		"+4",
-		"Provision success (DEV)",
+		"Provision success",
+		"Provision change WoW",
+		"E2E success",
+		"E2E success WoW",
+		"Change WoW",
+		"pp-negative",
 		"80.00% (8/10)",
 		"-20.00pp",
 		"Tests below 95%",
 		"Top failure signatures",
+		"<th>Trend</th>",
 		"example-dev-comparison",
 	} {
 		if !strings.Contains(report, snippet) {
@@ -386,6 +405,142 @@ func TestGenerateFallsBackToLatestSippyMetadataWhenWindowHasNoRows(t *testing.T)
 	}
 }
 
+func TestGenerateUsesFirstMetadataDatapointAfterWindowEnd(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
+		{Environment: "int", Date: "2026-03-05", Metric: metricRunCount, Value: 8},
+		{Environment: "int", Date: "2026-03-08", Metric: metricRunCount, Value: 8},
+	}); err != nil {
+		t.Fatalf("seed metrics daily rows: %v", err)
+	}
+	if err := store.UpsertTestMetadataDaily(ctx, []storecontracts.TestMetadataDailyRecord{
+		{
+			Environment:           "int",
+			Date:                  "2026-03-05",
+			Period:                "default",
+			TestName:              "inside-window-only-test",
+			TestSuite:             "integration/parallel",
+			CurrentPassPercentage: 70.0,
+			CurrentRuns:           30,
+		},
+		{
+			Environment:           "int",
+			Date:                  "2026-03-08",
+			Period:                "default",
+			TestName:              "after-window-selected-test",
+			TestSuite:             "integration/parallel",
+			CurrentPassPercentage: 80.0,
+			CurrentRuns:           30,
+		},
+	}); err != nil {
+		t.Fatalf("seed test metadata daily rows: %v", err)
+	}
+
+	outputPath := filepath.Join(dataDir, "reports", "weekly-after-window-datapoint.html")
+	if err := Generate(ctx, store, Options{
+		OutputPath: outputPath,
+		StartDate:  "2026-03-01",
+		TargetRate: 95,
+	}); err != nil {
+		t.Fatalf("generate weekly report: %v", err)
+	}
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read weekly report output: %v", err)
+	}
+	report := string(content)
+	for _, snippet := range []string{
+		"after-window-selected-test",
+		"2026-03-08",
+		"80.00%",
+	} {
+		if !strings.Contains(report, snippet) {
+			t.Fatalf("expected weekly report to contain %q", snippet)
+		}
+	}
+	if strings.Contains(report, "inside-window-only-test") {
+		t.Fatalf("expected weekly report to ignore in-window metadata datapoint")
+	}
+}
+
+func TestGenerateFallsBackToLatestPreEndDateMetadataDatapoint(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
+		{Environment: "int", Date: "2026-03-05", Metric: metricRunCount, Value: 8},
+		{Environment: "int", Date: "2026-03-06", Metric: metricRunCount, Value: 8},
+	}); err != nil {
+		t.Fatalf("seed metrics daily rows: %v", err)
+	}
+	if err := store.UpsertTestMetadataDaily(ctx, []storecontracts.TestMetadataDailyRecord{
+		{
+			Environment:           "int",
+			Date:                  "2026-03-05",
+			Period:                "default",
+			TestName:              "older-pre-end-test",
+			TestSuite:             "integration/parallel",
+			CurrentPassPercentage: 70.0,
+			CurrentRuns:           30,
+		},
+		{
+			Environment:           "int",
+			Date:                  "2026-03-06",
+			Period:                "default",
+			TestName:              "latest-pre-end-test",
+			TestSuite:             "integration/parallel",
+			CurrentPassPercentage: 80.0,
+			CurrentRuns:           30,
+		},
+	}); err != nil {
+		t.Fatalf("seed test metadata daily rows: %v", err)
+	}
+
+	outputPath := filepath.Join(dataDir, "reports", "weekly-pre-end-fallback.html")
+	if err := Generate(ctx, store, Options{
+		OutputPath: outputPath,
+		StartDate:  "2026-03-01",
+		TargetRate: 95,
+	}); err != nil {
+		t.Fatalf("generate weekly report: %v", err)
+	}
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read weekly report output: %v", err)
+	}
+	report := string(content)
+	for _, snippet := range []string{
+		"latest-pre-end-test",
+		"2026-03-06",
+		"80.00%",
+	} {
+		if !strings.Contains(report, snippet) {
+			t.Fatalf("expected weekly report to contain %q", snippet)
+		}
+	}
+	if strings.Contains(report, "older-pre-end-test") {
+		t.Fatalf("expected weekly report to use latest pre-end-date datapoint only")
+	}
+}
+
 func TestRankTopSignaturesByEnvironmentAppliesMinShareThreshold(t *testing.T) {
 	t.Parallel()
 
@@ -400,13 +555,6 @@ func TestRankTopSignaturesByEnvironmentAppliesMinShareThreshold(t *testing.T) {
 			"dev": {
 				"high-impact signature": 5,
 				"low-signal signature":  0,
-			},
-		},
-		PhraseLatestRunsByEnv: map[string]map[string][]signatureRunExample{
-			"dev": {
-				"high-impact signature": {
-					{RunURL: "https://prow.example/dev/high", OccurredAt: "2026-03-06T10:00:00Z"},
-				},
 			},
 		},
 		PhraseFullErrorsByEnv: map[string]map[string][]string{
@@ -426,5 +574,24 @@ func TestRankTopSignaturesByEnvironmentAppliesMinShareThreshold(t *testing.T) {
 	}
 	if len(rows[0].FullErrorSamples) != 1 || rows[0].FullErrorSamples[0] != "high-impact full error" {
 		t.Fatalf("expected full error sample to be attached to ranked signature, got %#v", rows[0].FullErrorSamples)
+	}
+}
+
+func TestFormatSignedPercentPointCellUsesDirectionalClasses(t *testing.T) {
+	t.Parallel()
+
+	positive := formatSignedPercentPointCell(1.5)
+	if !strings.Contains(positive, "pp-positive") || !strings.Contains(positive, "+1.50pp") {
+		t.Fatalf("expected positive pp cell style, got %q", positive)
+	}
+
+	negative := formatSignedPercentPointCell(-2.25)
+	if !strings.Contains(negative, "pp-negative") || !strings.Contains(negative, "-2.25pp") {
+		t.Fatalf("expected negative pp cell style, got %q", negative)
+	}
+
+	neutral := formatSignedPercentPointCell(0)
+	if !strings.Contains(neutral, "pp-neutral") || !strings.Contains(neutral, "+0.00pp") {
+		t.Fatalf("expected neutral pp cell style, got %q", neutral)
 	}
 }
