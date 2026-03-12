@@ -2,9 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	semhistory "ci-failure-atlas/pkg/semantic/history"
 	workflowphase1 "ci-failure-atlas/pkg/workflow/phase1"
 	workflowphase2 "ci-failure-atlas/pkg/workflow/phase2"
 )
@@ -47,6 +49,16 @@ func NewWorkflowCommand() (*cobra.Command, error) {
 			}
 			if err := phase2Completed.Run(cmd.Context()); err != nil {
 				return fmt.Errorf("workflow build phase2: %w", err)
+			}
+			if strings.TrimSpace(buildOpts.NDJSONOptions.SemanticSubdirectory) != "" && phase1Completed.WindowStart != nil && phase1Completed.WindowEnd != nil {
+				if err := semhistory.WriteWindowMetadata(
+					buildOpts.NDJSONOptions.DataDirectory,
+					buildOpts.NDJSONOptions.SemanticSubdirectory,
+					phase1Completed.WindowStart.UTC(),
+					phase1Completed.WindowEnd.UTC(),
+				); err != nil {
+					return fmt.Errorf("workflow build metadata: %w", err)
+				}
 			}
 			return nil
 		},

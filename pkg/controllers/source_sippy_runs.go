@@ -266,7 +266,6 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 		"fetched_job_matched", len(runs),
 		"failed", len(failedRuns),
 		"upserted_runs", len(runRecords),
-		"pr_lookup_enabled", false,
 		"since", since.Format(time.RFC3339),
 	)
 	return nil

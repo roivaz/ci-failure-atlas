@@ -9,151 +9,11 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"ci-failure-atlas/pkg/report/triagehtml"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/store/ndjson"
 )
-
-func TestBuildMarkdownIncludesCoreSections(t *testing.T) {
-	t.Parallel()
-
-	globals := []globalCluster{
-		{
-			SchemaVersion:           "v1",
-			Phase2ClusterID:         "g1",
-			CanonicalEvidencePhrase: "failed waiting for cluster operators",
-			SearchQueryPhrase:       "cluster operators not available",
-			SupportCount:            7,
-			SeenPostGoodCommit:      true,
-			PostGoodCommitCount:     5,
-			ContributingTestsCount:  2,
-			ContributingTests: []contributingTest{
-				{Lane: "e2e", JobName: "job-a", TestName: "test-a", SupportCount: 4},
-				{Lane: "e2e", JobName: "job-a", TestName: "test-b", SupportCount: 3},
-			},
-			MemberPhase1ClusterIDs: []string{"p1", "p2"},
-			MemberSignatureIDs:     []string{"s1", "s2"},
-			References: []reference{
-				{
-					RunURL:         "https://prow.example/run/1",
-					OccurredAt:     "2026-03-03T12:00:00Z",
-					SignatureID:    "s1",
-					PRNumber:       100,
-					PostGoodCommit: true,
-				},
-			},
-		},
-	}
-
-	tests := []testCluster{
-		{
-			SchemaVersion:           "v1",
-			Phase1ClusterID:         "p1",
-			Lane:                    "e2e",
-			JobName:                 "job-a",
-			TestName:                "test-a",
-			TestSuite:               "suite-a",
-			CanonicalEvidencePhrase: "failed waiting for cluster operators",
-			SearchQueryPhrase:       "cluster operators not available",
-			SupportCount:            7,
-			SeenPostGoodCommit:      true,
-			PostGoodCommitCount:     5,
-			MemberSignatureIDs:      []string{"s1", "s2"},
-			References: []reference{
-				{
-					RunURL:         "https://prow.example/run/1",
-					OccurredAt:     "2026-03-03T12:00:00Z",
-					SignatureID:    "s1",
-					PRNumber:       100,
-					PostGoodCommit: true,
-				},
-			},
-		},
-	}
-
-	reviews := []reviewItem{
-		{
-			SchemaVersion: "v1",
-			ReviewItemID:  "r1",
-			Phase:         "phase1",
-			Reason:        "needs-review",
-		},
-	}
-
-	report := buildMarkdown(globals, tests, reviews, 10, 1.0)
-
-	required := []string{
-		"# CI Failure Triage Summary",
-		"## Overview",
-		"## Top Global Failure Signatures",
-		"## Top Failing Tests",
-		"## Lane Breakdown",
-		"## High-Impact Post-Good-Commit Signatures",
-		"## Review Queue",
-		"Total failure records analyzed: **7**",
-		"Markdown focus: top **10** rows with at least **1.00%** of total failures",
-	}
-	for _, section := range required {
-		if !strings.Contains(report, section) {
-			t.Fatalf("expected report to include %q", section)
-		}
-	}
-}
-
-func TestBuildMarkdownAppliesMinPercentFilter(t *testing.T) {
-	t.Parallel()
-
-	globals := []globalCluster{
-		{
-			SchemaVersion:           "v1",
-			Phase2ClusterID:         "g1",
-			CanonicalEvidencePhrase: "high signal cluster",
-			SearchQueryPhrase:       "high signal cluster",
-			SupportCount:            50,
-			ContributingTestsCount:  1,
-			ContributingTests:       []contributingTest{{Lane: "e2e", JobName: "job-a", TestName: "test-a", SupportCount: 50}},
-		},
-		{
-			SchemaVersion:           "v1",
-			Phase2ClusterID:         "g2",
-			CanonicalEvidencePhrase: "low signal cluster",
-			SearchQueryPhrase:       "low signal cluster",
-			SupportCount:            2,
-			ContributingTestsCount:  1,
-			ContributingTests:       []contributingTest{{Lane: "e2e", JobName: "job-a", TestName: "test-b", SupportCount: 2}},
-		},
-	}
-	tests := []testCluster{
-		{
-			SchemaVersion:           "v1",
-			Phase1ClusterID:         "p1",
-			Lane:                    "e2e",
-			JobName:                 "job-a",
-			TestName:                "test-a",
-			CanonicalEvidencePhrase: "high signal cluster",
-			SearchQueryPhrase:       "high signal cluster",
-			SupportCount:            50,
-		},
-		{
-			SchemaVersion:           "v1",
-			Phase1ClusterID:         "p2",
-			Lane:                    "e2e",
-			JobName:                 "job-a",
-			TestName:                "test-b",
-			CanonicalEvidencePhrase: "low signal cluster",
-			SearchQueryPhrase:       "low signal cluster",
-			SupportCount:            2,
-		},
-	}
-
-	report := buildMarkdown(globals, tests, nil, 10, 5.0)
-	if !strings.Contains(report, "high signal cluster") {
-		t.Fatalf("expected high signal cluster to be present: %q", report)
-	}
-	if strings.Contains(report, "low signal cluster") {
-		t.Fatalf("did not expect low signal cluster below threshold: %q", report)
-	}
-}
 
 func TestGenerateWritesSummaryFromStore(t *testing.T) {
 	t.Parallel()
@@ -235,7 +95,7 @@ func TestGenerateWritesSummaryFromStore(t *testing.T) {
 		t.Fatalf("seed review queue: %v", err)
 	}
 
-	outputPath := filepath.Join(t.TempDir(), "triage-summary.md")
+	outputPath := filepath.Join(t.TempDir(), "global-signature-triage.html")
 	opts := DefaultOptions()
 	opts.OutputPath = outputPath
 	opts.Top = 10
@@ -250,11 +110,11 @@ func TestGenerateWritesSummaryFromStore(t *testing.T) {
 		t.Fatalf("read generated summary: %v", err)
 	}
 	content := string(report)
-	if !strings.Contains(content, "# CI Failure Triage Summary") {
-		t.Fatalf("expected summary header in output: %q", content)
+	if !strings.Contains(content, "CI Global Signature Triage Report") {
+		t.Fatalf("expected global triage HTML header in output: %q", content)
 	}
-	if !strings.Contains(content, "Top Global Failure Signatures") {
-		t.Fatalf("expected global section in output: %q", content)
+	if !strings.Contains(content, "<th>Signature</th>") {
+		t.Fatalf("expected rendered triage table in output: %q", content)
 	}
 }
 
@@ -333,7 +193,7 @@ func TestGenerateWritesSummaryPerEnvironmentWhenSplitEnabled(t *testing.T) {
 		t.Fatalf("seed review queue: %v", err)
 	}
 
-	outputPath := filepath.Join(t.TempDir(), "triage-summary.md")
+	outputPath := filepath.Join(t.TempDir(), "global-signature-triage.html")
 	opts := DefaultOptions()
 	opts.OutputPath = outputPath
 	opts.SplitByEnvironment = true
@@ -343,8 +203,8 @@ func TestGenerateWritesSummaryPerEnvironmentWhenSplitEnabled(t *testing.T) {
 		t.Fatalf("generate summary: %v", err)
 	}
 
-	devPath := filepath.Join(filepath.Dir(outputPath), "triage-summary.dev.md")
-	intPath := filepath.Join(filepath.Dir(outputPath), "triage-summary.int.md")
+	devPath := filepath.Join(filepath.Dir(outputPath), "global-signature-triage.dev.html")
+	intPath := filepath.Join(filepath.Dir(outputPath), "global-signature-triage.int.html")
 	devReport, err := os.ReadFile(devPath)
 	if err != nil {
 		t.Fatalf("read dev summary: %v", err)
@@ -488,6 +348,17 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 	opts.WindowEnd = "2026-03-08"
 	opts.Top = 10
 	opts.MinPercent = 0
+	opts.Chrome = triagehtml.ReportChromeOptions{
+		CurrentWeek:  "2026-03-01",
+		CurrentView:  triagehtml.ReportViewGlobal,
+		PreviousWeek: "2026-02-22",
+		PreviousHref: "../2026-02-22/global-signature-triage.html",
+		NextWeek:     "2026-03-08",
+		NextHref:     "../2026-03-08/global-signature-triage.html",
+		WeeklyHref:   "weekly-metrics.html",
+		GlobalHref:   "global-signature-triage.html",
+		ArchiveHref:  "../archive/",
+	}
 
 	if err := Generate(ctx, store, opts); err != nil {
 		t.Fatalf("generate summary: %v", err)
@@ -500,14 +371,34 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 	report := string(reportBytes)
 	requiredSnippets := []string{
 		"CI Global Signature Triage Report",
+		"id=\"theme-toggle\"",
+		"class=\"report-chrome\"",
+		"../2026-02-22/global-signature-triage.html",
+		"../2026-03-08/global-signature-triage.html",
+		"href=\"weekly-metrics.html\"",
+		"href=\"../archive/\"",
+		"Weekly Report",
+		"Triage Report",
 		"Window: <strong>2026-03-01</strong> to <strong>2026-03-07</strong> (7 days)",
 		"Environment: DEV",
 		"Environment: INT",
 		"Environment: PROD",
-		"Also seen in",
+		"<section id=\"env-dev\" class=\"section\">",
+		"<section id=\"env-int\" class=\"section\">",
+		"<section id=\"env-prod\" class=\"section\">",
+		"data-sort-key=\"count\"",
+		"data-sort-key=\"after_last_push\"",
+		"data-sort-key=\"jobs_affected\"",
+		"data-sort-key=\"flake_score\"",
+		"<th>Seen in",
+		"title=\"Job run occurred after last push of a PR that merges.\"",
+		"title=\"Unique job runs affected by this signature in the selected window.\"",
+		"title=\"Heuristic score for unresolved recurrent flakes (0-14). Higher means more likely ongoing flake; likely bad-PR patterns reduce this score.\"",
+		"title=\"Other environments where the same canonical signature phrase appears.\"",
 		"<th>Trend</th>",
 		"2026-03-01..2026-03-07",
 		"Quality score",
+		"bad PR score: 1/3 (post-good=0)",
 		"Full failure examples",
 		"Full failure examples (1)",
 		"Contributing tests (1)",
@@ -526,11 +417,34 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 			t.Fatalf("expected HTML report to include %q", snippet)
 		}
 	}
+	headerStart := strings.Index(report, "<thead><tr>")
+	headerEnd := strings.Index(report, "</tr></thead>")
+	if headerStart < 0 || headerEnd < 0 || headerEnd <= headerStart {
+		t.Fatalf("expected global triage table header row to be present for order verification")
+	}
+	headerRow := report[headerStart:headerEnd]
+	signatureHeader := strings.Index(headerRow, "<th>Signature</th>")
+	countHeader := strings.Index(headerRow, "data-sort-key=\"count\"")
+	afterLastPushHeader := strings.Index(headerRow, "data-sort-key=\"after_last_push\"")
+	jobsAffectedHeader := strings.Index(headerRow, "data-sort-key=\"jobs_affected\"")
+	flakeScoreHeader := strings.Index(headerRow, "data-sort-key=\"flake_score\"")
+	shareHeader := strings.Index(headerRow, "data-sort-key=\"share\"")
+	trendHeader := strings.Index(headerRow, "<th>Trend</th>")
+	seenInHeader := strings.Index(headerRow, "<th>Seen in")
+	if signatureHeader < 0 || countHeader < 0 || afterLastPushHeader < 0 || jobsAffectedHeader < 0 || flakeScoreHeader < 0 || shareHeader < 0 || trendHeader < 0 || seenInHeader < 0 {
+		t.Fatalf("expected global triage headers to be present for order verification")
+	}
+	if !(signatureHeader < countHeader && countHeader < afterLastPushHeader && afterLastPushHeader < jobsAffectedHeader && jobsAffectedHeader < flakeScoreHeader && flakeScoreHeader < shareHeader && shareHeader < trendHeader && trendHeader < seenInHeader) {
+		t.Fatalf("expected global triage column order Signature, Count, After last push, Jobs affected, Flake score, Share, Trend, Seen in")
+	}
 	if strings.Contains(report, "<th>Latest runs</th>") {
 		t.Fatalf("expected HTML report to not include latest runs main column")
 	}
 	if strings.Contains(report, "<th>Contributing tests</th>") {
 		t.Fatalf("expected HTML report to not include contributing tests main column")
+	}
+	if strings.Contains(report, "<span class=\"bad-pr-flag\"") {
+		t.Fatalf("expected HTML report to not show bad-pr icon for score 1/3 rows")
 	}
 }
 

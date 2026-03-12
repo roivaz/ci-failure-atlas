@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ci-failure-atlas/pkg/report/triagehtml"
+	semhistory "ci-failure-atlas/pkg/semantic/history"
 )
 
 var triageEnvironmentOrder = []string{"dev", "int", "stg", "prod"}
@@ -16,6 +17,7 @@ const (
 	defaultGitHubRepoOwner = "Azure"
 	defaultGitHubRepoName  = "ARO-HCP"
 	globalTrendWindowDays  = 7
+	globalLoadedRowsLimit  = 50
 )
 
 func buildGlobalTriageHTML(
@@ -26,6 +28,8 @@ func buildGlobalTriageHTML(
 	targetEnvironments []string,
 	configuredWindowStart string,
 	configuredWindowEnd string,
+	historyResolver semhistory.GlobalSignatureResolver,
+	chrome triagehtml.ReportChromeOptions,
 ) string {
 	byEnvironment := map[string][]globalCluster{}
 	totalSupportByEnvironment := map[string]int{}
@@ -73,6 +77,7 @@ func buildGlobalTriageHTML(
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
 	b.WriteString("  <title>CI Global Signature Triage Report</title>\n")
+	b.WriteString(triagehtml.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 6px; }\n")
@@ -85,10 +90,13 @@ func buildGlobalTriageHTML(
 	b.WriteString("    .section { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin: 14px 0; }\n")
 	b.WriteString("    .section-note { color: #4b5563; font-size: 12px; margin-top: -4px; margin-bottom: 8px; }\n")
 	b.WriteString("    .muted { color: #6b7280; }\n")
+	b.WriteString(triagehtml.ReportChromeCSS())
 	b.WriteString(triagehtml.StylesCSS())
+	b.WriteString(triagehtml.ThemeCSS())
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
+	b.WriteString(triagehtml.ReportChromeHTML(chrome))
 	b.WriteString("  <h1>CI Global Signature Triage Report</h1>\n")
 	if hasWindow {
 		windowDays := inclusiveWindowDays(windowStart, windowEnd)
@@ -105,7 +113,7 @@ func buildGlobalTriageHTML(
 	b.WriteString(triageCardHTML("Environments in scope", fmt.Sprintf("%d", len(environments))))
 	b.WriteString(triageCardHTML("Global signatures", fmt.Sprintf("%d", len(globalClusters))))
 	b.WriteString(triageCardHTML("Total signature support", fmt.Sprintf("%d", totalSupport)))
-	b.WriteString(triageCardHTML("Triage threshold", fmt.Sprintf("top %d, min %.2f%%", top, minPercent)))
+	b.WriteString(triageCardHTML("Triage threshold", fmt.Sprintf("visible %d, loaded %d, min %.2f%%", top, globalLoadedRowsLimit, minPercent)))
 	b.WriteString("  </div>\n")
 
 	for _, environment := range environments {
@@ -129,14 +137,10 @@ func buildGlobalTriageHTML(
 			}
 			filtered = append(filtered, row)
 		}
-		if top > 0 && len(filtered) > top {
-			filtered = filtered[:top]
-		}
-
-		b.WriteString("  <section class=\"section\">\n")
+		b.WriteString(fmt.Sprintf("  <section id=\"%s\" class=\"section\">\n", html.EscapeString(triageEnvironmentSectionID(environment))))
 		b.WriteString(fmt.Sprintf("    <h2>Environment: %s</h2>\n", html.EscapeString(strings.ToUpper(environment))))
-		b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Rows shown: %d / %d signatures &middot; support sum: %d</p>\n", len(filtered), len(clusters), totalEnvironmentSupport))
 		if len(filtered) == 0 {
+			b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Rows shown: 0 / %d signatures &middot; support sum: %d</p>\n", len(clusters), totalEnvironmentSupport))
 			b.WriteString("    <p class=\"muted\">No signatures matched the configured threshold in this environment.</p>\n")
 			b.WriteString("  </section>\n")
 			continue
@@ -155,6 +159,7 @@ func buildGlobalTriageHTML(
 			}
 			runReferences := toTriageRunReferences(row.References)
 			triageRow := triagehtml.SignatureRow{
+				Environment:       environment,
 				Phrase:            phrase,
 				ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
 				SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
@@ -168,6 +173,19 @@ func buildGlobalTriageHTML(
 				FullErrorSamples:  append([]string(nil), row.FullErrorSamples...),
 				References:        runReferences,
 			}
+			if historyResolver != nil {
+				presence := historyResolver.PresenceFor(semhistory.SignatureKey{
+					Environment: environment,
+					Phrase:      phrase,
+					SearchQuery: row.SearchQueryPhrase,
+				})
+				triageRow.PriorWeeksPresent = presence.PriorWeeksPresent
+				triageRow.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
+				triageRow.PriorJobsAffected = presence.PriorJobsAffected
+				if !presence.PriorLastSeenAt.IsZero() {
+					triageRow.PriorLastSeenAt = presence.PriorLastSeenAt.UTC().Format(time.RFC3339)
+				}
+			}
 			if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(runReferences, globalTrendWindowDays, trendAnchor); ok {
 				triageRow.TrendSparkline = sparkline
 				triageRow.TrendCounts = append([]int(nil), counts...)
@@ -175,15 +193,30 @@ func buildGlobalTriageHTML(
 			}
 			triageRows = append(triageRows, triageRow)
 		}
+		loadedRows := len(triageRows)
+		if loadedRows > globalLoadedRowsLimit {
+			loadedRows = globalLoadedRowsLimit
+		}
+		initialVisible := top
+		if initialVisible < 0 {
+			initialVisible = 0
+		}
+		if initialVisible > loadedRows {
+			initialVisible = loadedRows
+		}
+		b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Rows loaded: %d / %d signatures &middot; initially visible: %d &middot; support sum: %d</p>\n", loadedRows, len(clusters), initialVisible, totalEnvironmentSupport))
 		b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
 			IncludeQualityNotes: true,
 			IncludeTrend:        true,
 			GitHubRepoOwner:     defaultGitHubRepoOwner,
 			GitHubRepoName:      defaultGitHubRepoName,
+			LoadedRowsLimit:     globalLoadedRowsLimit,
+			InitialVisibleRows:  top,
 		}))
 		b.WriteString("  </section>\n")
 	}
 
+	b.WriteString(triagehtml.ThemeToggleScriptTag())
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")
 	return b.String()
@@ -355,4 +388,12 @@ func globalQualityScore(issueCodes []string) int {
 
 func globalQualityIssueLabel(code string) string {
 	return triagehtml.QualityIssueLabel(code)
+}
+
+func triageEnvironmentSectionID(environment string) string {
+	normalized := normalizeReportEnvironment(environment)
+	if normalized == "" {
+		return "env-unknown"
+	}
+	return "env-" + normalized
 }

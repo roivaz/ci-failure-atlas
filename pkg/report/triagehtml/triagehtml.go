@@ -30,6 +30,7 @@ type ContributingTest struct {
 }
 
 type SignatureRow struct {
+	Environment       string
 	Phrase            string
 	ClusterID         string
 	SearchQuery       string
@@ -45,10 +46,15 @@ type SignatureRow struct {
 	ContributingTests []ContributingTest
 	FullErrorSamples  []string
 	References        []RunReference
+	PriorWeeksPresent int
+	PriorWeekStarts   []string
+	PriorJobsAffected int
+	PriorLastSeenAt   string
 }
 
 type TableOptions struct {
 	IncludeQualityNotes      bool
+	HideQualityScore         bool
 	IncludeTrend             bool
 	TrendHeaderLabel         string
 	GitHubRepoOwner          string
@@ -56,19 +62,65 @@ type TableOptions struct {
 	FullErrorsSummaryLabel   string
 	ContributingSummaryLabel string
 	AffectedRunsSummaryLabel string
+	LoadedRowsLimit          int
+	InitialVisibleRows       int
 }
+
+type ReportView string
+
+const (
+	ReportViewWeekly ReportView = "weekly"
+	ReportViewGlobal ReportView = "global"
+)
+
+type ReportChromeOptions struct {
+	CurrentWeek  string
+	CurrentView  ReportView
+	PreviousWeek string
+	PreviousHref string
+	NextWeek     string
+	NextHref     string
+	WeeklyHref   string
+	GlobalHref   string
+	ArchiveHref  string
+}
+
+const (
+	defaultLoadedRowsLimit  = 50
+	defaultSortKey          = "flake_score"
+	defaultSortDirection    = "desc"
+	sortDirectionAscending  = "asc"
+	sortDirectionDescending = "desc"
+	sortKeyCount            = "count"
+	sortKeyJobsAffected     = "jobs_affected"
+	sortKeyAfterLastPush    = "after_last_push"
+	sortKeyFlakeScore       = "flake_score"
+	sortKeyShare            = "share"
+)
 
 func StylesCSS() string {
 	return strings.Join([]string{
 		"    .triage-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0 12px; }",
 		"    .triage-table th, .triage-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }",
+		"    .triage-table thead th:first-child { width: 36%; max-width: 360px; }",
+		"    .triage-table tbody tr:not(.triage-errors-row) > td:first-child { width: 36%; max-width: 360px; }",
 		"    .triage-table th { background: #f3f4f6; color: #374151; font-weight: 700; }",
+		"    .triage-table th.triage-sortable { white-space: nowrap; }",
+		"    .triage-sort-button { all: unset; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: inherit; font: inherit; font-weight: 700; }",
+		"    .triage-sort-indicator { display: inline-block; min-width: 10px; text-align: center; font-size: 10px; color: #6b7280; }",
 		"    .triage-table tr.triage-errors-row td { background: #eff6ff; }",
 		"    .badge { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; margin: 1px 2px 1px 0; }",
 		"    .badge-quality { background: #fee2e2; color: #991b1b; }",
 		"    .badge-ok { background: #dcfce7; color: #166534; }",
 		"    .quality-high { color: #991b1b; font-weight: 700; }",
 		"    .quality-low { color: #374151; }",
+		"    .flake-score { font-weight: 700; }",
+		"    .flake-high { color: #166534; }",
+		"    .flake-medium { color: #92400e; }",
+		"    .flake-low { color: #6b7280; }",
+		"    .bad-pr-flag { display: inline-flex; align-items: center; justify-content: center; margin-right: 6px; color: #dc2626; font-weight: 700; }",
+		"    .triage-header-help { display: inline-flex; align-items: center; justify-content: center; margin-left: 5px; width: 14px; height: 14px; border-radius: 999px; border: 1px solid #93c5fd; color: #1d4ed8; background: #eff6ff; font-size: 10px; font-weight: 700; cursor: help; vertical-align: middle; }",
+		"    .trend-svg { display: block; }",
 		"    details { margin: 2px 0; }",
 		"    details summary { cursor: pointer; color: #1d4ed8; }",
 		"    details.signature-toggle > summary { font-size: 13px; font-weight: 700; color: #111827; }",
@@ -88,33 +140,524 @@ func StylesCSS() string {
 	}, "\n") + "\n"
 }
 
+func ThemeCSS() string {
+	return strings.Join([]string{
+		"    .theme-toggle-wrap { position: fixed; top: 12px; right: 12px; z-index: 999; }",
+		"    .theme-toggle { border: 1px solid #d1d5db; border-radius: 999px; background: #ffffff; color: #1f2937; font-size: 12px; font-weight: 600; padding: 4px 10px; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }",
+		"    .theme-toggle:hover { background: #f3f4f6; }",
+		"    :root[data-theme=\"dark\"] body { background: #0b1220; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] a { color: #93c5fd; }",
+		"    :root[data-theme=\"dark\"] .theme-toggle { background: #111827; border-color: #334155; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .theme-toggle:hover { background: #1f2937; }",
+		"    :root[data-theme=\"dark\"] .meta, :root[data-theme=\"dark\"] .muted, :root[data-theme=\"dark\"] .label, :root[data-theme=\"dark\"] .legend, :root[data-theme=\"dark\"] .section-note, :root[data-theme=\"dark\"] .outcome-values, :root[data-theme=\"dark\"] .filters label, :root[data-theme=\"dark\"] .filters .results { color: #94a3b8; }",
+		"    :root[data-theme=\"dark\"] .env, :root[data-theme=\"dark\"] .section, :root[data-theme=\"dark\"] .card, :root[data-theme=\"dark\"] .filters, :root[data-theme=\"dark\"] .drill-tab, :root[data-theme=\"dark\"] .outcome-bar, :root[data-theme=\"dark\"] .outcome-bar-empty { background: #111827; border-color: #334155; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .drill-tab.active { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .chart-controls { color: #cbd5e1; }",
+		"    :root[data-theme=\"dark\"] .detail-table th, :root[data-theme=\"dark\"] .overview-table th, :root[data-theme=\"dark\"] .quality-table th, :root[data-theme=\"dark\"] .triage-table th { background: #1f2937; color: #e2e8f0; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .detail-table td, :root[data-theme=\"dark\"] .overview-table td, :root[data-theme=\"dark\"] .quality-table td, :root[data-theme=\"dark\"] .triage-table td { border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .triage-table tr.triage-errors-row td, :root[data-theme=\"dark\"] .quality-table tr.inspector-errors-row td { background: #0f172a; }",
+		"    :root[data-theme=\"dark\"] .triage-errors-row .runs-scroll, :root[data-theme=\"dark\"] .triage-errors-row .tests-scroll, :root[data-theme=\"dark\"] .inspector-errors-row .runs-scroll { background: #0f172a; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .triage-errors-row .runs-table th, :root[data-theme=\"dark\"] .triage-errors-row .tests-table th, :root[data-theme=\"dark\"] .inspector-errors-row .runs-table th { background: #1e293b; }",
+		"    :root[data-theme=\"dark\"] .triage-errors-row .runs-table th, :root[data-theme=\"dark\"] .triage-errors-row .runs-table td, :root[data-theme=\"dark\"] .triage-errors-row .tests-table th, :root[data-theme=\"dark\"] .triage-errors-row .tests-table td, :root[data-theme=\"dark\"] .inspector-errors-row .runs-table th, :root[data-theme=\"dark\"] .inspector-errors-row .runs-table td { border-bottom-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .triage-errors-row details.full-errors-toggle > summary, :root[data-theme=\"dark\"] .triage-errors-row details.affected-runs-toggle > summary, :root[data-theme=\"dark\"] .triage-errors-row details.contributing-tests-toggle > summary { color: #e2e8f0; background: #1f2937; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .triage-errors-row details.full-errors-toggle[open] > summary, :root[data-theme=\"dark\"] .triage-errors-row details.affected-runs-toggle[open] > summary, :root[data-theme=\"dark\"] .triage-errors-row details.contributing-tests-toggle[open] > summary { color: #e2e8f0; background: #2563eb; border-color: #2563eb; }",
+		"    :root[data-theme=\"dark\"] pre { background: #020617; color: #e2e8f0; border: 1px solid #334155; }",
+		"    :root[data-theme=\"dark\"] .triage-header-help { border-color: #334155; color: #93c5fd; background: #1e293b; }",
+		"    :root[data-theme=\"dark\"] .triage-sort-indicator { color: #94a3b8; }",
+		"    :root[data-theme=\"dark\"] .flake-high { color: #34d399; }",
+		"    :root[data-theme=\"dark\"] .flake-medium { color: #fbbf24; }",
+		"    :root[data-theme=\"dark\"] .flake-low { color: #94a3b8; }",
+		"    :root[data-theme=\"dark\"] details summary { color: #93c5fd; }",
+	}, "\n") + "\n"
+}
+
+func ThemeToggleHTML() string {
+	return fmt.Sprintf("  <div class=\"theme-toggle-wrap\">%s</div>\n", ThemeToggleButtonHTML())
+}
+
+func ThemeToggleButtonHTML() string {
+	return "<button id=\"theme-toggle\" class=\"theme-toggle\" type=\"button\" aria-label=\"Toggle theme mode\">Theme: Auto</button>"
+}
+
+func ReportChromeCSS() string {
+	return strings.Join([]string{
+		"    .report-chrome { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; }",
+		"    .report-chrome-nav { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }",
+		"    .report-nav-btn, .report-view-link { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #d1d5db; border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 600; color: #1f2937; background: #ffffff; text-decoration: none; }",
+		"    .report-nav-btn:hover, .report-view-link:hover { background: #f3f4f6; }",
+		"    .report-nav-btn.disabled { color: #9ca3af; background: #f3f4f6; border-color: #e5e7eb; cursor: not-allowed; }",
+		"    .report-view-link.active { background: #111827; border-color: #111827; color: #ffffff; }",
+		"    .report-week-label { font-size: 12px; font-weight: 600; color: #4b5563; margin-right: 2px; }",
+		"    .report-theme-slot { margin-left: auto; }",
+		"    .report-theme-slot .theme-toggle { box-shadow: none; }",
+		"    :root[data-theme=\"dark\"] .report-chrome { background: #111827; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .report-week-label { color: #94a3b8; }",
+		"    :root[data-theme=\"dark\"] .report-nav-btn, :root[data-theme=\"dark\"] .report-view-link { background: #1f2937; border-color: #334155; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .report-nav-btn:hover, :root[data-theme=\"dark\"] .report-view-link:hover { background: #0f172a; }",
+		"    :root[data-theme=\"dark\"] .report-nav-btn.disabled { background: #0f172a; border-color: #334155; color: #64748b; }",
+		"    :root[data-theme=\"dark\"] .report-view-link.active { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }",
+	}, "\n") + "\n"
+}
+
+func ReportChromeHTML(options ReportChromeOptions) string {
+	normalized := normalizedReportChromeOptions(options)
+	if !hasReportChromeNavigation(normalized) {
+		return ThemeToggleHTML()
+	}
+	var b strings.Builder
+	b.WriteString("  <div class=\"report-chrome\">\n")
+	b.WriteString("    <div class=\"report-chrome-nav\">\n")
+	b.WriteString(renderReportChromeNavButton(normalized.PreviousHref, "&larr; Older", normalized.PreviousWeek, true))
+	b.WriteString(renderReportChromeNavButton(normalized.NextHref, "Newer &rarr;", normalized.NextWeek, false))
+	b.WriteString("    </div>\n")
+	b.WriteString("    <div class=\"report-chrome-nav\">\n")
+	if normalized.CurrentWeek != "" {
+		b.WriteString(fmt.Sprintf("      <span class=\"report-week-label\">Week %s</span>\n", html.EscapeString(normalized.CurrentWeek)))
+	}
+	if strings.TrimSpace(normalized.WeeklyHref) != "" {
+		b.WriteString(renderReportChromeViewLink(normalized.WeeklyHref, "Weekly Report", normalized.CurrentView == ReportViewWeekly))
+	}
+	if strings.TrimSpace(normalized.GlobalHref) != "" {
+		b.WriteString(renderReportChromeViewLink(normalized.GlobalHref, "Triage Report", normalized.CurrentView == ReportViewGlobal))
+	}
+	if strings.TrimSpace(normalized.ArchiveHref) != "" {
+		b.WriteString(renderReportChromeViewLink(normalized.ArchiveHref, "Archive", false))
+	}
+	b.WriteString("    </div>\n")
+	b.WriteString("    <div class=\"report-theme-slot\">")
+	b.WriteString(ThemeToggleButtonHTML())
+	b.WriteString("</div>\n")
+	b.WriteString("  </div>\n")
+	return b.String()
+}
+
+func ThemeInitScriptTag() string {
+	return strings.TrimSpace(`
+<script>
+(function () {
+  var key = "ci-failure-report-theme-mode";
+  function normalize(value) {
+    return value === "light" || value === "dark" || value === "auto" ? value : "auto";
+  }
+  function prefersDark() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+  var mode = "auto";
+  try {
+    mode = normalize(localStorage.getItem(key) || "auto");
+  } catch (err) {
+    mode = "auto";
+  }
+  var effective = mode === "auto" ? (prefersDark() ? "dark" : "light") : mode;
+  var root = document.documentElement;
+  root.setAttribute("data-theme-mode", mode);
+  root.setAttribute("data-theme", effective);
+})();
+</script>
+`) + "\n"
+}
+
+func ThemeToggleScriptTag() string {
+	return strings.TrimSpace(`
+<script>
+(function () {
+  var key = "ci-failure-report-theme-mode";
+  var button = document.getElementById("theme-toggle");
+  var root = document.documentElement;
+  function normalize(value) {
+    return value === "light" || value === "dark" || value === "auto" ? value : "auto";
+  }
+  function prefersDark() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+  function label(mode) {
+    if (mode === "light") { return "Theme: Light"; }
+    if (mode === "dark") { return "Theme: Dark"; }
+    return "Theme: Auto";
+  }
+  function apply(mode, persist) {
+    var normalized = normalize(mode);
+    var effective = normalized === "auto" ? (prefersDark() ? "dark" : "light") : normalized;
+    root.setAttribute("data-theme-mode", normalized);
+    root.setAttribute("data-theme", effective);
+    if (button) {
+      button.textContent = label(normalized);
+      button.setAttribute("title", "Current mode: " + normalized + ". Click to cycle Auto -> Light -> Dark.");
+    }
+    if (persist) {
+      try {
+        localStorage.setItem(key, normalized);
+      } catch (err) {}
+    }
+  }
+  apply(root.getAttribute("data-theme-mode") || "auto", false);
+  if (button) {
+    button.addEventListener("click", function () {
+      var current = normalize(root.getAttribute("data-theme-mode") || "auto");
+      var next = current === "auto" ? "light" : current === "light" ? "dark" : "auto";
+      apply(next, true);
+    });
+  }
+  if (window.matchMedia) {
+    var media = window.matchMedia("(prefers-color-scheme: dark)");
+    var onChange = function () {
+      if (normalize(root.getAttribute("data-theme-mode") || "auto") === "auto") {
+        apply("auto", false);
+      }
+    };
+    if (media.addEventListener) {
+      media.addEventListener("change", onChange);
+    } else if (media.addListener) {
+      media.addListener(onChange);
+    }
+  }
+})();
+</script>
+`) + "\n"
+}
+
+func normalizedReportChromeOptions(options ReportChromeOptions) ReportChromeOptions {
+	options.CurrentWeek = strings.TrimSpace(options.CurrentWeek)
+	options.PreviousWeek = strings.TrimSpace(options.PreviousWeek)
+	options.PreviousHref = strings.TrimSpace(options.PreviousHref)
+	options.NextWeek = strings.TrimSpace(options.NextWeek)
+	options.NextHref = strings.TrimSpace(options.NextHref)
+	options.WeeklyHref = strings.TrimSpace(options.WeeklyHref)
+	options.GlobalHref = strings.TrimSpace(options.GlobalHref)
+	options.ArchiveHref = strings.TrimSpace(options.ArchiveHref)
+	switch options.CurrentView {
+	case ReportViewWeekly, ReportViewGlobal:
+	default:
+		options.CurrentView = ""
+	}
+	return options
+}
+
+func hasReportChromeNavigation(options ReportChromeOptions) bool {
+	return options.CurrentWeek != "" ||
+		options.PreviousHref != "" ||
+		options.NextHref != "" ||
+		options.WeeklyHref != "" ||
+		options.GlobalHref != "" ||
+		options.ArchiveHref != ""
+}
+
+func renderReportChromeNavButton(href string, label string, week string, older bool) string {
+	trimmedHref := strings.TrimSpace(href)
+	trimmedWeek := strings.TrimSpace(week)
+	if trimmedHref == "" {
+		disabledTitle := "No older week available"
+		if !older {
+			disabledTitle = "No newer week available"
+		}
+		return fmt.Sprintf(
+			"      <span class=\"report-nav-btn disabled\" aria-disabled=\"true\" title=\"%s\">%s</span>\n",
+			html.EscapeString(disabledTitle),
+			label,
+		)
+	}
+	title := "Go to week report"
+	if trimmedWeek != "" {
+		title = fmt.Sprintf("Go to week %s", trimmedWeek)
+	}
+	return fmt.Sprintf(
+		"      <a class=\"report-nav-btn\" href=\"%s\" title=\"%s\">%s</a>\n",
+		html.EscapeString(trimmedHref),
+		html.EscapeString(title),
+		label,
+	)
+}
+
+func renderReportChromeViewLink(href string, label string, active bool) string {
+	trimmedHref := strings.TrimSpace(href)
+	if trimmedHref == "" {
+		return ""
+	}
+	className := "report-view-link"
+	if active {
+		className += " active"
+	}
+	return fmt.Sprintf(
+		"      <a class=\"%s\" href=\"%s\">%s</a>\n",
+		className,
+		html.EscapeString(trimmedHref),
+		html.EscapeString(strings.TrimSpace(label)),
+	)
+}
+
 func RenderTable(rows []SignatureRow, options TableOptions) string {
 	opts := normalizedOptions(options)
-	headers := []string{"Signature", "Support"}
-	if opts.IncludeTrend {
-		headers = append(headers, opts.TrendHeaderLabel)
+	orderedRows := append([]SignatureRow(nil), rows...)
+	SortRowsByDefaultPriority(orderedRows)
+	if opts.LoadedRowsLimit > 0 && len(orderedRows) > opts.LoadedRowsLimit {
+		orderedRows = orderedRows[:opts.LoadedRowsLimit]
 	}
-	headers = append(headers, "Share", "Post-good", "Also seen in", "Quality score")
-	if opts.IncludeQualityNotes {
-		headers = append(headers, "Quality notes")
+	initialVisibleRows := opts.InitialVisibleRows
+	if initialVisibleRows <= 0 || initialVisibleRows > len(orderedRows) {
+		initialVisibleRows = len(orderedRows)
 	}
 
 	var b strings.Builder
-	b.WriteString("    <table class=\"triage-table\">\n")
+	b.WriteString(fmt.Sprintf(
+		"    <table class=\"triage-table\" data-sortable=\"true\" data-sort-key=\"%s\" data-sort-dir=\"%s\" data-initial-visible=\"%d\">\n",
+		defaultSortKey,
+		defaultSortDirection,
+		initialVisibleRows,
+	))
 	b.WriteString("      <thead><tr>")
+	headers := []string{
+		"<th>Signature</th>",
+		renderSortableHeaderCell("Count", sortKeyCount, ""),
+		renderSortableHeaderCell("After last push", sortKeyAfterLastPush, "Job run occurred after last push of a PR that merges."),
+		renderSortableHeaderCell("Jobs affected", sortKeyJobsAffected, "Unique job runs affected by this signature in the selected window."),
+		renderSortableHeaderCell("Flake score", sortKeyFlakeScore, "Heuristic score for unresolved recurrent flakes (0-14). Higher means more likely ongoing flake; likely bad-PR patterns reduce this score."),
+		renderSortableHeaderCell("Share", sortKeyShare, ""),
+	}
+	if opts.IncludeTrend {
+		headers = append(headers, fmt.Sprintf("<th>%s</th>", html.EscapeString(opts.TrendHeaderLabel)))
+	}
+	headers = append(headers, renderTooltipHeaderCell("Seen in", "Other environments where the same canonical signature phrase appears."))
+	if !opts.HideQualityScore {
+		headers = append(headers, "<th>Quality score</th>")
+	}
+	if opts.IncludeQualityNotes {
+		headers = append(headers, "<th>Quality notes</th>")
+	}
 	for _, header := range headers {
-		b.WriteString(fmt.Sprintf("<th>%s</th>", html.EscapeString(header)))
+		b.WriteString(header)
 	}
 	b.WriteString("</tr></thead>\n")
 	b.WriteString("      <tbody>\n")
 	colSpan := len(headers)
-	for _, row := range rows {
-		b.WriteString(renderMainRow(row, opts))
-		b.WriteString(renderDetailRow(row, colSpan, opts))
+	for rowIndex, row := range orderedRows {
+		rowID := fmt.Sprintf("triage-row-%d", rowIndex)
+		b.WriteString(renderMainRow(row, rowID, opts))
+		b.WriteString(renderDetailRow(row, rowID, colSpan, opts))
 	}
 	b.WriteString("      </tbody>\n")
 	b.WriteString("    </table>\n")
+	b.WriteString(renderTableSortScriptTag())
 	return b.String()
+}
+
+func renderTooltipHeaderCell(label string, tooltip string) string {
+	trimmedLabel := strings.TrimSpace(label)
+	if trimmedLabel == "" {
+		trimmedLabel = "n/a"
+	}
+	trimmedTooltip := strings.TrimSpace(tooltip)
+	if trimmedTooltip == "" {
+		return fmt.Sprintf("<th>%s</th>", html.EscapeString(trimmedLabel))
+	}
+	return fmt.Sprintf(
+		"<th>%s<span class=\"triage-header-help\" title=\"%s\" aria-label=\"%s\">i</span></th>",
+		html.EscapeString(trimmedLabel),
+		html.EscapeString(trimmedTooltip),
+		html.EscapeString(trimmedTooltip),
+	)
+}
+
+func renderSortableHeaderCell(label string, sortKey string, tooltip string) string {
+	trimmedLabel := strings.TrimSpace(label)
+	if trimmedLabel == "" {
+		trimmedLabel = "n/a"
+	}
+	trimmedSortKey := strings.TrimSpace(sortKey)
+	if trimmedSortKey == "" {
+		return renderTooltipHeaderCell(trimmedLabel, tooltip)
+	}
+	ariaSort := "none"
+	indicator := ""
+	if trimmedSortKey == defaultSortKey && defaultSortDirection == sortDirectionDescending {
+		ariaSort = "descending"
+		indicator = "v"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(
+		"<th class=\"triage-sortable\" data-sort-key=\"%s\" aria-sort=\"%s\">",
+		html.EscapeString(trimmedSortKey),
+		ariaSort,
+	))
+	b.WriteString(fmt.Sprintf(
+		"<button type=\"button\" class=\"triage-sort-button\" data-sort-key=\"%s\">%s<span class=\"triage-sort-indicator\" aria-hidden=\"true\">%s</span></button>",
+		html.EscapeString(trimmedSortKey),
+		html.EscapeString(trimmedLabel),
+		html.EscapeString(indicator),
+	))
+	trimmedTooltip := strings.TrimSpace(tooltip)
+	if trimmedTooltip != "" {
+		b.WriteString(fmt.Sprintf(
+			"<span class=\"triage-header-help\" title=\"%s\" aria-label=\"%s\">i</span>",
+			html.EscapeString(trimmedTooltip),
+			html.EscapeString(trimmedTooltip),
+		))
+	}
+	b.WriteString("</th>")
+	return b.String()
+}
+
+func renderTableSortScriptTag() string {
+	return strings.TrimSpace(`
+<script>
+(function () {
+  function parseNumber(value) {
+    var parsed = parseFloat(value || "0");
+    if (!isFinite(parsed)) {
+      return 0;
+    }
+    return parsed;
+  }
+  function compareStrings(a, b) {
+    var left = (a || "").toLowerCase();
+    var right = (b || "").toLowerCase();
+    if (left === right) {
+      return 0;
+    }
+    return left < right ? -1 : 1;
+  }
+  function defaultCompareRows(leftRow, rightRow) {
+    var flakeDiff = parseNumber(rightRow.getAttribute("data-sort-flake")) - parseNumber(leftRow.getAttribute("data-sort-flake"));
+    if (flakeDiff !== 0) { return flakeDiff; }
+    var jobsDiff = parseNumber(rightRow.getAttribute("data-sort-jobs")) - parseNumber(leftRow.getAttribute("data-sort-jobs"));
+    if (jobsDiff !== 0) { return jobsDiff; }
+    var shareDiff = parseNumber(rightRow.getAttribute("data-sort-share")) - parseNumber(leftRow.getAttribute("data-sort-share"));
+    if (shareDiff !== 0) { return shareDiff; }
+    var countDiff = parseNumber(rightRow.getAttribute("data-sort-count")) - parseNumber(leftRow.getAttribute("data-sort-count"));
+    if (countDiff !== 0) { return countDiff; }
+    var afterLastPushDiff = parseNumber(rightRow.getAttribute("data-sort-post-good")) - parseNumber(leftRow.getAttribute("data-sort-post-good"));
+    if (afterLastPushDiff !== 0) { return afterLastPushDiff; }
+    var envDiff = compareStrings(leftRow.getAttribute("data-sort-environment"), rightRow.getAttribute("data-sort-environment"));
+    if (envDiff !== 0) { return envDiff; }
+    var phraseDiff = compareStrings(leftRow.getAttribute("data-sort-phrase"), rightRow.getAttribute("data-sort-phrase"));
+    if (phraseDiff !== 0) { return phraseDiff; }
+    return compareStrings(leftRow.getAttribute("data-sort-cluster"), rightRow.getAttribute("data-sort-cluster"));
+  }
+  function compareRowsByKey(leftRow, rightRow, sortKey, sortDirection) {
+    var diff = 0;
+    switch (sortKey) {
+      case "count":
+        diff = parseNumber(leftRow.getAttribute("data-sort-count")) - parseNumber(rightRow.getAttribute("data-sort-count"));
+        break;
+      case "jobs_affected":
+        diff = parseNumber(leftRow.getAttribute("data-sort-jobs")) - parseNumber(rightRow.getAttribute("data-sort-jobs"));
+        break;
+      case "after_last_push":
+        diff = parseNumber(leftRow.getAttribute("data-sort-post-good")) - parseNumber(rightRow.getAttribute("data-sort-post-good"));
+        break;
+      case "flake_score":
+        diff = parseNumber(leftRow.getAttribute("data-sort-flake")) - parseNumber(rightRow.getAttribute("data-sort-flake"));
+        break;
+      case "share":
+        diff = parseNumber(leftRow.getAttribute("data-sort-share")) - parseNumber(rightRow.getAttribute("data-sort-share"));
+        break;
+      default:
+        diff = 0;
+        break;
+    }
+    if (diff !== 0) {
+      return sortDirection === "asc" ? diff : -diff;
+    }
+    return defaultCompareRows(leftRow, rightRow);
+  }
+  function collectRowPairs(tbody) {
+    var mains = Array.prototype.slice.call(tbody.querySelectorAll("tr.triage-row"));
+    var pairs = [];
+    for (var i = 0; i < mains.length; i++) {
+      var main = mains[i];
+      var rowID = main.getAttribute("data-row-id") || "";
+      var detail = null;
+      var sibling = main.nextElementSibling;
+      if (sibling && sibling.classList.contains("triage-errors-row") && (sibling.getAttribute("data-parent-row-id") || "") === rowID) {
+        detail = sibling;
+      }
+      pairs.push({ main: main, detail: detail });
+    }
+    return pairs;
+  }
+  function applyVisibility(table, pairs) {
+    var visible = parseInt(table.getAttribute("data-initial-visible") || "0", 10);
+    if (!isFinite(visible) || visible <= 0) {
+      visible = pairs.length;
+    }
+    for (var i = 0; i < pairs.length; i++) {
+      var isVisible = i < visible;
+      pairs[i].main.style.display = isVisible ? "" : "none";
+      if (pairs[i].detail) {
+        pairs[i].detail.style.display = isVisible ? "" : "none";
+      }
+    }
+  }
+  function updateHeaderState(table, sortKey, sortDirection) {
+    var headers = table.querySelectorAll("th.triage-sortable");
+    for (var i = 0; i < headers.length; i++) {
+      var header = headers[i];
+      var headerKey = header.getAttribute("data-sort-key") || "";
+      var indicator = header.querySelector(".triage-sort-indicator");
+      if (headerKey === sortKey) {
+        header.setAttribute("aria-sort", sortDirection === "asc" ? "ascending" : "descending");
+        if (indicator) {
+          indicator.textContent = sortDirection === "asc" ? "^" : "v";
+        }
+      } else {
+        header.setAttribute("aria-sort", "none");
+        if (indicator) {
+          indicator.textContent = "";
+        }
+      }
+    }
+  }
+  function applySort(table, sortKey, sortDirection) {
+    var tbody = table.querySelector("tbody");
+    if (!tbody) {
+      return;
+    }
+    var pairs = collectRowPairs(tbody);
+    pairs.sort(function (left, right) {
+      return compareRowsByKey(left.main, right.main, sortKey, sortDirection);
+    });
+    for (var i = 0; i < pairs.length; i++) {
+      tbody.appendChild(pairs[i].main);
+      if (pairs[i].detail) {
+        tbody.appendChild(pairs[i].detail);
+      }
+    }
+    table.setAttribute("data-sort-key", sortKey);
+    table.setAttribute("data-sort-dir", sortDirection);
+    updateHeaderState(table, sortKey, sortDirection);
+    applyVisibility(table, pairs);
+  }
+  function initSortableTable(table) {
+    if (!table || table.getAttribute("data-sort-init") === "true") {
+      return;
+    }
+    table.setAttribute("data-sort-init", "true");
+    var sortKey = table.getAttribute("data-sort-key") || "flake_score";
+    var sortDirection = table.getAttribute("data-sort-dir") || "desc";
+    var buttons = table.querySelectorAll("button.triage-sort-button");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].addEventListener("click", function (event) {
+        var key = (event.currentTarget && event.currentTarget.getAttribute("data-sort-key")) || "";
+        if (!key) {
+          return;
+        }
+        var currentKey = table.getAttribute("data-sort-key") || "flake_score";
+        var currentDirection = table.getAttribute("data-sort-dir") || "desc";
+        var nextDirection = "desc";
+        if (key === currentKey) {
+          nextDirection = currentDirection === "desc" ? "asc" : "desc";
+        }
+        applySort(table, key, nextDirection);
+      });
+    }
+    applySort(table, sortKey, sortDirection);
+  }
+  var tables = document.querySelectorAll("table.triage-table[data-sortable=\"true\"]");
+  for (var i = 0; i < tables.length; i++) {
+    initSortableTable(tables[i]);
+  }
+})();
+</script>
+`) + "\n"
 }
 
 func OrderedUniqueReferences(rows []RunReference) []RunReference {
@@ -381,6 +924,303 @@ func FormatCounts(values []int) string {
 	return strings.Join(parts, ",")
 }
 
+func BadPRScoreAndReasons(row SignatureRow) (int, []string) {
+	if row.PostGoodCount > 0 {
+		return 0, nil
+	}
+
+	score := 1
+	reasons := []string{"post-good=0"}
+
+	if isOnlySeenInDev(row) {
+		score++
+		reasons = append(reasons, "only seen in DEV")
+	}
+	if isSingleKnownPR(row) {
+		score++
+		reasons = append(reasons, "only seen in one PR")
+	}
+	return score, reasons
+}
+
+func FlakeScoreAndReasons(row SignatureRow) (int, []string) {
+	score := 0
+	reasons := make([]string, 0, 7)
+
+	jobsAffected := affectedJobCount(row)
+	jobPoints := flakeAffectedJobPoints(jobsAffected)
+	if jobPoints > 0 {
+		score += jobPoints
+		reasons = append(reasons, fmt.Sprintf("jobs affected +%d", jobPoints))
+	}
+
+	postGoodPoints := flakePostGoodPoints(row.PostGoodCount)
+	if postGoodPoints > 0 {
+		score += postGoodPoints
+		reasons = append(reasons, fmt.Sprintf("after last push +%d", postGoodPoints))
+	}
+
+	spreadPoints := flakeSpreadPoints(row.TrendCounts)
+	if spreadPoints > 0 {
+		score += spreadPoints
+		reasons = append(reasons, fmt.Sprintf("daily spread +%d", spreadPoints))
+	}
+
+	recentPoints := flakeRecentPoints(row.References, row.TrendRange)
+	if recentPoints > 0 {
+		score += recentPoints
+		reasons = append(reasons, fmt.Sprintf("recent occurrence +%d", recentPoints))
+	}
+
+	historyPoints := flakeHistoryWeeksPoints(row.PriorWeeksPresent)
+	if historyPoints > 0 {
+		score += historyPoints
+		reason := fmt.Sprintf("present in %d prior week", row.PriorWeeksPresent)
+		if row.PriorWeeksPresent != 1 {
+			reason += "s"
+		}
+		reasons = append(reasons, fmt.Sprintf("%s +%d", reason, historyPoints))
+	}
+
+	badPRScore, _ := BadPRScoreAndReasons(row)
+	if badPRScore > 0 {
+		score -= badPRScore
+		reasons = append(reasons, fmt.Sprintf("likely bad PR -%d", badPRScore))
+	}
+
+	if score < 0 {
+		score = 0
+	}
+	if score > 14 {
+		score = 14
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "no strong flake signals")
+	}
+	return score, reasons
+}
+
+func affectedJobCount(row SignatureRow) int {
+	return len(OrderedUniqueReferences(row.References))
+}
+
+func flakeAffectedJobPoints(jobsAffected int) int {
+	switch {
+	case jobsAffected >= 12:
+		return 3
+	case jobsAffected >= 6:
+		return 2
+	case jobsAffected >= 3:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func flakePostGoodPoints(postGoodCount int) int {
+	switch {
+	case postGoodCount >= 8:
+		return 3
+	case postGoodCount >= 4:
+		return 2
+	case postGoodCount >= 1:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func flakeSpreadPoints(counts []int) int {
+	if len(counts) == 0 {
+		return 0
+	}
+	total := 0
+	activeDays := 0
+	maxDaily := 0
+	for _, count := range counts {
+		if count <= 0 {
+			continue
+		}
+		total += count
+		activeDays++
+		if count > maxDaily {
+			maxDaily = count
+		}
+	}
+	if total <= 0 || activeDays <= 0 {
+		return 0
+	}
+	concentration := float64(maxDaily) / float64(total)
+	switch {
+	case activeDays >= 5 && concentration <= 0.5:
+		return 2
+	case activeDays >= 3 && concentration <= 0.75:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func flakeRecentPoints(references []RunReference, trendRange string) int {
+	latest, ok := latestReferenceTimestamp(references)
+	if !ok {
+		return 0
+	}
+	anchor, ok := trendRangeEndAnchor(trendRange)
+	if !ok {
+		return 0
+	}
+	if latest.After(anchor) {
+		latest = anchor
+	}
+	age := anchor.Sub(latest)
+	if age < 0 {
+		return 0
+	}
+	switch {
+	case age <= 24*time.Hour:
+		return 2
+	case age <= 48*time.Hour:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func flakeHistoryWeeksPoints(priorWeeksPresent int) int {
+	if priorWeeksPresent <= 0 {
+		return 0
+	}
+	if priorWeeksPresent > 4 {
+		return 4
+	}
+	return priorWeeksPresent
+}
+
+func latestReferenceTimestamp(references []RunReference) (time.Time, bool) {
+	var latest time.Time
+	for _, reference := range references {
+		ts, ok := ParseReferenceTimestamp(reference.OccurredAt)
+		if !ok {
+			continue
+		}
+		if latest.IsZero() || ts.After(latest) {
+			latest = ts
+		}
+	}
+	if latest.IsZero() {
+		return time.Time{}, false
+	}
+	return latest, true
+}
+
+func trendRangeEndAnchor(trendRange string) (time.Time, bool) {
+	parts := strings.Split(strings.TrimSpace(trendRange), "..")
+	if len(parts) != 2 {
+		return time.Time{}, false
+	}
+	endDay, err := time.Parse("2006-01-02", strings.TrimSpace(parts[1]))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return endDay.UTC().Add(24 * time.Hour), true
+}
+
+func flakeScoreClass(score int) string {
+	switch {
+	case score >= 10:
+		return "flake-high"
+	case score >= 5:
+		return "flake-medium"
+	default:
+		return "flake-low"
+	}
+}
+
+func SortRowsByDefaultPriority(rows []SignatureRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		flakeI, _ := FlakeScoreAndReasons(rows[i])
+		flakeJ, _ := FlakeScoreAndReasons(rows[j])
+		if flakeI != flakeJ {
+			return flakeI > flakeJ
+		}
+		jobsI := affectedJobCount(rows[i])
+		jobsJ := affectedJobCount(rows[j])
+		if jobsI != jobsJ {
+			return jobsI > jobsJ
+		}
+		if rows[i].SupportShare != rows[j].SupportShare {
+			return rows[i].SupportShare > rows[j].SupportShare
+		}
+		if rows[i].SupportCount != rows[j].SupportCount {
+			return rows[i].SupportCount > rows[j].SupportCount
+		}
+		if rows[i].PostGoodCount != rows[j].PostGoodCount {
+			return rows[i].PostGoodCount > rows[j].PostGoodCount
+		}
+		if strings.TrimSpace(rows[i].Environment) != strings.TrimSpace(rows[j].Environment) {
+			return strings.TrimSpace(rows[i].Environment) < strings.TrimSpace(rows[j].Environment)
+		}
+		if strings.TrimSpace(rows[i].Phrase) != strings.TrimSpace(rows[j].Phrase) {
+			return strings.TrimSpace(rows[i].Phrase) < strings.TrimSpace(rows[j].Phrase)
+		}
+		return strings.TrimSpace(rows[i].ClusterID) < strings.TrimSpace(rows[j].ClusterID)
+	})
+}
+
+func SortRowsByBadPRScore(rows []SignatureRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		scoreI, _ := BadPRScoreAndReasons(rows[i])
+		scoreJ, _ := BadPRScoreAndReasons(rows[j])
+		if scoreI != scoreJ {
+			return scoreI < scoreJ
+		}
+		if rows[i].SupportCount != rows[j].SupportCount {
+			return rows[i].SupportCount > rows[j].SupportCount
+		}
+		if rows[i].PostGoodCount != rows[j].PostGoodCount {
+			return rows[i].PostGoodCount > rows[j].PostGoodCount
+		}
+		if rows[i].SupportShare != rows[j].SupportShare {
+			return rows[i].SupportShare > rows[j].SupportShare
+		}
+		if strings.TrimSpace(rows[i].Environment) != strings.TrimSpace(rows[j].Environment) {
+			return strings.TrimSpace(rows[i].Environment) < strings.TrimSpace(rows[j].Environment)
+		}
+		if strings.TrimSpace(rows[i].Phrase) != strings.TrimSpace(rows[j].Phrase) {
+			return strings.TrimSpace(rows[i].Phrase) < strings.TrimSpace(rows[j].Phrase)
+		}
+		return strings.TrimSpace(rows[i].ClusterID) < strings.TrimSpace(rows[j].ClusterID)
+	})
+}
+
+func isOnlySeenInDev(row SignatureRow) bool {
+	if strings.ToLower(strings.TrimSpace(row.Environment)) != "dev" {
+		return false
+	}
+	for _, value := range row.AlsoSeenIn {
+		if strings.TrimSpace(value) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isSingleKnownPR(row SignatureRow) bool {
+	references := OrderedUniqueReferences(row.References)
+	if len(references) == 0 {
+		return false
+	}
+	uniquePRs := map[int]struct{}{}
+	for _, reference := range references {
+		if reference.PRNumber <= 0 {
+			return false
+		}
+		uniquePRs[reference.PRNumber] = struct{}{}
+	}
+	return len(uniquePRs) == 1
+}
+
 func normalizedOptions(options TableOptions) TableOptions {
 	opts := options
 	if strings.TrimSpace(opts.GitHubRepoOwner) == "" {
@@ -401,10 +1241,19 @@ func normalizedOptions(options TableOptions) TableOptions {
 	if strings.TrimSpace(opts.TrendHeaderLabel) == "" {
 		opts.TrendHeaderLabel = "Trend"
 	}
+	if opts.LoadedRowsLimit <= 0 {
+		opts.LoadedRowsLimit = defaultLoadedRowsLimit
+	}
+	if opts.InitialVisibleRows <= 0 {
+		opts.InitialVisibleRows = opts.LoadedRowsLimit
+	}
+	if opts.InitialVisibleRows > opts.LoadedRowsLimit {
+		opts.InitialVisibleRows = opts.LoadedRowsLimit
+	}
 	return opts
 }
 
-func renderMainRow(row SignatureRow, opts TableOptions) string {
+func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	var b strings.Builder
 	phrase := strings.TrimSpace(row.Phrase)
 	if phrase == "" {
@@ -434,30 +1283,64 @@ func renderMainRow(row SignatureRow, opts TableOptions) string {
 		}
 		qualityNotes = strings.Join(parts, "")
 	}
-	b.WriteString("        <tr>")
-	b.WriteString(fmt.Sprintf("<td><details class=\"signature-toggle\"><summary>%s</summary><div class=\"muted\">full signature:</div><pre>%s</pre><div class=\"muted\">cluster: %s</div><div class=\"muted\">query: %s</div></details></td>",
-		html.EscapeString(cleanInline(phrase, 180)),
+	summaryText := html.EscapeString(cleanInline(phrase, 180))
+	badPRScore, badPRReasons := BadPRScoreAndReasons(row)
+	if badPRScore == 3 {
+		tooltip := fmt.Sprintf("Likely bad PR signal (score %d/3): %s", badPRScore, strings.Join(badPRReasons, "; "))
+		summaryText = fmt.Sprintf(
+			"<span class=\"bad-pr-flag\" title=\"%s\" aria-label=\"%s\">⚠</span>%s",
+			html.EscapeString(tooltip),
+			html.EscapeString(tooltip),
+			summaryText,
+		)
+	}
+	badPRDetails := fmt.Sprintf("bad PR score: %d/3", badPRScore)
+	if len(badPRReasons) > 0 {
+		badPRDetails = fmt.Sprintf("%s (%s)", badPRDetails, strings.Join(badPRReasons, "; "))
+	}
+	jobsAffected := affectedJobCount(row)
+	flakeScore, flakeReasons := FlakeScoreAndReasons(row)
+	flakeDetails := fmt.Sprintf("flake score: %d/14", flakeScore)
+	if len(flakeReasons) > 0 {
+		flakeDetails = fmt.Sprintf("%s (%s)", flakeDetails, strings.Join(flakeReasons, "; "))
+	}
+	flakeCellTitle := flakeDetails
+	if strings.TrimSpace(flakeCellTitle) == "" {
+		flakeCellTitle = "flake score"
+	}
+	flakeClass := flakeScoreClass(flakeScore)
+	b.WriteString(fmt.Sprintf(
+		"        <tr class=\"triage-row\" data-row-id=\"%s\" data-sort-count=\"%d\" data-sort-post-good=\"%d\" data-sort-jobs=\"%d\" data-sort-flake=\"%d\" data-sort-share=\"%.6f\" data-sort-environment=\"%s\" data-sort-phrase=\"%s\" data-sort-cluster=\"%s\">",
+		html.EscapeString(strings.TrimSpace(rowID)),
+		row.SupportCount,
+		row.PostGoodCount,
+		jobsAffected,
+		flakeScore,
+		row.SupportShare,
+		html.EscapeString(strings.ToLower(strings.TrimSpace(row.Environment))),
+		html.EscapeString(strings.TrimSpace(row.Phrase)),
+		html.EscapeString(strings.TrimSpace(row.ClusterID)),
+	))
+	b.WriteString(fmt.Sprintf("<td><details class=\"signature-toggle\"><summary>%s</summary><div class=\"muted\">full signature:</div><pre>%s</pre><div class=\"muted\">cluster: %s</div><div class=\"muted\">query: %s</div><div class=\"muted\">%s</div><div class=\"muted\">%s</div></details></td>",
+		summaryText,
 		html.EscapeString(phrase),
 		html.EscapeString(clusterID),
 		html.EscapeString(searchQuery),
+		html.EscapeString(badPRDetails),
+		html.EscapeString(flakeDetails),
 	))
 	b.WriteString(fmt.Sprintf("<td>%d</td>", row.SupportCount))
-	if opts.IncludeTrend {
-		if row.TrendSparkline != "" {
-			b.WriteString(fmt.Sprintf(
-				"<td title=\"%s (%s)\">%s</td>",
-				html.EscapeString(FormatCounts(row.TrendCounts)),
-				html.EscapeString(row.TrendRange),
-				html.EscapeString(row.TrendSparkline),
-			))
-		} else {
-			b.WriteString("<td>n/a</td>")
-		}
-	}
-	b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", row.SupportShare))
 	b.WriteString(fmt.Sprintf("<td>%d</td>", row.PostGoodCount))
+	b.WriteString(fmt.Sprintf("<td>%d</td>", jobsAffected))
+	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"flake-score %s\">%d</span></td>", html.EscapeString(flakeCellTitle), flakeClass, flakeScore))
+	b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", row.SupportShare))
+	if opts.IncludeTrend {
+		b.WriteString(renderTrendCell(row))
+	}
 	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(otherEnvironments)))
-	b.WriteString(fmt.Sprintf("<td><span class=\"%s\">%d</span></td>", qualityClass, row.QualityScore))
+	if !opts.HideQualityScore {
+		b.WriteString(fmt.Sprintf("<td><span class=\"%s\">%d</span></td>", qualityClass, row.QualityScore))
+	}
 	if opts.IncludeQualityNotes {
 		b.WriteString(fmt.Sprintf("<td>%s</td>", qualityNotes))
 	}
@@ -465,12 +1348,117 @@ func renderMainRow(row SignatureRow, opts TableOptions) string {
 	return b.String()
 }
 
-func renderDetailRow(row SignatureRow, colSpan int, opts TableOptions) string {
+func renderTrendCell(row SignatureRow) string {
+	if len(row.TrendCounts) > 0 {
+		tooltip := trendTooltip(row.TrendCounts, row.TrendRange)
+		return fmt.Sprintf(
+			"<td title=\"%s\">%s</td>",
+			html.EscapeString(tooltip),
+			renderTrendBarsSVG(row.TrendCounts, tooltip),
+		)
+	}
+	if row.TrendSparkline != "" {
+		return fmt.Sprintf(
+			"<td title=\"%s (%s)\">%s</td>",
+			html.EscapeString(FormatCounts(row.TrendCounts)),
+			html.EscapeString(row.TrendRange),
+			html.EscapeString(row.TrendSparkline),
+		)
+	}
+	return "<td>n/a</td>"
+}
+
+func trendTooltip(counts []int, dateRange string) string {
+	countLabel := strings.TrimSpace(FormatCounts(counts))
+	rangeLabel := strings.TrimSpace(dateRange)
+	switch {
+	case countLabel != "" && rangeLabel != "":
+		return fmt.Sprintf("%s (%s)", countLabel, rangeLabel)
+	case countLabel != "":
+		return countLabel
+	case rangeLabel != "":
+		return rangeLabel
+	default:
+		return "n/a"
+	}
+}
+
+func renderTrendBarsSVG(counts []int, ariaLabel string) string {
+	if len(counts) == 0 {
+		return "<span class=\"muted\">n/a</span>"
+	}
+	const (
+		barWidth    = 4
+		barGap      = 2
+		chartHeight = 16
+	)
+	maxCount := 0
+	for _, count := range counts {
+		if count > maxCount {
+			maxCount = count
+		}
+	}
+	chartWidth := len(counts)*barWidth + (len(counts)-1)*barGap
+	if chartWidth < 1 {
+		chartWidth = 1
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(
+		"<svg class=\"trend-svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" role=\"img\" aria-label=\"%s\">",
+		chartWidth,
+		chartHeight,
+		chartWidth,
+		chartHeight,
+		html.EscapeString(strings.TrimSpace(ariaLabel)),
+	))
+	b.WriteString(fmt.Sprintf(
+		"<line x1=\"0\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#d1d5db\" stroke-width=\"1\"/>",
+		chartHeight-1,
+		chartWidth,
+		chartHeight-1,
+	))
+	for i, count := range counts {
+		height := 1
+		fill := "#e5e7eb"
+		if count > 0 {
+			if maxCount > 0 {
+				height = 1 + (count*(chartHeight-2))/maxCount
+			}
+			fill = "#93c5fd"
+		}
+		if i == len(counts)-1 {
+			if count > 0 {
+				fill = "#2563eb"
+			} else {
+				fill = "#cbd5e1"
+			}
+		}
+		x := i * (barWidth + barGap)
+		y := chartHeight - height
+		b.WriteString(fmt.Sprintf(
+			"<rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" rx=\"1\" ry=\"1\" fill=\"%s\"/>",
+			x,
+			y,
+			barWidth,
+			height,
+			fill,
+		))
+	}
+	b.WriteString("</svg>")
+	return b.String()
+}
+
+func renderDetailRow(row SignatureRow, rowID string, colSpan int, opts TableOptions) string {
 	if colSpan <= 0 {
 		colSpan = 1
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("        <tr class=\"triage-errors-row\"><td colspan=\"%d\">", colSpan))
+	b.WriteString(fmt.Sprintf(
+		"        <tr class=\"triage-errors-row\" data-parent-row-id=\"%s\"><td colspan=\"%d\">",
+		html.EscapeString(strings.TrimSpace(rowID)),
+		colSpan,
+	))
 	b.WriteString("<div class=\"triage-detail-actions\">")
 	b.WriteString(renderFullErrorDetails(row.FullErrorSamples, opts.FullErrorsSummaryLabel))
 	b.WriteString(renderContributingTestsDetails(row.ContributingTests, opts.ContributingSummaryLabel))

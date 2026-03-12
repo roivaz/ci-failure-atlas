@@ -15,262 +15,6 @@ import (
 	"ci-failure-atlas/pkg/store/ndjson"
 )
 
-func TestBuildMarkdownHighlightsSignalsAndWarnings(t *testing.T) {
-	t.Parallel()
-
-	postGoodCluster := testCluster{
-		Phase1ClusterID:         "cluster-a",
-		Lane:                    "e2e",
-		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-		TestName:                "Customer should be able to create an HCP cluster",
-		TestSuite:               "rp-api-compat-all/parallel",
-		CanonicalEvidencePhrase: "msg: \"failed to create route: the server is currently unable to handle the request\",",
-		SupportCount:            2,
-		PostGoodCommitCount:     2,
-		MemberSignatureIDs:      []string{"sig-a", "sig-b"},
-		References: []reference{
-			{
-				RunURL:      "https://prow.example/run/postgood-1",
-				OccurredAt:  "2026-03-03T15:33:10Z",
-				PRNumber:    4212,
-				SignatureID: "sig-a",
-			},
-			{
-				RunURL:      "https://prow.example/run/postgood-2",
-				OccurredAt:  "2026-03-02T15:33:10Z",
-				PRNumber:    4252,
-				SignatureID: "sig-b",
-			},
-		},
-	}
-
-	badPRCluster := testCluster{
-		Phase1ClusterID:         "cluster-b",
-		Lane:                    "e2e",
-		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-		TestName:                "Customer should be able to create an HCP cluster and manage pull secrets",
-		TestSuite:               "rp-api-compat-all/parallel",
-		CanonicalEvidencePhrase: "msg: \"failed waiting for cluster=\\\"<id>\\\" in resourcegroup=\\\"<id>\\\" to finish creating, caused by: timeout '45.000000' minutes exceeded during CreateHCPClusterFromParam\"",
-		SupportCount:            11,
-		PostGoodCommitCount:     0,
-		MemberSignatureIDs:      []string{"sig-c", "sig-d"},
-		References: []reference{
-			{
-				RunURL:      "https://prow.example/run/badpr-1",
-				OccurredAt:  "2026-03-02T07:10:51Z",
-				PRNumber:    4249,
-				SignatureID: "sig-c",
-			},
-			{
-				RunURL:      "https://prow.example/run/badpr-2",
-				OccurredAt:  "2026-03-02T02:51:46Z",
-				PRNumber:    4249,
-				SignatureID: "sig-d",
-			},
-		},
-	}
-
-	metadataByFull := map[testKey]testMetadata{
-		toTestKey(postGoodCluster.Lane, postGoodCluster.JobName, postGoodCluster.TestName, postGoodCluster.TestSuite): {
-			PassRate: float64Ptr(96.25),
-			Runs:     160,
-			Tags:     []string{"required"},
-		},
-		toTestKey(badPRCluster.Lane, badPRCluster.JobName, badPRCluster.TestName, badPRCluster.TestSuite): {
-			PassRate: float64Ptr(81.00),
-			Runs:     90,
-		},
-	}
-
-	reviewIndex := buildReviewSignalIndex([]reviewItem{
-		{
-			Reason:                 "insufficient_inner_error",
-			SourcePhase1ClusterIDs: []string{"cluster-b"},
-		},
-		{
-			Reason:             "low_confidence_evidence",
-			MemberSignatureIDs: []string{"sig-a"},
-		},
-	})
-
-	report := buildMarkdown(
-		[]testCluster{postGoodCluster, badPRCluster},
-		metadataByFull,
-		map[testKeyNoSuite]testMetadata{},
-		map[referenceKey]string{
-			{RunURL: "https://prow.example/run/badpr-1", SignatureID: "sig-c"}: "full badpr error sample 1",
-			{RunURL: "https://prow.example/run/badpr-2", SignatureID: "sig-d"}: "full badpr error sample 2",
-		},
-		reviewIndex,
-		"data/views/agent/test_clusters.ndjson",
-		"data/raw/failures.ndjson",
-		time.Date(2026, 3, 4, 16, 30, 0, 0, time.UTC),
-		0,
-		4,
-		10,
-	)
-
-	required := []string{
-		"# CI Test Failure Summary",
-		"Filtered to tests with at least **10** observed runs.",
-		"## 1. Customer should be able to create an HCP cluster and manage pull secrets",
-		"## 2. Customer should be able to create an HCP cluster",
-		"Risk classification: **likely PR-specific (single PR)**",
-		"Risk classification: **systemic signal (post-good-commit-runs > 0)**",
-		"Current success rate: **81.00%** over **90** runs",
-		"Current success rate: **96.25%** over **160** runs",
-		"Confidence: **needs review** (`insufficient_inner_error`)",
-		"Confidence: **needs review** (`low_confidence_evidence`)",
-		"WARNING: signature post-good-commit-runs=0 and all observed failures map to PR #4249 (2/11). Strong bad-PR signal.",
-		"SIGNAL: signature has post-good-commit-runs evidence (**2/2** failures). Treat as likely systemic or pre-existing instability.",
-		"Daily density (last 7d, oldest->newest",
-		"Full error samples (for eyeballing report accuracy)",
-		"full badpr error sample 1",
-		"full badpr error sample 2",
-	}
-	for _, expected := range required {
-		if !strings.Contains(report, expected) {
-			t.Fatalf("expected report to contain %q", expected)
-		}
-	}
-
-	disallowed := []string{
-		"## Quick Index",
-		"## At A Glance",
-		"## Triage Queue",
-		"## Top Signature Hotspots",
-	}
-	for _, section := range disallowed {
-		if strings.Contains(report, section) {
-			t.Fatalf("did not expect report section %q", section)
-		}
-	}
-}
-
-func TestBuildMarkdownSortsTestsBySuccessRate(t *testing.T) {
-	t.Parallel()
-
-	highPassHighFailures := testCluster{
-		Phase1ClusterID:         "cluster-high-pass",
-		Lane:                    "e2e",
-		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-		TestName:                "high pass-rate test",
-		TestSuite:               "rp-api-compat-all/parallel",
-		CanonicalEvidencePhrase: "high pass sample",
-		SupportCount:            20,
-		References: []reference{
-			{RunURL: "https://prow.example/run/high-1", OccurredAt: "2026-03-03T10:00:00Z", SignatureID: "sig-high"},
-		},
-	}
-	lowPassLowFailures := testCluster{
-		Phase1ClusterID:         "cluster-low-pass",
-		Lane:                    "e2e",
-		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-		TestName:                "low pass-rate test",
-		TestSuite:               "rp-api-compat-all/parallel",
-		CanonicalEvidencePhrase: "low pass sample",
-		SupportCount:            2,
-		References: []reference{
-			{RunURL: "https://prow.example/run/low-1", OccurredAt: "2026-03-03T09:00:00Z", SignatureID: "sig-low"},
-		},
-	}
-
-	metadataByFull := map[testKey]testMetadata{
-		toTestKey(highPassHighFailures.Lane, highPassHighFailures.JobName, highPassHighFailures.TestName, highPassHighFailures.TestSuite): {
-			PassRate: float64Ptr(99.0),
-			Runs:     200,
-		},
-		toTestKey(lowPassLowFailures.Lane, lowPassLowFailures.JobName, lowPassLowFailures.TestName, lowPassLowFailures.TestSuite): {
-			PassRate: float64Ptr(75.0),
-			Runs:     100,
-		},
-	}
-
-	report := buildMarkdown(
-		[]testCluster{highPassHighFailures, lowPassLowFailures},
-		metadataByFull,
-		map[testKeyNoSuite]testMetadata{},
-		map[referenceKey]string{},
-		reviewSignalIndex{},
-		"data/views/agent/test_clusters.ndjson",
-		"data/raw/failures.ndjson",
-		time.Date(2026, 3, 4, 16, 30, 0, 0, time.UTC),
-		0,
-		4,
-		10,
-	)
-
-	first := strings.Index(report, "## 1. low pass-rate test")
-	second := strings.Index(report, "## 2. high pass-rate test")
-	if first < 0 || second < 0 {
-		t.Fatalf("expected both tests to be present in ordered headings; report=%q", report)
-	}
-	if first > second {
-		t.Fatalf("expected lower success-rate test first; report=%q", report)
-	}
-}
-
-func TestBuildMarkdownFiltersTestsByMinRuns(t *testing.T) {
-	t.Parallel()
-
-	eligible := testCluster{
-		Phase1ClusterID:         "cluster-eligible",
-		Lane:                    "e2e",
-		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-		TestName:                "eligible test",
-		TestSuite:               "rp-api-compat-all/parallel",
-		CanonicalEvidencePhrase: "eligible sample",
-		SupportCount:            3,
-		References: []reference{
-			{RunURL: "https://prow.example/run/eligible", OccurredAt: "2026-03-03T10:00:00Z", SignatureID: "sig-e"},
-		},
-	}
-	ineligible := testCluster{
-		Phase1ClusterID:         "cluster-ineligible",
-		Lane:                    "e2e",
-		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-		TestName:                "ineligible test",
-		TestSuite:               "rp-api-compat-all/parallel",
-		CanonicalEvidencePhrase: "ineligible sample",
-		SupportCount:            9,
-		References: []reference{
-			{RunURL: "https://prow.example/run/ineligible", OccurredAt: "2026-03-03T11:00:00Z", SignatureID: "sig-i"},
-		},
-	}
-
-	metadataByFull := map[testKey]testMetadata{
-		toTestKey(eligible.Lane, eligible.JobName, eligible.TestName, eligible.TestSuite): {
-			PassRate: float64Ptr(90.0),
-			Runs:     10,
-		},
-		toTestKey(ineligible.Lane, ineligible.JobName, ineligible.TestName, ineligible.TestSuite): {
-			PassRate: float64Ptr(50.0),
-			Runs:     9,
-		},
-	}
-
-	report := buildMarkdown(
-		[]testCluster{eligible, ineligible},
-		metadataByFull,
-		map[testKeyNoSuite]testMetadata{},
-		map[referenceKey]string{},
-		reviewSignalIndex{},
-		"data/views/agent/test_clusters.ndjson",
-		"data/raw/failures.ndjson",
-		time.Date(2026, 3, 4, 16, 30, 0, 0, time.UTC),
-		0,
-		4,
-		10,
-	)
-
-	if !strings.Contains(report, "## 1. eligible test") {
-		t.Fatalf("expected eligible test in report, got: %q", report)
-	}
-	if strings.Contains(report, "ineligible test") {
-		t.Fatalf("did not expect ineligible test in report, got: %q", report)
-	}
-}
-
 func TestLookupMetadataFallsBackWithoutSuite(t *testing.T) {
 	t.Parallel()
 
@@ -577,7 +321,7 @@ func TestGenerateWritesPerEnvironmentFilesWhenSplitEnabled(t *testing.T) {
 		t.Fatalf("seed review queue: %v", err)
 	}
 
-	outputPath := filepath.Join(t.TempDir(), "test-failure-summary.md")
+	outputPath := filepath.Join(t.TempDir(), "semantic-quality.html")
 	opts := DefaultOptions()
 	opts.OutputPath = outputPath
 	opts.SplitByEnvironment = true
@@ -587,8 +331,8 @@ func TestGenerateWritesPerEnvironmentFilesWhenSplitEnabled(t *testing.T) {
 		t.Fatalf("generate test summary: %v", err)
 	}
 
-	devPath := filepath.Join(filepath.Dir(outputPath), "test-failure-summary.dev.md")
-	intPath := filepath.Join(filepath.Dir(outputPath), "test-failure-summary.int.md")
+	devPath := filepath.Join(filepath.Dir(outputPath), "semantic-quality.dev.html")
+	intPath := filepath.Join(filepath.Dir(outputPath), "semantic-quality.int.html")
 	devReport, err := os.ReadFile(devPath)
 	if err != nil {
 		t.Fatalf("read dev report: %v", err)
@@ -597,16 +341,16 @@ func TestGenerateWritesPerEnvironmentFilesWhenSplitEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read int report: %v", err)
 	}
-	if !strings.Contains(string(devReport), "## 1. dev test") {
+	if !strings.Contains(string(devReport), "dev test") {
 		t.Fatalf("expected dev report to include dev test: %q", string(devReport))
 	}
-	if strings.Contains(string(devReport), "## 1. int test") || strings.Contains(string(devReport), "int test") {
+	if strings.Contains(string(devReport), "int test") {
 		t.Fatalf("did not expect dev report to include int test: %q", string(devReport))
 	}
-	if !strings.Contains(string(intReport), "## 1. int test") {
+	if !strings.Contains(string(intReport), "int test") {
 		t.Fatalf("expected int report to include int test: %q", string(intReport))
 	}
-	if strings.Contains(string(intReport), "## 1. dev test") || strings.Contains(string(intReport), "dev test") {
+	if strings.Contains(string(intReport), "dev test") {
 		t.Fatalf("did not expect int report to include dev test: %q", string(intReport))
 	}
 }
@@ -688,7 +432,7 @@ func TestGenerateMinRunsUsesLatestSippyTestMetadataRuns(t *testing.T) {
 		t.Fatalf("seed test metadata daily: %v", err)
 	}
 
-	outputPath := filepath.Join(t.TempDir(), "test-failure-summary.md")
+	outputPath := filepath.Join(t.TempDir(), "semantic-quality.html")
 	opts := DefaultOptions()
 	opts.OutputPath = outputPath
 	opts.Environments = []string{environment}
@@ -704,10 +448,10 @@ func TestGenerateMinRunsUsesLatestSippyTestMetadataRuns(t *testing.T) {
 		t.Fatalf("read report: %v", err)
 	}
 	text := string(report)
-	if !strings.Contains(text, "## 1. "+testName) {
+	if !strings.Contains(text, testName) {
 		t.Fatalf("expected test to survive min-runs filter via sippy metadata, got report=%q", text)
 	}
-	if !strings.Contains(text, "Current success rate: **92.50%** over **25** runs") {
+	if !strings.Contains(text, "92.50% (25 runs)") {
 		t.Fatalf("expected report to include sippy runs/passrate, got report=%q", text)
 	}
 }
@@ -716,7 +460,7 @@ func TestValidateOptionsRejectsUnknownFormat(t *testing.T) {
 	t.Parallel()
 
 	_, err := validateOptions(Options{
-		OutputPath: "data/reports/test-failure-summary.md",
+		OutputPath: "data/reports/semantic-quality.html",
 		Format:     "pdf",
 		RecentRuns: 4,
 	})
@@ -732,7 +476,7 @@ func TestValidateOptionsRejectsPartialWindow(t *testing.T) {
 	t.Parallel()
 
 	_, err := validateOptions(Options{
-		OutputPath:        "data/reports/test-failure-summary.md",
+		OutputPath:        "data/reports/semantic-quality.html",
 		Format:            reportFormatHTML,
 		WindowStart:       "2026-03-01",
 		RecentRuns:        4,
@@ -858,6 +602,7 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 	report := string(reportBytes)
 	requiredReportSnippets := []string{
 		"CI Semantic Quality Report",
+		"id=\"theme-toggle\"",
 		"Window: <strong>2026-03-01</strong> to <strong>2026-03-07</strong> (7 days)",
 		"2026-03-01..2026-03-07",
 		"filter-env",

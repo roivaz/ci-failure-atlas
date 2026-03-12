@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"ci-failure-atlas/pkg/report/triagehtml"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/store/ndjson"
@@ -138,6 +139,17 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		OutputPath: outputPath,
 		StartDate:  "2026-03-01",
 		TargetRate: 95,
+		Chrome: triagehtml.ReportChromeOptions{
+			CurrentWeek:  "2026-03-01",
+			CurrentView:  triagehtml.ReportViewWeekly,
+			PreviousWeek: "2026-02-22",
+			PreviousHref: "../2026-02-22/weekly-metrics.html",
+			NextWeek:     "2026-03-08",
+			NextHref:     "../2026-03-08/weekly-metrics.html",
+			WeeklyHref:   "weekly-metrics.html",
+			GlobalHref:   "global-signature-triage.html",
+			ArchiveHref:  "../archive/",
+		},
 	}); err != nil {
 		t.Fatalf("generate weekly report: %v", err)
 	}
@@ -150,6 +162,14 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 
 	requiredSnippets := []string{
 		"CI Weekly Report",
+		"id=\"theme-toggle\"",
+		"class=\"report-chrome\"",
+		"../2026-02-22/weekly-metrics.html",
+		"../2026-03-08/weekly-metrics.html",
+		"href=\"global-signature-triage.html\"",
+		"href=\"../archive/\"",
+		"Weekly Report",
+		"Triage Report",
 		"Window: <strong>2026-03-01</strong> to <strong>2026-03-07</strong>",
 		"Goals:<br/>- e2e-integration, e2e-stage, e2e-prod job runs should each succeed 95% of the time<br/>- e2e-dev job runs should succeed 95% of the time after the last push of a PR that merges",
 		"Environment: DEV",
@@ -167,17 +187,27 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"Lane outcomes",
 		"Tests below 95%",
 		"Top failure signatures",
+		"Jump to Global signature triage for this week",
+		"global-signature-triage.html#env-dev",
 		"Provision step success rate (Other excluded)",
+		"E2E success (runs reaching E2E)",
+		"Provision success (after last push of merged PR)",
+		"E2E success (after last push of merged PR)",
+		"cards cards-post-good cards-dev",
 		"88.89% (8/9)",
 		"Source: Sippy test metadata (period: default, rolling 7-day window). Top 5 tests below 95.00% success; minimum 10 runs. This view uses the first metadata datapoint available after the report window end date; if unavailable, it falls back to the latest datapoint before the end date.",
-		"Top 10 semantic signatures by support in this window (minimum 1.00% share)",
+		"Up to 50 semantic signatures are loaded in this window (minimum 1.00% share), with 10 shown by default. Default sorting is flake score desc, jobs affected desc, share desc, count desc; click headers to re-sort.",
+		"data-sort-key=\"count\"",
+		"data-sort-key=\"after_last_push\"",
+		"data-sort-key=\"jobs_affected\"",
+		"data-sort-key=\"flake_score\"",
 		"<th>Trend</th>",
 		"2026-03-01..2026-03-07",
 		"dev flaky scenario",
 		"83.00%",
 		"int flaky scenario",
 		"92.00%",
-		"Also seen in",
+		"<th>Seen in",
 		"Full failure examples",
 		"Full failure examples (1)",
 		"Affected runs (",
@@ -225,6 +255,7 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"Success (goal basis)",
 		"Top semantic signature (support delta)",
 		"Quality notes",
+		"Quality score",
 		"Provision success (DEV)",
 		"Provision change from last week (DEV)",
 		"Change from last week",
@@ -264,8 +295,16 @@ func TestGenerateWithComparisonRendersExecutiveAndSemanticDeltas(t *testing.T) {
 		{Environment: "dev", Date: "2026-03-01", Metric: metricFailureCount, Value: 3},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricFailedProvisionRunCount, Value: 2},
 		{Environment: "dev", Date: "2026-03-01", Metric: metricFailedE2ERunCount, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodRunCount, Value: 10},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedProvision, Value: 2},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedE2EJobs, Value: 1},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricPostGoodFailedCIInfra, Value: 0},
 		{Environment: "dev", Date: "2026-02-22", Metric: metricRunCount, Value: 8},
 		{Environment: "dev", Date: "2026-02-22", Metric: metricFailureCount, Value: 4},
+		{Environment: "dev", Date: "2026-02-22", Metric: metricPostGoodRunCount, Value: 4},
+		{Environment: "dev", Date: "2026-02-22", Metric: metricPostGoodFailedProvision, Value: 0},
+		{Environment: "dev", Date: "2026-02-22", Metric: metricPostGoodFailedE2EJobs, Value: 0},
+		{Environment: "dev", Date: "2026-02-22", Metric: metricPostGoodFailedCIInfra, Value: 0},
 	}); err != nil {
 		t.Fatalf("seed metrics: %v", err)
 	}
@@ -574,6 +613,177 @@ func TestRankTopSignaturesByEnvironmentAppliesMinShareThreshold(t *testing.T) {
 	}
 	if len(rows[0].FullErrorSamples) != 1 || rows[0].FullErrorSamples[0] != "high-impact full error" {
 		t.Fatalf("expected full error sample to be attached to ranked signature, got %#v", rows[0].FullErrorSamples)
+	}
+}
+
+func TestRankTopSignaturesByEnvironmentPushesLikelyBadPRRowsToBottom(t *testing.T) {
+	t.Parallel()
+
+	snapshot := semanticSnapshot{
+		PhraseSupportByEnv: map[string]map[string]int{
+			"dev": {
+				"likely bad pr signature": 100,
+				"healthy signature":       10,
+			},
+		},
+		PhrasePostGoodByEnv: map[string]map[string]int{
+			"dev": {
+				"likely bad pr signature": 0,
+				"healthy signature":       3,
+			},
+		},
+		PhraseReferencesByEnv: map[string]map[string][]triagehtml.RunReference{
+			"dev": {
+				"likely bad pr signature": {
+					{
+						RunURL:     "https://prow.example/run/dev-bad",
+						PRNumber:   4313,
+						OccurredAt: "2026-03-08T10:00:00Z",
+					},
+				},
+				"healthy signature": {
+					{
+						RunURL:     "https://prow.example/run/dev-healthy",
+						PRNumber:   4314,
+						OccurredAt: "2026-03-08T09:00:00Z",
+					},
+				},
+			},
+		},
+		PhraseFullErrorsByEnv: map[string]map[string][]string{
+			"dev": {
+				"likely bad pr signature": {"bad full error"},
+				"healthy signature":       {"healthy full error"},
+			},
+		},
+	}
+
+	rowsByEnvironment := rankTopSignaturesByEnvironment(snapshot, 1, 0)
+	rows := rowsByEnvironment["dev"]
+	if len(rows) != 1 {
+		t.Fatalf("expected one row after top limit, got %d", len(rows))
+	}
+	if rows[0].Phrase != "healthy signature" {
+		t.Fatalf("expected healthy signature to win after bad-pr ordering, got %q", rows[0].Phrase)
+	}
+	if rows[0].BadPRScore != 0 {
+		t.Fatalf("expected healthy signature bad-pr score to be 0, got %d", rows[0].BadPRScore)
+	}
+}
+
+func TestSummarizeStepOutcomesForGoalBasisUsesPostGoodForDev(t *testing.T) {
+	t.Parallel()
+
+	devReport := envReport{
+		Environment: "dev",
+		Days: []dayReport{
+			{
+				Counts: counts{
+					RunCount:                10,
+					FailureCount:            4,
+					FailedCIInfraRunCount:   1,
+					FailedProvisionRunCount: 2,
+					FailedE2ERunCount:       1,
+				},
+				PostGoodRunOutcomes: runOutcomes{
+					TotalRuns:           4,
+					SuccessfulRuns:      2,
+					CIInfraFailedRuns:   0,
+					ProvisionFailedRuns: 1,
+					E2EFailedRuns:       1,
+				},
+			},
+		},
+	}
+
+	provision := summarizeProvisionStepOutcomesForGoalBasis(devReport)
+	if provision.TotalAttempted != 4 || provision.Successful != 3 || provision.Failed != 1 {
+		t.Fatalf("expected DEV provision outcomes to use post-good basis, got %#v", provision)
+	}
+
+	e2e := summarizeE2EStepOutcomesForGoalBasis(devReport)
+	if e2e.TotalAttempted != 3 || e2e.Successful != 2 || e2e.Failed != 1 {
+		t.Fatalf("expected DEV e2e outcomes to use post-good basis, got %#v", e2e)
+	}
+}
+
+func TestSummarizeStepOutcomesForGoalBasisUsesAllRunsForNonDev(t *testing.T) {
+	t.Parallel()
+
+	intReport := envReport{
+		Environment: "int",
+		Days: []dayReport{
+			{
+				Counts: counts{
+					RunCount:                10,
+					FailureCount:            4,
+					FailedCIInfraRunCount:   1,
+					FailedProvisionRunCount: 2,
+					FailedE2ERunCount:       1,
+				},
+				PostGoodRunOutcomes: runOutcomes{
+					TotalRuns:           4,
+					SuccessfulRuns:      2,
+					CIInfraFailedRuns:   0,
+					ProvisionFailedRuns: 1,
+					E2EFailedRuns:       1,
+				},
+			},
+		},
+	}
+
+	provision := summarizeProvisionStepOutcomesForGoalBasis(intReport)
+	if provision.TotalAttempted != 9 || provision.Successful != 7 || provision.Failed != 2 {
+		t.Fatalf("expected non-DEV provision outcomes to use all runs, got %#v", provision)
+	}
+
+	e2e := summarizeE2EStepOutcomesForGoalBasis(intReport)
+	if e2e.TotalAttempted != 7 || e2e.Successful != 6 || e2e.Failed != 1 {
+		t.Fatalf("expected non-DEV e2e outcomes to use all runs, got %#v", e2e)
+	}
+}
+
+func TestProvisionStepKPIIsDevOnly(t *testing.T) {
+	t.Parallel()
+
+	devReport := envReport{
+		Environment: "dev",
+		Days: []dayReport{
+			{
+				PostGoodRunOutcomes: runOutcomes{
+					TotalRuns:           5,
+					SuccessfulRuns:      3,
+					ProvisionFailedRuns: 1,
+					E2EFailedRuns:       1,
+				},
+			},
+		},
+	}
+	devProvision, devAvailable := provisionStepKPI(devReport)
+	if !devAvailable {
+		t.Fatalf("expected DEV provision KPI to be available")
+	}
+	if devProvision.TotalAttempted != 5 || devProvision.Successful != 4 || devProvision.Failed != 1 {
+		t.Fatalf("unexpected DEV provision KPI totals: %#v", devProvision)
+	}
+
+	intReport := envReport{
+		Environment: "int",
+		Days: []dayReport{
+			{
+				Counts: counts{
+					RunCount:                10,
+					FailureCount:            4,
+					FailedCIInfraRunCount:   1,
+					FailedProvisionRunCount: 2,
+					FailedE2ERunCount:       1,
+				},
+			},
+		},
+	}
+	_, intAvailable := provisionStepKPI(intReport)
+	if intAvailable {
+		t.Fatalf("expected non-DEV provision KPI to be unavailable")
 	}
 }
 

@@ -127,20 +127,19 @@ type testAggregate struct {
 const sparklineWindowDays = 7
 
 const (
-	reportFormatMarkdown = "markdown"
-	reportFormatHTML     = "html"
+	reportFormatHTML = "html"
 )
 
 func Run(ctx context.Context, args []string) error {
 	_ = ctx
 	_ = args
-	return fmt.Errorf("report test-summary Run(args) is not wired; use Generate with an injected store")
+	return fmt.Errorf("report quality Run(args) is not wired; use Generate with an injected store")
 }
 
 func DefaultOptions() Options {
 	return Options{
-		OutputPath:         "data/reports/test-failure-summary.md",
-		Format:             reportFormatMarkdown,
+		OutputPath:         "data/reports/semantic-quality.html",
+		Format:             reportFormatHTML,
 		QualityExportPath:  "",
 		TopTests:           0,
 		RecentRuns:         4,
@@ -185,43 +184,25 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			reviewIndex := buildReviewSignalIndex(filteredReviewItems)
 			generatedAt := time.Now().UTC()
 			trendAnchor := qualityTrendAnchor(generatedAt, validated.WindowEnd)
-			var qualityRows []qualitySignatureRow
-			if validated.Format == reportFormatHTML || strings.TrimSpace(validated.QualityExportPath) != "" {
-				qualityRows = buildQualitySignatureRows(
-					testClusters,
-					metadataByFull,
-					metadataByNoSuite,
-					fullErrorsByReference,
-					reviewIndex,
-					trendAnchor,
-					validated.TopTests,
-					validated.RecentRuns,
-					validated.MinRuns,
-				)
-			}
-			report := buildMarkdown(
+			qualityRows := buildQualitySignatureRows(
 				testClusters,
 				metadataByFull,
 				metadataByNoSuite,
 				fullErrorsByReference,
 				reviewIndex,
-				"store:test_clusters",
-				"store:raw_failures",
-				generatedAt,
+				trendAnchor,
 				validated.TopTests,
 				validated.RecentRuns,
 				validated.MinRuns,
 			)
-			if validated.Format == reportFormatHTML {
-				report = buildHTML(
-					qualityRows,
-					"store:test_clusters",
-					"store:raw_failures",
-					generatedAt,
-					validated.WindowStart,
-					validated.WindowEnd,
-				)
-			}
+			report := buildHTML(
+				qualityRows,
+				"store:test_clusters",
+				"store:raw_failures",
+				generatedAt,
+				validated.WindowStart,
+				validated.WindowEnd,
+			)
 			allFlaggedExports = append(allFlaggedExports, toQualityFlaggedSignatureExports(qualityRows)...)
 			outputPath := outputPathForEnvironment(validated.OutputPath, environment)
 			if err := writeTestSummary(outputPath, report); err != nil {
@@ -230,7 +211,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			logger.Info(
 				"Wrote per-test summary report.",
 				"output", outputPath,
-				"format", validated.Format,
+				"format", reportFormatHTML,
 				"environment", environment,
 				"testClusters", len(testClusters),
 				"metadataByFull", len(metadataByFull),
@@ -273,43 +254,25 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	reviewIndex := buildReviewSignalIndex(filteredReviewItems)
 	generatedAt := time.Now().UTC()
 	trendAnchor := qualityTrendAnchor(generatedAt, validated.WindowEnd)
-	var qualityRows []qualitySignatureRow
-	if validated.Format == reportFormatHTML || strings.TrimSpace(validated.QualityExportPath) != "" {
-		qualityRows = buildQualitySignatureRows(
-			testClusters,
-			metadataByFull,
-			metadataByNoSuite,
-			fullErrorsByReference,
-			reviewIndex,
-			trendAnchor,
-			validated.TopTests,
-			validated.RecentRuns,
-			validated.MinRuns,
-		)
-	}
-	report := buildMarkdown(
+	qualityRows := buildQualitySignatureRows(
 		testClusters,
 		metadataByFull,
 		metadataByNoSuite,
 		fullErrorsByReference,
 		reviewIndex,
-		"store:test_clusters",
-		"store:raw_failures",
-		generatedAt,
+		trendAnchor,
 		validated.TopTests,
 		validated.RecentRuns,
 		validated.MinRuns,
 	)
-	if validated.Format == reportFormatHTML {
-		report = buildHTML(
-			qualityRows,
-			"store:test_clusters",
-			"store:raw_failures",
-			generatedAt,
-			validated.WindowStart,
-			validated.WindowEnd,
-		)
-	}
+	report := buildHTML(
+		qualityRows,
+		"store:test_clusters",
+		"store:raw_failures",
+		generatedAt,
+		validated.WindowStart,
+		validated.WindowEnd,
+	)
 	if err := writeTestSummary(validated.OutputPath, report); err != nil {
 		return err
 	}
@@ -328,7 +291,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	logger.Info(
 		"Wrote per-test summary report.",
 		"output", validated.OutputPath,
-		"format", validated.Format,
+		"format", reportFormatHTML,
 		"testClusters", len(testClusters),
 		"metadataByFull", len(metadataByFull),
 		"metadataByNoSuite", len(metadataByNoSuite),
@@ -345,9 +308,9 @@ func parse(args []string) (Options, error) {
 	opts := DefaultOptions()
 	sourceEnvs := strings.Join(opts.Environments, ",")
 
-	fs := flag.NewFlagSet("test-summary", flag.ContinueOnError)
+	fs := flag.NewFlagSet("quality", flag.ContinueOnError)
 	fs.StringVar(&opts.OutputPath, "output", opts.OutputPath, "path to output report")
-	fs.StringVar(&opts.Format, "format", opts.Format, "output format: markdown|html")
+	fs.StringVar(&opts.Format, "format", opts.Format, "output format: html")
 	fs.StringVar(&opts.QualityExportPath, "quality-export", opts.QualityExportPath, "optional path to write flagged semantic signatures as NDJSON")
 	fs.StringVar(&opts.WindowStart, "workflow.window.start", opts.WindowStart, "inclusive start of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
 	fs.StringVar(&opts.WindowEnd, "workflow.window.end", opts.WindowEnd, "exclusive end of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
@@ -380,12 +343,10 @@ func validateOptions(opts Options) (Options, error) {
 		return Options{}, errors.New("--min-runs must be >= 0")
 	}
 	switch strings.ToLower(strings.TrimSpace(opts.Format)) {
-	case reportFormatMarkdown:
-		opts.Format = reportFormatMarkdown
-	case reportFormatHTML:
+	case "", reportFormatHTML:
 		opts.Format = reportFormatHTML
 	default:
-		return Options{}, fmt.Errorf("invalid --format %q (expected markdown or html)", strings.TrimSpace(opts.Format))
+		return Options{}, fmt.Errorf("invalid --format %q (expected html)", strings.TrimSpace(opts.Format))
 	}
 	windowStart, windowEnd, err := normalizeReportWindow(opts.WindowStart, opts.WindowEnd)
 	if err != nil {
@@ -921,196 +882,6 @@ func loggerFromContext(ctx context.Context) logr.Logger {
 		return logr.Discard()
 	}
 	return logger
-}
-
-func buildMarkdown(
-	testClusters []testCluster,
-	metadataByFull map[testKey]testMetadata,
-	metadataByNoSuite map[testKeyNoSuite]testMetadata,
-	fullErrorsByReference map[referenceKey]string,
-	reviewIndex reviewSignalIndex,
-	testPath string,
-	rawPath string,
-	generatedAt time.Time,
-	topTests int,
-	recentRuns int,
-	minRuns int,
-) string {
-	aggregates := mergeUnknownJobAggregates(aggregateByTest(testClusters))
-	for i := range aggregates {
-		aggregates[i].Metadata = lookupMetadata(aggregates[i].Key, metadataByFull, metadataByNoSuite)
-		sortClusters(aggregates[i].Clusters)
-	}
-
-	if minRuns > 0 {
-		filtered := make([]testAggregate, 0, len(aggregates))
-		for _, aggregate := range aggregates {
-			if aggregate.Metadata.Runs < minRuns {
-				continue
-			}
-			filtered = append(filtered, aggregate)
-		}
-		aggregates = filtered
-	}
-
-	sort.Slice(aggregates, func(i, j int) bool {
-		pi := aggregates[i].Metadata.PassRate
-		pj := aggregates[j].Metadata.PassRate
-		switch {
-		case pi != nil && pj != nil && *pi != *pj:
-			// Lower success rate first to prioritize less stable tests.
-			return *pi < *pj
-		case pi != nil && pj == nil:
-			return true
-		case pi == nil && pj != nil:
-			return false
-		}
-		if aggregates[i].Metadata.Runs != aggregates[j].Metadata.Runs {
-			return aggregates[i].Metadata.Runs > aggregates[j].Metadata.Runs
-		}
-		if aggregates[i].TotalFailures != aggregates[j].TotalFailures {
-			return aggregates[i].TotalFailures > aggregates[j].TotalFailures
-		}
-		if aggregates[i].DistinctSignatures != aggregates[j].DistinctSignatures {
-			return aggregates[i].DistinctSignatures > aggregates[j].DistinctSignatures
-		}
-		if !aggregates[i].LatestFailure.Equal(aggregates[j].LatestFailure) {
-			return aggregates[i].LatestFailure.After(aggregates[j].LatestFailure)
-		}
-		if aggregates[i].Key.Lane != aggregates[j].Key.Lane {
-			return aggregates[i].Key.Lane < aggregates[j].Key.Lane
-		}
-		if aggregates[i].Key.JobName != aggregates[j].Key.JobName {
-			return aggregates[i].Key.JobName < aggregates[j].Key.JobName
-		}
-		return aggregates[i].Key.TestName < aggregates[j].Key.TestName
-	})
-
-	limit := len(aggregates)
-	if topTests > 0 && topTests < limit {
-		limit = topTests
-	}
-
-	var b strings.Builder
-	b.WriteString("# CI Test Failure Summary\n\n")
-	b.WriteString(fmt.Sprintf("Generated from `%s` on `%s`.\n", strings.TrimSpace(testPath), generatedAt.Format("2006-01-02 15:04:05Z")))
-	if strings.TrimSpace(rawPath) != "" {
-		b.WriteString(fmt.Sprintf("\nRaw failure metadata source: `%s`.\n", strings.TrimSpace(rawPath)))
-		if minRuns > 0 {
-			b.WriteString(fmt.Sprintf("\nFiltered to tests with at least **%d** observed runs.\n", minRuns))
-		}
-	}
-	b.WriteString("\n")
-
-	if limit == 0 {
-		if minRuns > 0 {
-			b.WriteString(fmt.Sprintf("No test clusters found with at least %d observed runs.\n", minRuns))
-		} else {
-			b.WriteString("No test clusters found.\n")
-		}
-		return b.String()
-	}
-
-	for i := 0; i < limit; i++ {
-		test := aggregates[i]
-		b.WriteString(fmt.Sprintf("## %d. %s\n\n", i+1, cleanInline(test.Key.TestName, 240)))
-		b.WriteString(fmt.Sprintf("- Lane: `%s`\n", cleanInline(test.Key.Lane, 64)))
-		b.WriteString(fmt.Sprintf("- Job: `%s`\n", cleanInline(test.Key.JobName, 120)))
-		b.WriteString(fmt.Sprintf("- Suite: `%s`\n", cleanInline(test.Key.TestSuite, 80)))
-		b.WriteString(fmt.Sprintf("- Total failures: **%d**\n", test.TotalFailures))
-		b.WriteString(fmt.Sprintf("- Distinct signatures: **%d**\n", test.DistinctSignatures))
-		b.WriteString(fmt.Sprintf("- post-good-commit-runs: **%d**\n", test.PostGoodFailures))
-		b.WriteString(fmt.Sprintf("- post-good signal coverage: **%d/%d** failures\n", postGoodKnownCountForAggregate(test), test.TotalFailures))
-		b.WriteString(fmt.Sprintf("- Distinct failing PRs: **%d**\n", len(test.PRCounts)))
-		b.WriteString(fmt.Sprintf("- Risk classification: **%s**\n", testRiskLabel(test)))
-		if !test.LatestFailure.IsZero() {
-			b.WriteString(fmt.Sprintf("- Latest failure: `%s`\n", test.LatestFailure.Format(time.RFC3339)))
-		}
-		if test.Metadata.PassRate != nil {
-			b.WriteString(fmt.Sprintf("- Current success rate: **%.2f%%** over **%d** runs\n", *test.Metadata.PassRate, test.Metadata.Runs))
-		} else {
-			b.WriteString("- Current success rate: **n/a**\n")
-		}
-		if len(test.Metadata.Tags) > 0 {
-			b.WriteString(fmt.Sprintf("- Tags: `%s`\n", cleanInline(strings.Join(test.Metadata.Tags, ","), 160)))
-		}
-
-		b.WriteString("\n### Failure Signatures\n\n")
-		for signatureIndex, cluster := range test.Clusters {
-			b.WriteString(fmt.Sprintf("#### Signature %d - %d failures (post-good-commit-runs: %d)\n\n", signatureIndex+1, cluster.SupportCount, cluster.PostGoodCommitCount))
-			b.WriteString(fmt.Sprintf("- post-good signal coverage: **%d/%d** failures\n", postGoodKnownCountForCluster(cluster), cluster.SupportCount))
-			b.WriteString(fmt.Sprintf("- Evidence phrase: `%s`\n", cleanInline(cluster.CanonicalEvidencePhrase, 280)))
-			if strings.TrimSpace(cluster.SearchQueryPhrase) != "" {
-				b.WriteString(fmt.Sprintf("- Search phrase: `%s`\n", cleanInline(cluster.SearchQueryPhrase, 280)))
-			}
-			if sourceRun := strings.TrimSpace(cluster.SearchQuerySourceRunURL); sourceRun != "" {
-				sourceSig := strings.TrimSpace(cluster.SearchQuerySourceSigID)
-				if sourceSig != "" {
-					b.WriteString(fmt.Sprintf("- Query source: [%s](%s) (signature `%s`)\n", "run", sourceRun, cleanInline(sourceSig, 80)))
-				} else {
-					b.WriteString(fmt.Sprintf("- Query source: [%s](%s)\n", "run", sourceRun))
-				}
-			}
-			reviewReasons := reviewReasonsForCluster(cluster, reviewIndex)
-			if len(reviewReasons) == 0 {
-				b.WriteString("- Confidence: **normal** (no review flags)\n")
-			} else {
-				b.WriteString(fmt.Sprintf("- Confidence: **needs review** (`%s`)\n", cleanInline(strings.Join(reviewReasons, "`, `"), 220)))
-			}
-			if cluster.PostGoodCommitCount > 0 {
-				b.WriteString(fmt.Sprintf("- SIGNAL: signature has post-good-commit-runs evidence (**%d/%d** failures). Treat as likely systemic or pre-existing instability.\n", cluster.PostGoodCommitCount, cluster.SupportCount))
-			}
-			if unicodeSpark, counts, dateRange, ok := clusterDailyDensitySparkline(cluster, sparklineWindowDays, generatedAt); ok {
-				b.WriteString(fmt.Sprintf("- Daily density (last %dd, oldest->newest, %s): `%s` (counts: %s)\n",
-					sparklineWindowDays,
-					dateRange,
-					unicodeSpark,
-					formatCounts(counts),
-				))
-			}
-			runs := recentRunsForCluster(cluster, recentRuns)
-			if warning, ok := signaturePRWarning(cluster, runs); ok {
-				b.WriteString(fmt.Sprintf("- WARNING: %s\n", warning))
-			}
-			if len(runs) == 0 {
-				b.WriteString("- Recent failing runs: (none)\n\n")
-				continue
-			}
-			b.WriteString("- Recent failing runs:\n")
-			for _, run := range runs {
-				label := run.OccurredAt
-				if label == "" {
-					label = "unknown-time"
-				}
-				if run.PRNumber > 0 {
-					label = label + fmt.Sprintf(" | PR #%d", run.PRNumber)
-				} else {
-					label = label + " | PR n/a"
-				}
-				b.WriteString(fmt.Sprintf("  - [%s](%s)\n", label, run.RunURL))
-			}
-			fullErrorSamples := fullErrorSamplesForCluster(cluster, runs, fullErrorsByReference, 2)
-			if len(fullErrorSamples) > 0 {
-				b.WriteString("- Full error samples (for eyeballing report accuracy):\n")
-				for sampleIndex, sample := range fullErrorSamples {
-					b.WriteString(fmt.Sprintf("  - Sample %d\n\n", sampleIndex+1))
-					b.WriteString("```text\n")
-					b.WriteString(sanitizeCodeFence(sample))
-					if !strings.HasSuffix(sample, "\n") {
-						b.WriteString("\n")
-					}
-					b.WriteString("```\n")
-				}
-			}
-			b.WriteString("\n")
-		}
-
-		if i+1 < limit {
-			b.WriteString("---\n\n")
-		}
-	}
-
-	return b.String()
 }
 
 func buildReviewSignalIndex(items []reviewItem) reviewSignalIndex {

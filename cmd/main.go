@@ -42,7 +42,6 @@ func main() {
 		cli.NewSyncOnceCommand,
 		cli.NewReportCommand,
 		cli.NewWorkflowCommand,
-		cli.NewMetricsCommand,
 	}
 
 	for _, newCmd := range commands {

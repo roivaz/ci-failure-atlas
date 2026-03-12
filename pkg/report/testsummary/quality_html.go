@@ -273,6 +273,7 @@ func buildHTML(
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
 	b.WriteString("  <title>CI Semantic Quality Report</title>\n")
+	b.WriteString(triagehtml.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 6px; }\n")
@@ -311,9 +312,11 @@ func buildHTML(
 	b.WriteString("    .signature-text { font-size: 13px; font-weight: 700; color: #111827; }\n")
 	b.WriteString("    pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; }\n")
 	b.WriteString("    .muted { color: #6b7280; }\n")
+	b.WriteString(triagehtml.ThemeCSS())
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
+	b.WriteString(triagehtml.ThemeToggleHTML())
 	b.WriteString("  <h1>CI Semantic Quality Report</h1>\n")
 	if hasWindow {
 		windowDays := inclusiveWindowDays(windowStart, windowEnd)
@@ -402,6 +405,7 @@ func buildHTML(
 		b.WriteString("  </table>\n")
 	}
 
+	b.WriteString(triagehtml.ThemeToggleScriptTag())
 	b.WriteString("<script>\n")
 	b.WriteString("(function(){\n")
 	b.WriteString("  var envSelect = document.getElementById('filter-env');\n")
