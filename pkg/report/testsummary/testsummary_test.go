@@ -606,20 +606,24 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 		"Window: <strong>2026-03-01</strong> to <strong>2026-03-07</strong> (7 days)",
 		"2026-03-01..2026-03-07",
 		"filter-env",
-		"sort-inspector",
-		"option value=\"score\">Score",
-		"option value=\"env\">Env",
-		"option value=\"lane\">Lane",
-		"option value=\"support\">Support",
-		"option value=\"phrase\">Evidence phrase",
-		"option value=\"job_test\">Job/Test",
-		"Full errors (1)",
+		"filter-lane",
+		"filter-min-support",
+		"filter-flagged-only",
+		"filter-review-only",
+		"filter-search",
+		"<table class=\"triage-table\"",
+		".triage-table { width: 100%;",
+		"Quality score",
+		"Quality flags",
+		"Review flags",
+		"Full failure examples (1)",
 		"Affected runs (1)",
 		"Associated PR",
 		"https://github.com/Azure/ARO-HCP/pull/4201",
 		"prow job",
 		"&lt;context.deadlineExceededError&gt;{},",
 		"context type stub leaked",
+		"low_confidence_evidence",
 		"contains empty ErrorCode",
 	}
 	for _, snippet := range requiredReportSnippets {
@@ -655,6 +659,141 @@ func TestGenerateWritesHTMLQualityReportAndFlaggedExport(t *testing.T) {
 		if !strings.Contains(exportText, snippet) {
 			t.Fatalf("expected quality export to contain %q", snippet)
 		}
+	}
+}
+
+func TestGeneratePrefersGlobalClustersForQualityReport(t *testing.T) {
+	t.Parallel()
+
+	ctx := logr.NewContext(context.Background(), logr.Discard())
+	store, err := ndjson.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertTestClusters(ctx, []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase1ClusterID:         "phase1-only-cluster",
+			Lane:                    "e2e",
+			JobName:                 "job-dev",
+			TestName:                "per test quality row",
+			TestSuite:               "suite-dev",
+			CanonicalEvidencePhrase: "per-test phrase should not be used when global is present",
+			SearchQueryPhrase:       "per-test phrase query",
+			SupportCount:            2,
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      "https://prow.example/run/per-test-1",
+					OccurredAt:  "2026-03-07T12:00:00Z",
+					SignatureID: "sig-per-test-1",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed test clusters: %v", err)
+	}
+
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase2-global-1",
+			CanonicalEvidencePhrase: "<context.deadlineExceededError>{},",
+			SearchQueryPhrase:       "deadline exceeded context",
+			SupportCount:            3,
+			PostGoodCommitCount:     1,
+			ContributingTestsCount:  1,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{
+					Lane:         "e2e",
+					JobName:      "pull-ci-dev-e2e",
+					TestName:     "global quality row",
+					SupportCount: 3,
+				},
+			},
+			MemberPhase1ClusterIDs: []string{"phase1-global-member"},
+			MemberSignatureIDs:     []string{"sig-global-1"},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      "https://prow.example/run/global-1",
+					OccurredAt:  "2026-03-07T12:00:00Z",
+					SignatureID: "sig-global-1",
+					PRNumber:    4313,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed global clusters: %v", err)
+	}
+
+	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment: "dev",
+			RowID:       "global-row-1",
+			RunURL:      "https://prow.example/run/global-1",
+			SignatureID: "sig-global-1",
+			RawText:     "failed waiting for cluster create with context deadline exceeded",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	if err := store.UpsertReviewQueue(ctx, []semanticcontracts.ReviewItemRecord{
+		{
+			SchemaVersion:          semanticcontracts.SchemaVersionV1,
+			Environment:            "dev",
+			ReviewItemID:           "review-global-1",
+			Phase:                  "phase2",
+			Reason:                 "low_confidence_evidence",
+			SourcePhase1ClusterIDs: []string{"phase1-global-member"},
+		},
+	}); err != nil {
+		t.Fatalf("seed review queue: %v", err)
+	}
+
+	outputDir := t.TempDir()
+	opts := DefaultOptions()
+	opts.OutputPath = filepath.Join(outputDir, "semantic-quality.html")
+	opts.Format = reportFormatHTML
+	opts.QualityExportPath = filepath.Join(outputDir, "flagged-signatures.ndjson")
+	opts.WindowStart = "2026-03-01"
+	opts.WindowEnd = "2026-03-08"
+	opts.RecentRuns = 2
+
+	if err := Generate(ctx, store, opts); err != nil {
+		t.Fatalf("generate html quality report: %v", err)
+	}
+
+	reportBytes, err := os.ReadFile(opts.OutputPath)
+	if err != nil {
+		t.Fatalf("read html report: %v", err)
+	}
+	report := string(reportBytes)
+	for _, snippet := range []string{
+		"Source semantic clusters: <code>store:global_clusters</code>",
+		"&lt;context.deadlineExceededError&gt;{},",
+		"global quality row",
+		"phase2-global-1",
+		"context type stub leaked",
+	} {
+		if !strings.Contains(report, snippet) {
+			t.Fatalf("expected html quality report to contain %q", snippet)
+		}
+	}
+	if strings.Contains(report, "per-test phrase should not be used when global is present") {
+		t.Fatalf("expected report to use global clusters over per-test clusters")
+	}
+
+	exportBytes, err := os.ReadFile(opts.QualityExportPath)
+	if err != nil {
+		t.Fatalf("read quality export: %v", err)
+	}
+	exportText := string(exportBytes)
+	if !strings.Contains(exportText, "phase2-global-1") {
+		t.Fatalf("expected quality export to include global cluster id, got %q", exportText)
 	}
 }
 
@@ -778,6 +917,62 @@ func TestBuildQualitySignatureRowsFlagsSourceDeserializationNoOutput(t *testing.
 	}
 	if !row.isFlagged() {
 		t.Fatalf("expected deserialization no-output row to be flagged")
+	}
+}
+
+func TestBuildQualitySignatureRowsSkipsDeserializationNoOutputFlagWhenCommandErrorExists(t *testing.T) {
+	t.Parallel()
+
+	cluster := testCluster{
+		Environment:             "dev",
+		Phase1ClusterID:         "cluster-command-error",
+		Lane:                    "e2e",
+		JobName:                 "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		TestName:                "Customer should be able to update nodepool replicas and autoscaling",
+		TestSuite:               "rp-api-compat-all/parallel",
+		CanonicalEvidencePhrase: "Command Error: exit status 2",
+		SupportCount:            1,
+		References: []reference{
+			{
+				RunURL:      "https://prow.example/run/command-error-1",
+				OccurredAt:  "2026-03-16T11:48:11Z",
+				SignatureID: "sig-command-error-1",
+			},
+		},
+		MemberSignatureIDs: []string{"sig-command-error-1"},
+	}
+
+	rows := buildQualitySignatureRows(
+		[]testCluster{cluster},
+		map[testKey]testMetadata{},
+		map[testKeyNoSuite]testMetadata{},
+		map[referenceKey]string{
+			{
+				RunURL:      "https://prow.example/run/command-error-1",
+				SignatureID: "sig-command-error-1",
+			}: "Command Error: exit status 2\nDeserializaion Error: no output from command",
+		},
+		reviewSignalIndex{},
+		time.Date(2026, 3, 16, 16, 30, 0, 0, time.UTC),
+		0,
+		4,
+		0,
+	)
+	if len(rows) != 1 {
+		t.Fatalf("expected one quality row, got %d", len(rows))
+	}
+
+	row := rows[0]
+	for _, code := range row.IssueCodes {
+		if code == "source_deserialization_no_output" {
+			t.Fatalf("did not expect source_deserialization_no_output when command error context exists, got %v", row.IssueCodes)
+		}
+	}
+	if row.QualityScore != 0 {
+		t.Fatalf("expected command-error-backed row score=0, got %d", row.QualityScore)
+	}
+	if row.isFlagged() {
+		t.Fatalf("expected command-error-backed row to not be flagged")
 	}
 }
 

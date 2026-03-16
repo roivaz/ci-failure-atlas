@@ -60,6 +60,20 @@ type testCluster struct {
 	References              []reference `json:"references"`
 }
 
+type globalCluster struct {
+	SchemaVersion           string                    `json:"schema_version"`
+	Environment             string                    `json:"environment"`
+	Phase2ClusterID         string                    `json:"phase2_cluster_id"`
+	CanonicalEvidencePhrase string                    `json:"canonical_evidence_phrase"`
+	SearchQueryPhrase       string                    `json:"search_query_phrase"`
+	SupportCount            int                       `json:"support_count"`
+	PostGoodCommitCount     int                       `json:"post_good_commit_count"`
+	ContributingTests       []qualityContributingTest `json:"contributing_tests"`
+	MemberPhase1ClusterIDs  []string                  `json:"member_phase1_cluster_ids"`
+	MemberSignatureIDs      []string                  `json:"member_signature_ids"`
+	References              []reference               `json:"references"`
+}
+
 type rawFailureRecord struct {
 	Environment               string   `json:"environment"`
 	RunURL                    string   `json:"run_url"`
@@ -163,47 +177,46 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	if err != nil {
 		return fmt.Errorf("list test clusters: %w", err)
 	}
+	storedGlobalClusters, err := store.ListGlobalClusters(ctx)
+	if err != nil {
+		return fmt.Errorf("list global clusters: %w", err)
+	}
 	reviewItems, err := loadReviewItemsFromStore(ctx, store)
 	if err != nil {
 		return fmt.Errorf("read review queue: %w", err)
 	}
 	allFlaggedExports := make([]qualityFlaggedSignatureExport, 0)
 	if validated.SplitByEnvironment {
-		targetEnvs := resolveTestSummaryTargetEnvironments(validated.Environments, storedClusters, reviewItems)
+		targetEnvs := resolveTestSummaryTargetEnvironments(validated.Environments, storedClusters, storedGlobalClusters, reviewItems)
 		if len(targetEnvs) == 0 {
 			targetEnvs = []string{"unknown"}
 		}
 		for _, environment := range targetEnvs {
 			filteredStoredClusters := filterStoredTestClustersByEnvironment(storedClusters, environment)
-			testClusters := toReportTestClusters(filteredStoredClusters)
-			metadataByFull, metadataByNoSuite, fullErrorsByReference, err := loadRawMetadataFromStore(ctx, store, testClusters)
-			if err != nil {
-				return fmt.Errorf("load raw failure metadata for environment %q: %w", environment, err)
-			}
+			filteredStoredGlobalClusters := filterStoredGlobalClustersByEnvironment(storedGlobalClusters, environment)
 			filteredReviewItems := filterReviewItemsByEnvironment(reviewItems, environment)
-			reviewIndex := buildReviewSignalIndex(filteredReviewItems)
 			generatedAt := time.Now().UTC()
-			trendAnchor := qualityTrendAnchor(generatedAt, validated.WindowEnd)
-			qualityRows := buildQualitySignatureRows(
-				testClusters,
-				metadataByFull,
-				metadataByNoSuite,
-				fullErrorsByReference,
-				reviewIndex,
-				trendAnchor,
-				validated.TopTests,
-				validated.RecentRuns,
-				validated.MinRuns,
+			buildResult, err := buildQualityRowsFromStoreScope(
+				ctx,
+				store,
+				filteredStoredGlobalClusters,
+				filteredStoredClusters,
+				filteredReviewItems,
+				generatedAt,
+				validated,
 			)
+			if err != nil {
+				return fmt.Errorf("build quality rows for environment %q: %w", environment, err)
+			}
 			report := buildHTML(
-				qualityRows,
-				"store:test_clusters",
-				"store:raw_failures",
+				buildResult.Rows,
+				buildResult.SemanticSource,
+				buildResult.RawSource,
 				generatedAt,
 				validated.WindowStart,
 				validated.WindowEnd,
 			)
-			allFlaggedExports = append(allFlaggedExports, toQualityFlaggedSignatureExports(qualityRows)...)
+			allFlaggedExports = append(allFlaggedExports, toQualityFlaggedSignatureExports(buildResult.Rows)...)
 			outputPath := outputPathForEnvironment(validated.OutputPath, environment)
 			if err := writeTestSummary(outputPath, report); err != nil {
 				return err
@@ -213,10 +226,12 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 				"output", outputPath,
 				"format", reportFormatHTML,
 				"environment", environment,
-				"testClusters", len(testClusters),
-				"metadataByFull", len(metadataByFull),
-				"metadataByNoSuite", len(metadataByNoSuite),
-				"fullErrorReferences", len(fullErrorsByReference),
+				"semanticSource", buildResult.SemanticSource,
+				"globalClusters", buildResult.GlobalClusters,
+				"testClusters", buildResult.TestClusters,
+				"metadataByFull", buildResult.MetadataByFull,
+				"metadataByNoSuite", buildResult.MetadataByNoSuite,
+				"fullErrorReferences", buildResult.FullErrorReferences,
 				"reviewItems", len(filteredReviewItems),
 				"topTests", validated.TopTests,
 				"recentRuns", validated.RecentRuns,
@@ -237,6 +252,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	}
 
 	filteredStoredClusters := storedClusters
+	filteredStoredGlobalClusters := storedGlobalClusters
 	filteredReviewItems := reviewItems
 	if len(validated.Environments) > 0 {
 		envSet := make(map[string]struct{}, len(validated.Environments))
@@ -244,31 +260,26 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			envSet[normalizeReportEnvironment(environment)] = struct{}{}
 		}
 		filteredStoredClusters = filterStoredTestClustersByEnvironmentSet(storedClusters, envSet)
+		filteredStoredGlobalClusters = filterStoredGlobalClustersByEnvironmentSet(storedGlobalClusters, envSet)
 		filteredReviewItems = filterReviewItemsByEnvironmentSet(reviewItems, envSet)
 	}
-	testClusters := toReportTestClusters(filteredStoredClusters)
-	metadataByFull, metadataByNoSuite, fullErrorsByReference, err := loadRawMetadataFromStore(ctx, store, testClusters)
-	if err != nil {
-		return fmt.Errorf("load raw failure metadata: %w", err)
-	}
-	reviewIndex := buildReviewSignalIndex(filteredReviewItems)
 	generatedAt := time.Now().UTC()
-	trendAnchor := qualityTrendAnchor(generatedAt, validated.WindowEnd)
-	qualityRows := buildQualitySignatureRows(
-		testClusters,
-		metadataByFull,
-		metadataByNoSuite,
-		fullErrorsByReference,
-		reviewIndex,
-		trendAnchor,
-		validated.TopTests,
-		validated.RecentRuns,
-		validated.MinRuns,
+	buildResult, err := buildQualityRowsFromStoreScope(
+		ctx,
+		store,
+		filteredStoredGlobalClusters,
+		filteredStoredClusters,
+		filteredReviewItems,
+		generatedAt,
+		validated,
 	)
+	if err != nil {
+		return fmt.Errorf("build quality rows: %w", err)
+	}
 	report := buildHTML(
-		qualityRows,
-		"store:test_clusters",
-		"store:raw_failures",
+		buildResult.Rows,
+		buildResult.SemanticSource,
+		buildResult.RawSource,
 		generatedAt,
 		validated.WindowStart,
 		validated.WindowEnd,
@@ -277,7 +288,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		return err
 	}
 	if strings.TrimSpace(validated.QualityExportPath) != "" {
-		flaggedExports := toQualityFlaggedSignatureExports(qualityRows)
+		flaggedExports := toQualityFlaggedSignatureExports(buildResult.Rows)
 		if err := writeQualityFlaggedSignatures(validated.QualityExportPath, flaggedExports); err != nil {
 			return err
 		}
@@ -292,16 +303,89 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		"Wrote per-test summary report.",
 		"output", validated.OutputPath,
 		"format", reportFormatHTML,
-		"testClusters", len(testClusters),
-		"metadataByFull", len(metadataByFull),
-		"metadataByNoSuite", len(metadataByNoSuite),
-		"fullErrorReferences", len(fullErrorsByReference),
+		"semanticSource", buildResult.SemanticSource,
+		"globalClusters", buildResult.GlobalClusters,
+		"testClusters", buildResult.TestClusters,
+		"metadataByFull", buildResult.MetadataByFull,
+		"metadataByNoSuite", buildResult.MetadataByNoSuite,
+		"fullErrorReferences", buildResult.FullErrorReferences,
 		"reviewItems", len(filteredReviewItems),
 		"topTests", validated.TopTests,
 		"recentRuns", validated.RecentRuns,
 		"minRuns", validated.MinRuns,
 	)
 	return nil
+}
+
+type qualityRowBuildResult struct {
+	Rows                []qualitySignatureRow
+	SemanticSource      string
+	RawSource           string
+	GlobalClusters      int
+	TestClusters        int
+	MetadataByFull      int
+	MetadataByNoSuite   int
+	FullErrorReferences int
+}
+
+func buildQualityRowsFromStoreScope(
+	ctx context.Context,
+	store storecontracts.Store,
+	globalRows []semanticcontracts.GlobalClusterRecord,
+	testRows []semanticcontracts.TestClusterRecord,
+	reviewRows []reviewItem,
+	generatedAt time.Time,
+	opts Options,
+) (qualityRowBuildResult, error) {
+	result := qualityRowBuildResult{
+		SemanticSource: "store:test_clusters",
+		RawSource:      "store:raw_failures",
+	}
+
+	reviewIndex := buildReviewSignalIndex(reviewRows)
+	trendAnchor := qualityTrendAnchor(generatedAt, opts.WindowEnd)
+	globalClusters := toReportGlobalClusters(globalRows)
+	result.GlobalClusters = len(globalClusters)
+
+	if len(globalClusters) > 0 {
+		fullErrorsByReference, err := loadRawErrorsForGlobalClusters(ctx, store, globalClusters)
+		if err != nil {
+			return qualityRowBuildResult{}, err
+		}
+		result.Rows = buildQualitySignatureRowsFromGlobalClusters(
+			globalClusters,
+			fullErrorsByReference,
+			reviewIndex,
+			trendAnchor,
+			opts.TopTests,
+			opts.RecentRuns,
+		)
+		result.SemanticSource = "store:global_clusters"
+		result.FullErrorReferences = len(fullErrorsByReference)
+		return result, nil
+	}
+
+	testClusters := toReportTestClusters(testRows)
+	result.TestClusters = len(testClusters)
+	metadataByFull, metadataByNoSuite, fullErrorsByReference, err := loadRawMetadataFromStore(ctx, store, testClusters)
+	if err != nil {
+		return qualityRowBuildResult{}, err
+	}
+	result.Rows = buildQualitySignatureRows(
+		testClusters,
+		metadataByFull,
+		metadataByNoSuite,
+		fullErrorsByReference,
+		reviewIndex,
+		trendAnchor,
+		opts.TopTests,
+		opts.RecentRuns,
+		opts.MinRuns,
+	)
+	result.MetadataByFull = len(metadataByFull)
+	result.MetadataByNoSuite = len(metadataByNoSuite)
+	result.FullErrorReferences = len(fullErrorsByReference)
+	return result, nil
 }
 
 func parse(args []string) (Options, error) {
@@ -443,6 +527,39 @@ func toReportTestClusters(rows []semanticcontracts.TestClusterRecord) []testClus
 	return out
 }
 
+func toReportGlobalClusters(rows []semanticcontracts.GlobalClusterRecord) []globalCluster {
+	out := make([]globalCluster, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, globalCluster{
+			SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
+			Environment:             normalizeReportEnvironment(row.Environment),
+			Phase2ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
+			CanonicalEvidencePhrase: strings.TrimSpace(row.CanonicalEvidencePhrase),
+			SearchQueryPhrase:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:            row.SupportCount,
+			PostGoodCommitCount:     row.PostGoodCommitCount,
+			ContributingTests:       toReportGlobalContributingTests(row.ContributingTests),
+			MemberPhase1ClusterIDs:  append([]string(nil), row.MemberPhase1ClusterIDs...),
+			MemberSignatureIDs:      append([]string(nil), row.MemberSignatureIDs...),
+			References:              toReportReferences(row.References),
+		})
+	}
+	return out
+}
+
+func toReportGlobalContributingTests(rows []semanticcontracts.ContributingTestRecord) []qualityContributingTest {
+	out := make([]qualityContributingTest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, qualityContributingTest{
+			Lane:         strings.TrimSpace(row.Lane),
+			JobName:      strings.TrimSpace(row.JobName),
+			TestName:     strings.TrimSpace(row.TestName),
+			SupportCount: row.SupportCount,
+		})
+	}
+	return out
+}
+
 func toReportReferences(rows []semanticcontracts.ReferenceRecord) []reference {
 	out := make([]reference, 0, len(rows))
 	for _, row := range rows {
@@ -516,6 +633,7 @@ func normalizeReportEnvironment(value string) string {
 func resolveTestSummaryTargetEnvironments(
 	configured []string,
 	testClusters []semanticcontracts.TestClusterRecord,
+	globalClusters []semanticcontracts.GlobalClusterRecord,
 	reviewItems []reviewItem,
 ) []string {
 	normalizedConfigured := normalizeReportEnvironments(configured)
@@ -524,6 +642,13 @@ func resolveTestSummaryTargetEnvironments(
 	}
 	set := map[string]struct{}{}
 	for _, row := range testClusters {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		set[environment] = struct{}{}
+	}
+	for _, row := range globalClusters {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
 			continue
@@ -585,6 +710,26 @@ func filterStoredTestClustersByEnvironmentSet(rows []semanticcontracts.TestClust
 	return out
 }
 
+func filterStoredGlobalClustersByEnvironment(rows []semanticcontracts.GlobalClusterRecord, environment string) []semanticcontracts.GlobalClusterRecord {
+	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
+	return filterStoredGlobalClustersByEnvironmentSet(rows, envSet)
+}
+
+func filterStoredGlobalClustersByEnvironmentSet(rows []semanticcontracts.GlobalClusterRecord, envSet map[string]struct{}) []semanticcontracts.GlobalClusterRecord {
+	if len(envSet) == 0 {
+		return append([]semanticcontracts.GlobalClusterRecord(nil), rows...)
+	}
+	out := make([]semanticcontracts.GlobalClusterRecord, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := envSet[environment]; !ok {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 func filterReviewItemsByEnvironment(rows []reviewItem, environment string) []reviewItem {
 	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
 	return filterReviewItemsByEnvironmentSet(rows, envSet)
@@ -603,6 +748,66 @@ func filterReviewItemsByEnvironmentSet(rows []reviewItem, envSet map[string]stru
 		out = append(out, row)
 	}
 	return out
+}
+
+func loadRawErrorsForGlobalClusters(
+	ctx context.Context,
+	store storecontracts.Store,
+	globalClusters []globalCluster,
+) (map[referenceKey]string, error) {
+	fullErrorsByReference := map[referenceKey]string{}
+	if len(globalClusters) == 0 {
+		return fullErrorsByReference, nil
+	}
+
+	runURLEnvironments := map[string]map[string]struct{}{}
+	for _, cluster := range globalClusters {
+		environment := normalizeReportEnvironment(cluster.Environment)
+		if environment == "" {
+			continue
+		}
+		for _, ref := range cluster.References {
+			runURL := strings.TrimSpace(ref.RunURL)
+			if runURL == "" {
+				continue
+			}
+			insertRunEnvironment(runURLEnvironments, runURL, environment)
+		}
+	}
+
+	for runURL, envSet := range runURLEnvironments {
+		environments := sortedEnvironmentList(envSet)
+		for _, environment := range environments {
+			rows, err := store.ListRawFailuresByRun(ctx, environment, runURL)
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				refKey := referenceKey{
+					RunURL:      strings.TrimSpace(row.RunURL),
+					SignatureID: strings.TrimSpace(row.SignatureID),
+				}
+				if refKey.RunURL == "" {
+					refKey.RunURL = runURL
+				}
+				if refKey.RunURL == "" || refKey.SignatureID == "" {
+					continue
+				}
+				fullError := strings.TrimSpace(row.RawText)
+				if fullError == "" {
+					fullError = strings.TrimSpace(row.NormalizedText)
+				}
+				if fullError == "" {
+					continue
+				}
+				existing, ok := fullErrorsByReference[refKey]
+				if !ok || len(fullError) > len(existing) {
+					fullErrorsByReference[refKey] = fullError
+				}
+			}
+		}
+	}
+	return fullErrorsByReference, nil
 }
 
 func loadRawMetadataFromStore(
@@ -1239,29 +1444,37 @@ func preferMetadata(candidate testMetadata, existing testMetadata) bool {
 }
 
 func recentRunsForCluster(cluster testCluster, limit int) []reference {
-	if len(cluster.References) == 0 || limit <= 0 {
+	return recentRunsForReferences(cluster.References, limit)
+}
+
+func fullErrorSamplesForCluster(cluster testCluster, recentRuns []reference, fullErrorsByReference map[referenceKey]string, limit int) []string {
+	return fullErrorSamplesForReferences(cluster.References, recentRuns, fullErrorsByReference, limit)
+}
+
+func recentRunsForReferences(references []reference, limit int) []reference {
+	if len(references) == 0 || limit <= 0 {
 		return nil
 	}
 
 	seen := map[string]struct{}{}
-	references := append([]reference(nil), cluster.References...)
-	sort.Slice(references, func(i, j int) bool {
-		ti, okI := parseTimestamp(references[i].OccurredAt)
-		tj, okJ := parseTimestamp(references[j].OccurredAt)
+	ordered := append([]reference(nil), references...)
+	sort.Slice(ordered, func(i, j int) bool {
+		ti, okI := parseTimestamp(ordered[i].OccurredAt)
+		tj, okJ := parseTimestamp(ordered[j].OccurredAt)
 		switch {
 		case okI && okJ && !ti.Equal(tj):
 			return ti.After(tj)
 		case okI != okJ:
 			return okI
 		}
-		if references[i].RunURL != references[j].RunURL {
-			return references[i].RunURL < references[j].RunURL
+		if ordered[i].RunURL != ordered[j].RunURL {
+			return ordered[i].RunURL < ordered[j].RunURL
 		}
-		return references[i].SignatureID < references[j].SignatureID
+		return ordered[i].SignatureID < ordered[j].SignatureID
 	})
 
 	out := make([]reference, 0, limit)
-	for _, item := range references {
+	for _, item := range ordered {
 		runURL := strings.TrimSpace(item.RunURL)
 		if runURL == "" {
 			continue
@@ -1278,7 +1491,7 @@ func recentRunsForCluster(cluster testCluster, limit int) []reference {
 	return out
 }
 
-func fullErrorSamplesForCluster(cluster testCluster, recentRuns []reference, fullErrorsByReference map[referenceKey]string, limit int) []string {
+func fullErrorSamplesForReferences(references []reference, recentRuns []reference, fullErrorsByReference map[referenceKey]string, limit int) []string {
 	if limit <= 0 {
 		return nil
 	}
@@ -1312,7 +1525,7 @@ func fullErrorSamplesForCluster(cluster testCluster, recentRuns []reference, ful
 
 	appendFromReferences(recentRuns)
 	if len(samples) < limit {
-		appendFromReferences(cluster.References)
+		appendFromReferences(references)
 	}
 	return samples
 }
@@ -1365,6 +1578,10 @@ func escapePipe(input string) string {
 }
 
 func clusterDailyDensitySparkline(cluster testCluster, windowDays int, generatedAt time.Time) (string, []int, string, bool) {
+	return referencesDailyDensitySparkline(cluster.References, windowDays, generatedAt)
+}
+
+func referencesDailyDensitySparkline(references []reference, windowDays int, generatedAt time.Time) (string, []int, string, bool) {
 	if windowDays <= 0 {
 		return "", nil, "", false
 	}
@@ -1377,7 +1594,7 @@ func clusterDailyDensitySparkline(cluster testCluster, windowDays int, generated
 
 	counts := make([]int, windowDays)
 	seenTimestamp := false
-	for _, reference := range cluster.References {
+	for _, reference := range references {
 		ts, ok := parseTimestamp(reference.OccurredAt)
 		if !ok {
 			continue

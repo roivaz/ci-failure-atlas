@@ -939,13 +939,11 @@ func buildHTML(
 				triageRows = append(triageRows, triageRow)
 			}
 			b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
-				IncludeQualityNotes: false,
-				HideQualityScore:    true,
-				IncludeTrend:        true,
-				GitHubRepoOwner:     triagehtml.DefaultGitHubRepoOwner,
-				GitHubRepoName:      triagehtml.DefaultGitHubRepoName,
-				LoadedRowsLimit:     weeklySignatureLoadedRowsLimit,
-				InitialVisibleRows:  weeklySignatureVisibleRows,
+				IncludeTrend:       true,
+				GitHubRepoOwner:    triagehtml.DefaultGitHubRepoOwner,
+				GitHubRepoName:     triagehtml.DefaultGitHubRepoName,
+				LoadedRowsLimit:    weeklySignatureLoadedRowsLimit,
+				InitialVisibleRows: weeklySignatureVisibleRows,
 			}))
 		}
 		b.WriteString("    </div>\n")

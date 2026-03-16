@@ -288,6 +288,89 @@ func TestRenderTableIncludesClientSortingAndVisibilityConfiguration(t *testing.T
 	}
 }
 
+func TestRenderTableQualityColumnsHiddenByDefault(t *testing.T) {
+	t.Parallel()
+
+	html := RenderTable([]SignatureRow{
+		{
+			Environment:       "dev",
+			Phrase:            "deadline exceeded",
+			SupportCount:      3,
+			SupportShare:      50,
+			PostGoodCount:     1,
+			QualityScore:      9,
+			QualityNoteLabels: []string{"context type stub leaked"},
+			ReviewNoteLabels:  []string{"low_confidence_evidence"},
+		},
+	}, TableOptions{})
+
+	for _, snippet := range []string{
+		"<th>Quality score</th>",
+		"<th>Quality flags</th>",
+		"<th>Review flags</th>",
+		"badge-quality",
+		"badge-review",
+	} {
+		if strings.Contains(html, snippet) {
+			t.Fatalf("expected rendered table to hide quality/review columns by default; found %q", snippet)
+		}
+	}
+}
+
+func TestRenderTableShowsQualityAndReviewColumnsWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	html := RenderTable([]SignatureRow{
+		{
+			Environment:       "dev",
+			Phrase:            "deadline exceeded",
+			SupportCount:      3,
+			SupportShare:      50,
+			PostGoodCount:     1,
+			QualityScore:      9,
+			QualityNoteLabels: []string{"context type stub leaked"},
+			ReviewNoteLabels:  []string{"low_confidence_evidence"},
+		},
+	}, TableOptions{
+		ShowQualityScore: true,
+		ShowQualityFlags: true,
+		ShowReviewFlags:  true,
+	})
+
+	for _, snippet := range []string{
+		"<th>Quality score</th>",
+		"<th>Quality flags</th>",
+		"<th>Review flags</th>",
+		"context type stub leaked",
+		"low_confidence_evidence",
+		"badge-quality",
+		"badge-review",
+	} {
+		if !strings.Contains(html, snippet) {
+			t.Fatalf("expected rendered table to contain %q", snippet)
+		}
+	}
+}
+
+func TestRenderTableAllowsUnlimitedLoadedRows(t *testing.T) {
+	t.Parallel()
+
+	html := RenderTable([]SignatureRow{
+		{Phrase: "one", SupportCount: 3, SupportShare: 50, PostGoodCount: 1},
+		{Phrase: "two", SupportCount: 2, SupportShare: 30, PostGoodCount: 0},
+		{Phrase: "three", SupportCount: 1, SupportShare: 20, PostGoodCount: 0},
+	}, TableOptions{
+		LoadedRowsLimit:    -1,
+		InitialVisibleRows: -1,
+	})
+
+	for _, phrase := range []string{"one", "two", "three"} {
+		if !strings.Contains(html, phrase) {
+			t.Fatalf("expected rendered table to include row %q", phrase)
+		}
+	}
+}
+
 func TestReportChromeHTMLFallsBackToThemeToggleWhenUnset(t *testing.T) {
 	t.Parallel()
 

@@ -20,6 +20,7 @@ var (
 	reCleanSubscription           = regexp.MustCompile(`/subscriptions/[0-9a-fA-F-]+`)
 	reCleanUUID                   = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b`)
 	reCleanHexLong                = regexp.MustCompile(`\b[0-9a-fA-F]{32,}\b`)
+	reCleanLookupHostOnServer     = regexp.MustCompile(`(?i)\blookup\s+[a-z0-9.-]+\s+on\s+\d{1,3}(?:\.\d{1,3}){3}:\d+\b`)
 	reCleanResourceGroupQuoted    = regexp.MustCompile(`(?i)resourcegroup="[^"]+"`)
 	reCleanResourceGroupBare      = regexp.MustCompile(`(?i)\bresource group [a-z0-9-]+\b`)
 	reCleanClusterQuoted          = regexp.MustCompile(`(?i)cluster="[^"]+"`)
@@ -36,20 +37,32 @@ var (
 	reAssertionRegexHint          = regexp.MustCompile(`Regexp:\s*"([^"]+)"`)
 	reAssertionErrorSignal        = regexp.MustCompile(`(?i)(error|failed|timeout|forbidden|denied|conflict|deadline|not found|invalid|http2:)`)
 	reSafeErrorLineSignal         = regexp.MustCompile(`(?i)(error|failed|timeout|not found|forbidden|denied|deadline|conflict)`)
+	reEventuallyWrapperLine       = regexp.MustCompile(`(?i)^the function passed to eventually failed at .+ with:?$`)
+	reTimedOutAfterLine           = regexp.MustCompile(`(?i)^timed out after [0-9.]+s\.`)
 	reCodeField                   = regexp.MustCompile(`"code"\s*:\s*"([A-Za-z0-9_]+)"`)
 	reCauseBySplit                = regexp.MustCompile(`(?i)caused by:`)
 	reErrorCode                   = regexp.MustCompile(`(?i)ERROR CODE:\s*([A-Za-z0-9_]+)`)
 	rePickErrorSignal             = regexp.MustCompile(`(?i)(error|failed|timeout|forbidden|denied|conflict|deadline|not found)`)
 	reHTTPResponseStatusLine      = regexp.MustCompile(`(?i)^response [45][0-9]{2}:\s*.+$`)
+	reRouteHostNeverFound         = regexp.MustCompile(`(?i)route host was never found:[^\n]+`)
+	reClusterOperatorsUnavailable = regexp.MustCompile(`(?i)cluster operators not available:[^\n]+`)
+	reRateLimiterDeadline         = regexp.MustCompile(`(?i)client rate limiter wait returned an error: context deadline exceeded`)
 	reUnexpectedOnly              = regexp.MustCompile(`(?i)unexpected error:?`)
 	rePhase1Placeholder           = regexp.MustCompile(`<uuid>|<hex>|<url>`)
-	reDeserializationLiteral      = regexp.MustCompile(`(?i)Deserializaion Error:[^\n]+`)
+	reDeserializationLiteral      = regexp.MustCompile(`(?i)Deserializa(?:ti|i)on Error:[^\n]+`)
+	reDeserializationNoOutput     = regexp.MustCompile(`(?i)Deserializa(?:ti|i)on Error:\s*no output from command`)
+	reDeserializationToken        = regexp.MustCompile(`(?i)deserializa(?:ti|i)on error`)
+	reCommandErrorLine            = regexp.MustCompile(`(?im)^Command Error:\s*[^\n]+$`)
+	reQuotaRequiredAvailable      = regexp.MustCompile(`(?i)\brequired\s+['"]?\d+['"]?\s*,\s*available\s+['"]?\d+['"]?\b`)
 	reWrapperStepErroredContainer = regexp.MustCompile(`(?i)step errored`)
 )
 
 var normalizePickPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)Deserializaion Error:[^\n]+`),
+	regexp.MustCompile(`(?i)Deserializa(?:ti|i)on Error:[^\n]+`),
 	regexp.MustCompile(`(?i)Command Error:[^\n]+`),
+	regexp.MustCompile(`(?i)route host was never found:[^\n]+`),
+	regexp.MustCompile(`(?i)cluster operators not available:[^\n]+`),
+	regexp.MustCompile(`(?i)client rate limiter wait returned an error: context deadline exceeded`),
 	regexp.MustCompile(`(?i)missing expected log sources[^\n]+`),
 	regexp.MustCompile(`(?i)failed to gather logs[^\n]+`),
 	regexp.MustCompile(`(?i)failed to get service aro-hcp-exporter/aro-hcp-exporter: services "aro-hcp-exporter" not found`),
@@ -70,8 +83,11 @@ var normalizePickPatterns = []*regexp.Regexp{
 }
 
 var safeSearchPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)Deserializaion Error:[^\n]+`),
+	regexp.MustCompile(`(?i)Deserializa(?:ti|i)on Error:[^\n]+`),
 	regexp.MustCompile(`(?i)Command Error:[^\n]+`),
+	regexp.MustCompile(`(?i)route host was never found:[^\n]+`),
+	regexp.MustCompile(`(?i)cluster operators not available:[^\n]+`),
+	regexp.MustCompile(`(?i)client rate limiter wait returned an error: context deadline exceeded`),
 	regexp.MustCompile(`(?i)ERROR CODE:\s*[A-Za-z0-9_]+`),
 	regexp.MustCompile(`(?i)timeout '\d+\.\d+' minutes exceeded during [A-Za-z0-9_]+`),
 	regexp.MustCompile(`(?i)failed waiting for nodepool[^\n]+(?:updating|to finish creating)[^\n]*`),
@@ -95,6 +111,11 @@ type extractedEvidence struct {
 	SearchQueryPhrase       string
 	ProviderAnchor          string
 	GenericPhrase           bool
+}
+
+type azureCodeHit struct {
+	Code  string
+	Index int
 }
 
 func Normalize(workset []semanticcontracts.Phase1WorksetRecord) []semanticcontracts.Phase1NormalizedRecord {
@@ -230,6 +251,7 @@ func extractEvidence(text string) extractedEvidence {
 			picked = codePick
 		}
 	}
+	picked = refineDeserializationNoOutputPicked(raw, picked)
 
 	code := ""
 	if match := reErrorCode.FindStringSubmatch(picked); len(match) > 1 {
@@ -238,13 +260,16 @@ func extractEvidence(text string) extractedEvidence {
 	canonical := cleanCanonical(picked)
 
 	if code != "" && isGenericCode(code) {
-		leafCode := extractLeafCode(raw)
+		leafCode, leafMessage := extractLeafAzureDetail(raw, code)
 		parts := []string{"ERROR CODE: " + code}
-		if provider != "" {
-			parts = append(parts, "provider "+provider)
-		}
 		if leafCode != "" {
 			parts = append(parts, "detail code "+leafCode)
+		}
+		if leafMessage != "" {
+			parts = append(parts, "detail message "+leafMessage)
+		}
+		if leafCode == "" && leafMessage == "" && provider != "" {
+			parts = append(parts, "provider "+provider)
 		}
 		canonical = strings.Join(parts, "; ")
 	}
@@ -258,12 +283,17 @@ func extractEvidence(text string) extractedEvidence {
 	if strings.Contains(lowered, "interrupted by user") {
 		canonical = "Interrupted by User"
 	}
-	if strings.Contains(lowered, "deserializaion error") {
+	if containsDeserializationErrorToken(picked) || containsDeserializationErrorToken(canonical) {
 		match := reDeserializationLiteral.FindString(raw)
 		if match == "" {
 			canonical = "Deserializaion Error"
 		} else {
 			canonical = cleanCanonical(match)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(canonical), "context deadline exceeded") {
+		if refined := bestContextDeadlineDetail(raw); refined != "" {
+			canonical = cleanCanonical(refined)
 		}
 	}
 
@@ -346,6 +376,7 @@ func cleanCanonical(value string) string {
 	text = reCleanSubscription.ReplaceAllString(text, "/subscriptions/<subscription>")
 	text = reCleanUUID.ReplaceAllString(text, "<uuid>")
 	text = reCleanHexLong.ReplaceAllString(text, "<hex>")
+	text = reCleanLookupHostOnServer.ReplaceAllString(text, "lookup <host> on <dns-server>")
 	text = reCleanResourceGroupQuoted.ReplaceAllString(text, `resourcegroup="<resource-group>"`)
 	text = reCleanResourceGroupBare.ReplaceAllString(text, "resource group <resource-group>")
 	text = reCleanClusterQuoted.ReplaceAllString(text, `cluster="<cluster>"`)
@@ -380,6 +411,9 @@ func truncateCanonical(value string, max int) string {
 func extractAssertionContext(text string) string {
 	if boolContext := extractBoolAssertionContext(text); boolContext != "" {
 		return boolContext
+	}
+	if eventuallyContext := extractEventuallyFailureContext(text); eventuallyContext != "" {
+		return eventuallyContext
 	}
 
 	lines := strings.Split(text, "\n")
@@ -436,6 +470,39 @@ func extractBoolAssertionContext(text string) string {
 	return ""
 }
 
+func extractEventuallyFailureContext(text string) string {
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		if !isExpectedBlockStartLine(line) {
+			continue
+		}
+		start := maxInt(0, index-12)
+		for i := index - 1; i >= start; i-- {
+			candidate := collapseWS(lines[i])
+			if candidate == "" {
+				continue
+			}
+			if isNoiseAssertionContextLine(candidate) || isEventuallyWrapperLine(candidate) || isTimedOutAfterLine(candidate) {
+				continue
+			}
+			return candidate
+		}
+	}
+	return ""
+}
+
+func isExpectedBlockStartLine(line string) bool {
+	return strings.EqualFold(collapseWS(line), "expected")
+}
+
+func isEventuallyWrapperLine(line string) bool {
+	return reEventuallyWrapperLine.MatchString(collapseWS(line))
+}
+
+func isTimedOutAfterLine(line string) bool {
+	return reTimedOutAfterLine.MatchString(collapseWS(line))
+}
+
 func isAssertionTail(line string) bool {
 	normalized := strings.ToLower(collapseWS(line))
 	for _, prefix := range assertionTailPrefixes {
@@ -453,6 +520,9 @@ func isNoiseAssertionContextLine(line string) bool {
 		return true
 	}
 	if isAssertionTail(normalized) {
+		return true
+	}
+	if isEventuallyWrapperLine(normalized) || isTimedOutAfterLine(normalized) {
 		return true
 	}
 	switch lowered {
@@ -521,15 +591,19 @@ func safeSearchFromText(text string) string {
 	return "failure"
 }
 
-func extractLeafCode(text string) string {
-	matches := reCodeField.FindAllStringSubmatch(text, -1)
-	for i := len(matches) - 1; i >= 0; i-- {
-		if len(matches[i]) < 2 {
-			continue
-		}
-		code := strings.TrimSpace(matches[i][1])
+func extractLeafAzureDetail(text string, rootCode string) (string, string) {
+	decoded := decodeEscapedErrorPayload(text)
+	hits := collectAzureCodeHits(decoded)
+	if len(hits) == 0 {
+		return "", ""
+	}
+
+	root := strings.ToLower(strings.TrimSpace(rootCode))
+	fallbackCode := ""
+	for i := len(hits) - 1; i >= 0; i-- {
+		code := strings.TrimSpace(hits[i].Code)
 		lowered := strings.ToLower(code)
-		if lowered == "" {
+		if lowered == "" || lowered == root {
 			continue
 		}
 		if _, generic := genericCodes[lowered]; generic {
@@ -538,9 +612,170 @@ func extractLeafCode(text string) string {
 		if lowered == "resourcedeploymentfailure" || lowered == "deploymentfailed" {
 			continue
 		}
-		return code
+		if isLikelyTruncatedAzureCode(code, hits) {
+			continue
+		}
+
+		message := summarizeAzureDetailMessage(extractAzureMessageForCode(decoded, code))
+		if message != "" {
+			return code, message
+		}
+		if fallbackCode == "" {
+			fallbackCode = code
+		}
+	}
+	if fallbackCode != "" {
+		return fallbackCode, ""
+	}
+	rootMessage := summarizeAzureDetailMessage(extractAzureMessageForCode(decoded, rootCode))
+	if rootMessage != "" {
+		return "", rootMessage
+	}
+	return "", ""
+}
+
+func collectAzureCodeHits(text string) []azureCodeHit {
+	out := make([]azureCodeHit, 0)
+	errorCodeMatches := reErrorCode.FindAllStringSubmatchIndex(text, -1)
+	for _, match := range errorCodeMatches {
+		if len(match) < 4 {
+			continue
+		}
+		code := strings.TrimSpace(text[match[2]:match[3]])
+		if code == "" {
+			continue
+		}
+		out = append(out, azureCodeHit{
+			Code:  code,
+			Index: match[0],
+		})
+	}
+
+	codeFieldMatches := reCodeField.FindAllStringSubmatchIndex(text, -1)
+	for _, match := range codeFieldMatches {
+		if len(match) < 4 {
+			continue
+		}
+		code := strings.TrimSpace(text[match[2]:match[3]])
+		if code == "" {
+			continue
+		}
+		out = append(out, azureCodeHit{
+			Code:  code,
+			Index: match[0],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Index != out[j].Index {
+			return out[i].Index < out[j].Index
+		}
+		return out[i].Code < out[j].Code
+	})
+	return out
+}
+
+func decodeEscapedErrorPayload(text string) string {
+	out := text
+	// Some payloads are nested JSON strings with double escaping (for example
+	// \\\"code\\\"). Normalize both layers before scanning for inner codes.
+	for range 2 {
+		out = strings.ReplaceAll(out, `\\r\\n`, "\n")
+		out = strings.ReplaceAll(out, `\\n`, "\n")
+		out = strings.ReplaceAll(out, `\\t`, " ")
+		out = strings.ReplaceAll(out, `\\\"`, `"`)
+		out = strings.ReplaceAll(out, `\r\n`, "\n")
+		out = strings.ReplaceAll(out, `\n`, "\n")
+		out = strings.ReplaceAll(out, `\t`, " ")
+		out = strings.ReplaceAll(out, `\"`, `"`)
+	}
+	return out
+}
+
+func isLikelyTruncatedAzureCode(code string, hits []azureCodeHit) bool {
+	candidate := strings.ToLower(strings.TrimSpace(code))
+	if candidate == "" {
+		return true
+	}
+	for _, hit := range hits {
+		other := strings.ToLower(strings.TrimSpace(hit.Code))
+		if other == "" || len(other) <= len(candidate) {
+			continue
+		}
+		if strings.HasPrefix(other, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractAzureMessageForCode(text string, code string) string {
+	targetCode := strings.TrimSpace(code)
+	if targetCode == "" {
+		return ""
+	}
+	// Capture the nearest message paired with the same code token, including
+	// nested payloads that may have been JSON-escaped in the original raw text.
+	pattern := `(?is)(?:ERROR CODE:\s*` + regexp.QuoteMeta(targetCode) + `|"code"\s*:\s*"` + regexp.QuoteMeta(targetCode) + `").{0,900}"message"\s*:\s*"([^"]+)"`
+	reCodeMessage := regexp.MustCompile(pattern)
+	matches := reCodeMessage.FindAllStringSubmatch(text, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		if len(matches[i]) < 2 {
+			continue
+		}
+		message := strings.TrimSpace(matches[i][1])
+		if message == "" {
+			continue
+		}
+		return message
 	}
 	return ""
+}
+
+func summarizeAzureDetailMessage(message string) string {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return ""
+	}
+
+	loweredRaw := strings.ToLower(trimmed)
+	if strings.Contains(loweredRaw, `"code":`) ||
+		strings.Contains(loweredRaw, `\"code\"`) ||
+		strings.Contains(loweredRaw, `"status":`) ||
+		strings.Contains(loweredRaw, `\"status\"`) {
+		return ""
+	}
+	if strings.Count(trimmed, "{")+strings.Count(trimmed, "}") >= 2 {
+		return ""
+	}
+
+	normalized := cleanCanonical(trimmed)
+	normalized = reQuotaRequiredAvailable.ReplaceAllString(normalized, "required <count>, available <count>")
+	lowered := strings.ToLower(normalized)
+	for _, generic := range []string{
+		"at least one resource deployment operation failed",
+		"the resource write operation failed to complete successfully",
+		"operation failed due to an internal server error",
+	} {
+		if strings.Contains(lowered, generic) {
+			return ""
+		}
+	}
+
+	if idx := strings.Index(lowered, " for more details,"); idx >= 0 {
+		normalized = strings.TrimSpace(normalized[:idx])
+		lowered = strings.ToLower(normalized)
+	}
+	if idx := strings.Index(lowered, " refer to "); idx >= 0 {
+		normalized = strings.TrimSpace(normalized[:idx])
+	}
+	if idx := strings.Index(normalized, ". "); idx > 0 && idx < 220 {
+		normalized = strings.TrimSpace(normalized[:idx+1])
+	}
+
+	if len(strings.Fields(normalized)) < 3 {
+		return ""
+	}
+	return truncateCanonical(normalized, 180)
 }
 
 func splitNonEmptyLines(text string) []string {
@@ -558,6 +793,39 @@ func splitNonEmptyLines(text string) []string {
 
 func containsPlaceholderToken(value string) bool {
 	return strings.Contains(value, "<") && strings.Contains(value, ">")
+}
+
+func refineDeserializationNoOutputPicked(raw string, picked string) string {
+	if !containsDeserializationNoOutputSignal(raw) && !containsDeserializationNoOutputSignal(picked) {
+		return picked
+	}
+	if commandLine := lastCommandErrorLine(raw); commandLine != "" {
+		return commandLine
+	}
+	return picked
+}
+
+func containsDeserializationNoOutputSignal(value string) bool {
+	return reDeserializationNoOutput.MatchString(strings.TrimSpace(value))
+}
+
+func containsDeserializationErrorToken(value string) bool {
+	return reDeserializationToken.MatchString(strings.TrimSpace(value))
+}
+
+func lastCommandErrorLine(value string) string {
+	matches := reCommandErrorLine.FindAllString(value, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(matches[i])
+		if line == "" {
+			continue
+		}
+		if strings.EqualFold(line, "Command Error: no output from command") {
+			continue
+		}
+		return line
+	}
+	return ""
 }
 
 func bestSignalErrorLine(text string) string {
@@ -625,6 +893,9 @@ func isWrapperNoiseLine(line string) bool {
 	if normalized == "" {
 		return true
 	}
+	if isEventuallyWrapperLine(normalized) || isTimedOutAfterLine(normalized) {
+		return true
+	}
 	return strings.HasPrefix(normalized, "fail [") ||
 		strings.HasPrefix(normalized, "unexpected error") ||
 		strings.HasPrefix(normalized, "<*fmt.wraperror") ||
@@ -640,6 +911,12 @@ func isStructFieldNoiseLine(line string) bool {
 		return true
 	}
 	if strings.HasPrefix(normalized, "msg:") || strings.HasPrefix(normalized, "err:") {
+		return true
+	}
+	if strings.HasPrefix(normalized, "istimeout:") ||
+		strings.HasPrefix(normalized, "istemporary:") ||
+		strings.HasPrefix(normalized, "isnotfound:") ||
+		strings.HasPrefix(normalized, "server:") {
 		return true
 	}
 	if strings.HasPrefix(normalized, "errorcode:\"\"") || strings.HasPrefix(normalized, "errorcode: \"\"") || strings.HasPrefix(normalized, "errorcode:''") || strings.HasPrefix(normalized, "errorcode: ''") {
@@ -677,6 +954,35 @@ func isLowInformationCanonical(value string) bool {
 		return true
 	}
 	return strings.Contains(normalized, "errorcode:\"\"") || strings.Contains(normalized, "errorcode: \"\"") || strings.Contains(normalized, "errorcode:''") || strings.Contains(normalized, "errorcode: ''")
+}
+
+func bestContextDeadlineDetail(text string) string {
+	lines := splitNonEmptyLines(text)
+	best := ""
+	for _, line := range lines {
+		token := collapseWS(line)
+		lowered := strings.ToLower(token)
+		if token == "" || isWrapperNoiseLine(token) || isStructFieldNoiseLine(token) || isStatusBannerLine(token) || isAssertionTail(token) {
+			continue
+		}
+		if reRateLimiterDeadline.MatchString(token) {
+			return truncateText(token, 260)
+		}
+		if reClusterOperatorsUnavailable.MatchString(token) {
+			best = token
+			continue
+		}
+		if strings.Contains(lowered, "context deadline exceeded") && lowered != "context deadline exceeded" {
+			best = token
+		}
+	}
+	if best != "" {
+		return truncateText(best, 260)
+	}
+	if route := reRouteHostNeverFound.FindString(text); route != "" {
+		return truncateText(route, 260)
+	}
+	return ""
 }
 
 func truncateText(value string, max int) string {

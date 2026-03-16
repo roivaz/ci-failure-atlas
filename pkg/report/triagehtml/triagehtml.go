@@ -31,9 +31,14 @@ type ContributingTest struct {
 
 type SignatureRow struct {
 	Environment       string
+	Lane              string
+	JobName           string
+	TestName          string
+	TestSuite         string
 	Phrase            string
 	ClusterID         string
 	SearchQuery       string
+	SearchIndex       string
 	SupportCount      int
 	TrendSparkline    string
 	TrendCounts       []int
@@ -43,6 +48,7 @@ type SignatureRow struct {
 	AlsoSeenIn        []string
 	QualityScore      int
 	QualityNoteLabels []string
+	ReviewNoteLabels  []string
 	ContributingTests []ContributingTest
 	FullErrorSamples  []string
 	References        []RunReference
@@ -53,8 +59,13 @@ type SignatureRow struct {
 }
 
 type TableOptions struct {
-	IncludeQualityNotes      bool
+	// Deprecated: prefer ShowQualityFlags.
+	IncludeQualityNotes bool
+	// Deprecated: prefer ShowQualityScore.
 	HideQualityScore         bool
+	ShowQualityFlags         bool
+	ShowReviewFlags          bool
+	ShowQualityScore         bool
 	IncludeTrend             bool
 	TrendHeaderLabel         string
 	GitHubRepoOwner          string
@@ -111,6 +122,7 @@ func StylesCSS() string {
 		"    .triage-table tr.triage-errors-row td { background: #eff6ff; }",
 		"    .badge { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; margin: 1px 2px 1px 0; }",
 		"    .badge-quality { background: #fee2e2; color: #991b1b; }",
+		"    .badge-review { background: #fef3c7; color: #92400e; }",
 		"    .badge-ok { background: #dcfce7; color: #166534; }",
 		"    .quality-high { color: #991b1b; font-weight: 700; }",
 		"    .quality-low { color: #374151; }",
@@ -417,11 +429,14 @@ func RenderTable(rows []SignatureRow, options TableOptions) string {
 		headers = append(headers, fmt.Sprintf("<th>%s</th>", html.EscapeString(opts.TrendHeaderLabel)))
 	}
 	headers = append(headers, renderTooltipHeaderCell("Seen in", "Other environments where the same canonical signature phrase appears."))
-	if !opts.HideQualityScore {
+	if opts.ShowQualityScore {
 		headers = append(headers, "<th>Quality score</th>")
 	}
-	if opts.IncludeQualityNotes {
-		headers = append(headers, "<th>Quality notes</th>")
+	if opts.ShowQualityFlags {
+		headers = append(headers, "<th>Quality flags</th>")
+	}
+	if opts.ShowReviewFlags {
+		headers = append(headers, "<th>Review flags</th>")
 	}
 	for _, header := range headers {
 		b.WriteString(header)
@@ -1241,13 +1256,23 @@ func normalizedOptions(options TableOptions) TableOptions {
 	if strings.TrimSpace(opts.TrendHeaderLabel) == "" {
 		opts.TrendHeaderLabel = "Trend"
 	}
-	if opts.LoadedRowsLimit <= 0 {
+	if opts.IncludeQualityNotes {
+		opts.ShowQualityFlags = true
+	}
+	if opts.HideQualityScore {
+		opts.ShowQualityScore = false
+	}
+	if opts.LoadedRowsLimit == 0 {
 		opts.LoadedRowsLimit = defaultLoadedRowsLimit
 	}
 	if opts.InitialVisibleRows <= 0 {
-		opts.InitialVisibleRows = opts.LoadedRowsLimit
+		if opts.LoadedRowsLimit > 0 {
+			opts.InitialVisibleRows = opts.LoadedRowsLimit
+		} else {
+			opts.InitialVisibleRows = 0
+		}
 	}
-	if opts.InitialVisibleRows > opts.LoadedRowsLimit {
+	if opts.LoadedRowsLimit > 0 && opts.InitialVisibleRows > opts.LoadedRowsLimit {
 		opts.InitialVisibleRows = opts.LoadedRowsLimit
 	}
 	return opts
@@ -1283,6 +1308,20 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 		}
 		qualityNotes = strings.Join(parts, "")
 	}
+	reviewNotes := "<span class=\"badge badge-ok\">none</span>"
+	if len(row.ReviewNoteLabels) > 0 {
+		parts := make([]string, 0, len(row.ReviewNoteLabels))
+		for _, label := range row.ReviewNoteLabels {
+			parts = append(parts, fmt.Sprintf("<span class=\"badge badge-review\">%s</span>", html.EscapeString(label)))
+		}
+		reviewNotes = strings.Join(parts, "")
+	}
+	filterSearchValue := strings.TrimSpace(row.SearchIndex)
+	if filterSearchValue == "" {
+		filterSearchValue = defaultSearchIndex(row)
+	}
+	isFlagged := len(row.QualityNoteLabels) > 0 || len(row.ReviewNoteLabels) > 0
+	hasReviewFlags := len(row.ReviewNoteLabels) > 0
 	summaryText := html.EscapeString(cleanInline(phrase, 180))
 	badPRScore, badPRReasons := BadPRScoreAndReasons(row)
 	if badPRScore == 3 {
@@ -1310,7 +1349,7 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	}
 	flakeClass := flakeScoreClass(flakeScore)
 	b.WriteString(fmt.Sprintf(
-		"        <tr class=\"triage-row\" data-row-id=\"%s\" data-sort-count=\"%d\" data-sort-post-good=\"%d\" data-sort-jobs=\"%d\" data-sort-flake=\"%d\" data-sort-share=\"%.6f\" data-sort-environment=\"%s\" data-sort-phrase=\"%s\" data-sort-cluster=\"%s\">",
+		"        <tr class=\"triage-row\" data-row-id=\"%s\" data-sort-count=\"%d\" data-sort-post-good=\"%d\" data-sort-jobs=\"%d\" data-sort-flake=\"%d\" data-sort-share=\"%.6f\" data-sort-environment=\"%s\" data-sort-phrase=\"%s\" data-sort-cluster=\"%s\" data-filter-env=\"%s\" data-filter-lane=\"%s\" data-filter-search=\"%s\" data-filter-flagged=\"%t\" data-filter-review=\"%t\">",
 		html.EscapeString(strings.TrimSpace(rowID)),
 		row.SupportCount,
 		row.PostGoodCount,
@@ -1320,6 +1359,11 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 		html.EscapeString(strings.ToLower(strings.TrimSpace(row.Environment))),
 		html.EscapeString(strings.TrimSpace(row.Phrase)),
 		html.EscapeString(strings.TrimSpace(row.ClusterID)),
+		html.EscapeString(strings.ToLower(strings.TrimSpace(row.Environment))),
+		html.EscapeString(strings.TrimSpace(row.Lane)),
+		html.EscapeString(strings.ToLower(filterSearchValue)),
+		isFlagged,
+		hasReviewFlags,
 	))
 	b.WriteString(fmt.Sprintf("<td><details class=\"signature-toggle\"><summary>%s</summary><div class=\"muted\">full signature:</div><pre>%s</pre><div class=\"muted\">cluster: %s</div><div class=\"muted\">query: %s</div><div class=\"muted\">%s</div><div class=\"muted\">%s</div></details></td>",
 		summaryText,
@@ -1338,14 +1382,41 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 		b.WriteString(renderTrendCell(row))
 	}
 	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(otherEnvironments)))
-	if !opts.HideQualityScore {
+	if opts.ShowQualityScore {
 		b.WriteString(fmt.Sprintf("<td><span class=\"%s\">%d</span></td>", qualityClass, row.QualityScore))
 	}
-	if opts.IncludeQualityNotes {
+	if opts.ShowQualityFlags {
 		b.WriteString(fmt.Sprintf("<td>%s</td>", qualityNotes))
+	}
+	if opts.ShowReviewFlags {
+		b.WriteString(fmt.Sprintf("<td>%s</td>", reviewNotes))
 	}
 	b.WriteString("</tr>\n")
 	return b.String()
+}
+
+func defaultSearchIndex(row SignatureRow) string {
+	parts := []string{
+		strings.TrimSpace(row.Environment),
+		strings.TrimSpace(row.Lane),
+		strings.TrimSpace(row.JobName),
+		strings.TrimSpace(row.TestName),
+		strings.TrimSpace(row.TestSuite),
+		strings.TrimSpace(row.Phrase),
+		strings.TrimSpace(row.ClusterID),
+		strings.TrimSpace(row.SearchQuery),
+	}
+	parts = append(parts, row.QualityNoteLabels...)
+	parts = append(parts, row.ReviewNoteLabels...)
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		filtered = append(filtered, trimmed)
+	}
+	return strings.Join(filtered, " ")
 }
 
 func renderTrendCell(row SignatureRow) string {

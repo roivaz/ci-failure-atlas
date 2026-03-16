@@ -206,12 +206,11 @@ func buildGlobalTriageHTML(
 		}
 		b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Rows loaded: %d / %d signatures &middot; initially visible: %d &middot; support sum: %d</p>\n", loadedRows, len(clusters), initialVisible, totalEnvironmentSupport))
 		b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
-			IncludeQualityNotes: true,
-			IncludeTrend:        true,
-			GitHubRepoOwner:     defaultGitHubRepoOwner,
-			GitHubRepoName:      defaultGitHubRepoName,
-			LoadedRowsLimit:     globalLoadedRowsLimit,
-			InitialVisibleRows:  top,
+			IncludeTrend:       true,
+			GitHubRepoOwner:    defaultGitHubRepoOwner,
+			GitHubRepoName:     defaultGitHubRepoName,
+			LoadedRowsLimit:    globalLoadedRowsLimit,
+			InitialVisibleRows: top,
 		}))
 		b.WriteString("  </section>\n")
 	}

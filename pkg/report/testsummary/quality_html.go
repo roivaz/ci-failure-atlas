@@ -32,11 +32,19 @@ type qualitySignatureRow struct {
 	QualityScore        int
 	RecentRuns          []reference
 	FullErrorSamples    []string
+	ContributingTests   []qualityContributingTest
 	Sparkline           string
 	SparkCounts         []int
 	SparkRange          string
 	References          []reference
 	SearchIndex         string
+}
+
+type qualityContributingTest struct {
+	Lane         string
+	JobName      string
+	TestName     string
+	SupportCount int
 }
 
 type qualityFlaggedSignatureExport struct {
@@ -166,7 +174,41 @@ func buildQualitySignatureRows(
 
 func qualityReviewReasonsForCluster(cluster testCluster, index reviewSignalIndex) []string {
 	reasons := reviewReasonsForCluster(cluster, index)
-	if !isLikelyGlobalCancellationPhrase(cluster.CanonicalEvidencePhrase) {
+	return filterQualityReviewReasonsForPhrase(reasons, cluster.CanonicalEvidencePhrase)
+}
+
+func qualityReviewReasonsForGlobalCluster(cluster globalCluster, index reviewSignalIndex) []string {
+	reasonSet := map[string]struct{}{}
+	for _, phase1ClusterID := range cluster.MemberPhase1ClusterIDs {
+		if values, ok := index.ByPhase1Cluster[strings.TrimSpace(phase1ClusterID)]; ok {
+			for _, reason := range values.UnsortedList() {
+				if isInformationalReviewReason(reason) {
+					continue
+				}
+				reasonSet[reason] = struct{}{}
+			}
+		}
+	}
+	for _, signatureID := range cluster.MemberSignatureIDs {
+		if values, ok := index.BySignatureID[strings.TrimSpace(signatureID)]; ok {
+			for _, reason := range values.UnsortedList() {
+				if isInformationalReviewReason(reason) {
+					continue
+				}
+				reasonSet[reason] = struct{}{}
+			}
+		}
+	}
+	ordered := make([]string, 0, len(reasonSet))
+	for reason := range reasonSet {
+		ordered = append(ordered, reason)
+	}
+	sort.Strings(ordered)
+	return filterQualityReviewReasonsForPhrase(ordered, cluster.CanonicalEvidencePhrase)
+}
+
+func filterQualityReviewReasonsForPhrase(reasons []string, phrase string) []string {
+	if !isLikelyGlobalCancellationPhrase(phrase) {
 		return reasons
 	}
 	filtered := make([]string, 0, len(reasons))
@@ -182,6 +224,145 @@ func qualityReviewReasonsForCluster(cluster testCluster, index reviewSignalIndex
 		}
 	}
 	return filtered
+}
+
+func buildQualitySignatureRowsFromGlobalClusters(
+	globalClusters []globalCluster,
+	fullErrorsByReference map[referenceKey]string,
+	reviewIndex reviewSignalIndex,
+	generatedAt time.Time,
+	topClusters int,
+	recentRuns int,
+) []qualitySignatureRow {
+	sortedClusters := append([]globalCluster(nil), globalClusters...)
+	sort.Slice(sortedClusters, func(i, j int) bool {
+		if sortedClusters[i].SupportCount != sortedClusters[j].SupportCount {
+			return sortedClusters[i].SupportCount > sortedClusters[j].SupportCount
+		}
+		if sortedClusters[i].PostGoodCommitCount != sortedClusters[j].PostGoodCommitCount {
+			return sortedClusters[i].PostGoodCommitCount > sortedClusters[j].PostGoodCommitCount
+		}
+		if sortedClusters[i].Environment != sortedClusters[j].Environment {
+			return sortedClusters[i].Environment < sortedClusters[j].Environment
+		}
+		return sortedClusters[i].Phase2ClusterID < sortedClusters[j].Phase2ClusterID
+	})
+	if topClusters > 0 && topClusters < len(sortedClusters) {
+		sortedClusters = sortedClusters[:topClusters]
+	}
+
+	rows := make([]qualitySignatureRow, 0, len(sortedClusters))
+	for _, cluster := range sortedClusters {
+		primary := primaryContributingTest(cluster.ContributingTests)
+		reviewReasons := qualityReviewReasonsForGlobalCluster(cluster, reviewIndex)
+		signatureRuns := recentRunsForReferences(cluster.References, recentRuns)
+		fullErrorSamples := fullErrorSamplesForReferences(cluster.References, signatureRuns, fullErrorsByReference, 2)
+		issueCodes := qualityIssueCodesForPhrase(cluster.CanonicalEvidencePhrase, fullErrorSamples)
+		issueLabels := make([]string, 0, len(issueCodes))
+		for _, code := range issueCodes {
+			issueLabels = append(issueLabels, qualityIssueLabel(code))
+		}
+		sparkline, sparkCounts, sparkRange, hasSparkline := referencesDailyDensitySparkline(cluster.References, sparklineWindowDays, generatedAt)
+		row := qualitySignatureRow{
+			Environment:         normalizeReportEnvironment(cluster.Environment),
+			Lane:                strings.TrimSpace(primary.Lane),
+			JobName:             strings.TrimSpace(primary.JobName),
+			TestName:            strings.TrimSpace(primary.TestName),
+			TestSuite:           "",
+			Phase1ClusterID:     strings.TrimSpace(cluster.Phase2ClusterID),
+			Phrase:              strings.TrimSpace(cluster.CanonicalEvidencePhrase),
+			SupportCount:        cluster.SupportCount,
+			PostGoodCommitCount: cluster.PostGoodCommitCount,
+			PassRate:            nil,
+			Runs:                0,
+			ReviewReasons:       append([]string(nil), reviewReasons...),
+			IssueCodes:          append([]string(nil), issueCodes...),
+			IssueLabels:         append([]string(nil), issueLabels...),
+			QualityScore:        qualityIssueScore(issueCodes, reviewReasons),
+			RecentRuns:          append([]reference(nil), signatureRuns...),
+			FullErrorSamples:    append([]string(nil), fullErrorSamples...),
+			ContributingTests:   append([]qualityContributingTest(nil), cluster.ContributingTests...),
+			References:          append([]reference(nil), cluster.References...),
+		}
+		if hasSparkline {
+			row.Sparkline = sparkline
+			row.SparkCounts = append([]int(nil), sparkCounts...)
+			row.SparkRange = sparkRange
+		}
+		row.SearchIndex = strings.ToLower(strings.Join([]string{
+			row.Environment,
+			row.Lane,
+			row.JobName,
+			row.TestName,
+			row.Phrase,
+			strings.Join(issueLabels, " "),
+			strings.Join(reviewReasons, " "),
+			qualityContributingSearchIndex(cluster.ContributingTests),
+		}, " "))
+		rows = append(rows, row)
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].QualityScore != rows[j].QualityScore {
+			return rows[i].QualityScore > rows[j].QualityScore
+		}
+		if rows[i].SupportCount != rows[j].SupportCount {
+			return rows[i].SupportCount > rows[j].SupportCount
+		}
+		if rows[i].Environment != rows[j].Environment {
+			return rows[i].Environment < rows[j].Environment
+		}
+		if rows[i].Lane != rows[j].Lane {
+			return rows[i].Lane < rows[j].Lane
+		}
+		if rows[i].JobName != rows[j].JobName {
+			return rows[i].JobName < rows[j].JobName
+		}
+		if rows[i].TestName != rows[j].TestName {
+			return rows[i].TestName < rows[j].TestName
+		}
+		return rows[i].Phase1ClusterID < rows[j].Phase1ClusterID
+	})
+	return rows
+}
+
+func primaryContributingTest(items []qualityContributingTest) qualityContributingTest {
+	if len(items) == 0 {
+		return qualityContributingTest{}
+	}
+	sorted := append([]qualityContributingTest(nil), items...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].SupportCount != sorted[j].SupportCount {
+			return sorted[i].SupportCount > sorted[j].SupportCount
+		}
+		if sorted[i].Lane != sorted[j].Lane {
+			return sorted[i].Lane < sorted[j].Lane
+		}
+		if sorted[i].JobName != sorted[j].JobName {
+			return sorted[i].JobName < sorted[j].JobName
+		}
+		return sorted[i].TestName < sorted[j].TestName
+	})
+	return sorted[0]
+}
+
+func qualityContributingSearchIndex(items []qualityContributingTest) string {
+	if len(items) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(items)*3)
+	for _, item := range items {
+		if lane := strings.TrimSpace(item.Lane); lane != "" {
+			parts = append(parts, lane)
+		}
+		if jobName := strings.TrimSpace(item.JobName); jobName != "" {
+			parts = append(parts, jobName)
+		}
+		if testName := strings.TrimSpace(item.TestName); testName != "" {
+			parts = append(parts, testName)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func isLikelyGlobalCancellationPhrase(phrase string) bool {
@@ -312,6 +493,7 @@ func buildHTML(
 	b.WriteString("    .signature-text { font-size: 13px; font-weight: 700; color: #111827; }\n")
 	b.WriteString("    pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; }\n")
 	b.WriteString("    .muted { color: #6b7280; }\n")
+	b.WriteString(triagehtml.StylesCSS())
 	b.WriteString(triagehtml.ThemeCSS())
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
@@ -384,7 +566,6 @@ func buildHTML(
 	b.WriteString("    <label class=\"inline\"><input id=\"filter-flagged-only\" type=\"checkbox\" /> Suspicious only</label>\n")
 	b.WriteString("    <label class=\"inline\"><input id=\"filter-review-only\" type=\"checkbox\" /> Needs review only</label>\n")
 	b.WriteString("    <label>Search<input id=\"filter-search\" type=\"text\" placeholder=\"phrase, test, job, reason\" /></label>\n")
-	b.WriteString("    <label>Sort by<select id=\"sort-inspector\"><option value=\"default\">Default</option><option value=\"score\">Score</option><option value=\"env\">Env</option><option value=\"lane\">Lane</option><option value=\"support\">Support</option><option value=\"phrase\">Evidence phrase</option><option value=\"job_test\">Job/Test</option></select></label>\n")
 	b.WriteString("    <span class=\"results\" id=\"filter-count\"></span>\n")
 	b.WriteString("  </div>\n")
 
@@ -392,17 +573,17 @@ func buildHTML(
 	if len(rows) == 0 {
 		b.WriteString("  <p class=\"empty\">No signatures available for the selected scope.</p>\n")
 	} else {
-		const inspectorColumnCount = 10
-		b.WriteString("  <table class=\"quality-table\" id=\"inspector-table\">\n")
-		b.WriteString("    <thead><tr><th>Score</th><th>Env</th><th>Lane</th><th>Support</th><th>Current success</th><th>Trend</th><th>Evidence phrase</th><th>Quality flags</th><th>Review flags</th><th>Job/Test</th></tr></thead>\n")
-		b.WriteString("    <tbody>\n")
-		for i, row := range rows {
-			rowID := fmt.Sprintf("inspector-row-%d", i+1)
-			b.WriteString(signatureInspectorRowHTML(row, rowID))
-			b.WriteString(signatureInspectorDetailRowHTML(row, rowID, inspectorColumnCount))
-		}
-		b.WriteString("    </tbody>\n")
-		b.WriteString("  </table>\n")
+		triageRows := qualityRowsToTriageRows(rows)
+		b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
+			ShowQualityFlags:   true,
+			ShowReviewFlags:    true,
+			ShowQualityScore:   true,
+			IncludeTrend:       true,
+			GitHubRepoOwner:    defaultGitHubRepoOwner,
+			GitHubRepoName:     defaultGitHubRepoName,
+			LoadedRowsLimit:    -1,
+			InitialVisibleRows: -1,
+		}))
 	}
 
 	b.WriteString(triagehtml.ThemeToggleScriptTag())
@@ -414,73 +595,9 @@ func buildHTML(
 	b.WriteString("  var flaggedOnly = document.getElementById('filter-flagged-only');\n")
 	b.WriteString("  var reviewOnly = document.getElementById('filter-review-only');\n")
 	b.WriteString("  var searchInput = document.getElementById('filter-search');\n")
-	b.WriteString("  var sortSelect = document.getElementById('sort-inspector');\n")
 	b.WriteString("  var countEl = document.getElementById('filter-count');\n")
+	b.WriteString("  var table = document.querySelector('table.triage-table');\n")
 	b.WriteString("  function parseSupport(value) { var v = parseInt(value || '0', 10); return isNaN(v) ? 0 : v; }\n")
-	b.WriteString("  function parseScore(value) { var v = parseInt(value || '0', 10); return isNaN(v) ? 0 : v; }\n")
-	b.WriteString("  function cmpString(a, b) { if (a === b) { return 0; } return a < b ? -1 : 1; }\n")
-	b.WriteString("  function compareDefault(a, b) {\n")
-	b.WriteString("    var scoreDiff = parseScore(b.getAttribute('data-score')) - parseScore(a.getAttribute('data-score'));\n")
-	b.WriteString("    if (scoreDiff !== 0) { return scoreDiff; }\n")
-	b.WriteString("    var supportDiff = parseSupport(b.getAttribute('data-support')) - parseSupport(a.getAttribute('data-support'));\n")
-	b.WriteString("    if (supportDiff !== 0) { return supportDiff; }\n")
-	b.WriteString("    var envDiff = cmpString(a.getAttribute('data-env') || '', b.getAttribute('data-env') || '');\n")
-	b.WriteString("    if (envDiff !== 0) { return envDiff; }\n")
-	b.WriteString("    var laneDiff = cmpString(a.getAttribute('data-lane') || '', b.getAttribute('data-lane') || '');\n")
-	b.WriteString("    if (laneDiff !== 0) { return laneDiff; }\n")
-	b.WriteString("    var jobDiff = cmpString(a.getAttribute('data-job') || '', b.getAttribute('data-job') || '');\n")
-	b.WriteString("    if (jobDiff !== 0) { return jobDiff; }\n")
-	b.WriteString("    var testDiff = cmpString(a.getAttribute('data-test') || '', b.getAttribute('data-test') || '');\n")
-	b.WriteString("    if (testDiff !== 0) { return testDiff; }\n")
-	b.WriteString("    return cmpString(a.getAttribute('data-phase1') || '', b.getAttribute('data-phase1') || '');\n")
-	b.WriteString("  }\n")
-	b.WriteString("  function compareInspectorRows(a, b) {\n")
-	b.WriteString("    var sortBy = sortSelect ? sortSelect.value : 'default';\n")
-	b.WriteString("    var diff = 0;\n")
-	b.WriteString("    switch (sortBy) {\n")
-	b.WriteString("      case 'score':\n")
-	b.WriteString("        diff = parseScore(b.getAttribute('data-score')) - parseScore(a.getAttribute('data-score'));\n")
-	b.WriteString("        break;\n")
-	b.WriteString("      case 'env':\n")
-	b.WriteString("        diff = cmpString(a.getAttribute('data-env') || '', b.getAttribute('data-env') || '');\n")
-	b.WriteString("        break;\n")
-	b.WriteString("      case 'lane':\n")
-	b.WriteString("        diff = cmpString(a.getAttribute('data-lane') || '', b.getAttribute('data-lane') || '');\n")
-	b.WriteString("        break;\n")
-	b.WriteString("      case 'support':\n")
-	b.WriteString("        diff = parseSupport(b.getAttribute('data-support')) - parseSupport(a.getAttribute('data-support'));\n")
-	b.WriteString("        break;\n")
-	b.WriteString("      case 'phrase':\n")
-	b.WriteString("        diff = cmpString(a.getAttribute('data-phrase') || '', b.getAttribute('data-phrase') || '');\n")
-	b.WriteString("        break;\n")
-	b.WriteString("      case 'job_test':\n")
-	b.WriteString("        diff = cmpString(a.getAttribute('data-jobtest') || '', b.getAttribute('data-jobtest') || '');\n")
-	b.WriteString("        break;\n")
-	b.WriteString("      default:\n")
-	b.WriteString("        break;\n")
-	b.WriteString("    }\n")
-	b.WriteString("    if (diff !== 0) { return diff; }\n")
-	b.WriteString("    return compareDefault(a, b);\n")
-	b.WriteString("  }\n")
-	b.WriteString("  function sortInspectorRows() {\n")
-	b.WriteString("    var tbody = document.querySelector('#inspector-table tbody');\n")
-	b.WriteString("    if (!tbody) { return; }\n")
-	b.WriteString("    var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr.quality-row.inspector-row'));\n")
-	b.WriteString("    var detailRows = {};\n")
-	b.WriteString("    var details = Array.prototype.slice.call(tbody.querySelectorAll('tr.inspector-errors-row'));\n")
-	b.WriteString("    for (var d = 0; d < details.length; d++) {\n")
-	b.WriteString("      var detail = details[d];\n")
-	b.WriteString("      var parentId = detail.getAttribute('data-parent-id') || '';\n")
-	b.WriteString("      if (parentId) { detailRows[parentId] = detail; }\n")
-	b.WriteString("    }\n")
-	b.WriteString("    rows.sort(compareInspectorRows);\n")
-	b.WriteString("    for (var i = 0; i < rows.length; i++) {\n")
-	b.WriteString("      var row = rows[i];\n")
-	b.WriteString("      var rowId = row.getAttribute('data-row-id') || '';\n")
-	b.WriteString("      tbody.appendChild(row);\n")
-	b.WriteString("      if (rowId && detailRows[rowId]) { tbody.appendChild(detailRows[rowId]); }\n")
-	b.WriteString("    }\n")
-	b.WriteString("  }\n")
 	b.WriteString("  function rowMatches(row) {\n")
 	b.WriteString("    var env = envSelect ? envSelect.value : '';\n")
 	b.WriteString("    var lane = laneSelect ? laneSelect.value : '';\n")
@@ -488,25 +605,28 @@ func buildHTML(
 	b.WriteString("    var flagged = flaggedOnly && flaggedOnly.checked;\n")
 	b.WriteString("    var review = reviewOnly && reviewOnly.checked;\n")
 	b.WriteString("    var search = searchInput ? searchInput.value.toLowerCase().trim() : '';\n")
-	b.WriteString("    if (env && row.getAttribute('data-env') !== env) { return false; }\n")
-	b.WriteString("    if (lane && row.getAttribute('data-lane') !== lane) { return false; }\n")
-	b.WriteString("    if (parseSupport(row.getAttribute('data-support')) < minSupport) { return false; }\n")
-	b.WriteString("    if (flagged && row.getAttribute('data-flagged') !== 'true') { return false; }\n")
-	b.WriteString("    if (review && row.getAttribute('data-review') !== 'true') { return false; }\n")
+	b.WriteString("    if (env && (row.getAttribute('data-filter-env') || '') !== env) { return false; }\n")
+	b.WriteString("    if (lane && (row.getAttribute('data-filter-lane') || '') !== lane) { return false; }\n")
+	b.WriteString("    if (parseSupport(row.getAttribute('data-sort-count')) < minSupport) { return false; }\n")
+	b.WriteString("    if (flagged && (row.getAttribute('data-filter-flagged') || '') !== 'true') { return false; }\n")
+	b.WriteString("    if (review && (row.getAttribute('data-filter-review') || '') !== 'true') { return false; }\n")
 	b.WriteString("    if (search) {\n")
-	b.WriteString("      var haystack = (row.getAttribute('data-search') || '').toLowerCase();\n")
+	b.WriteString("      var haystack = (row.getAttribute('data-filter-search') || '').toLowerCase();\n")
 	b.WriteString("      if (haystack.indexOf(search) === -1) { return false; }\n")
 	b.WriteString("    }\n")
 	b.WriteString("    return true;\n")
 	b.WriteString("  }\n")
 	b.WriteString("  function applyFilters() {\n")
-	b.WriteString("    sortInspectorRows();\n")
-	b.WriteString("    var inspectorRows = document.querySelectorAll('#inspector-table tbody tr.quality-row.inspector-row');\n")
-	b.WriteString("    var detailRows = document.querySelectorAll('#inspector-table tbody tr.inspector-errors-row');\n")
+	b.WriteString("    if (!table) {\n")
+	b.WriteString("      if (countEl) { countEl.textContent = '0 signatures shown'; }\n")
+	b.WriteString("      return;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    var inspectorRows = table.querySelectorAll('tbody tr.triage-row');\n")
+	b.WriteString("    var detailRows = table.querySelectorAll('tbody tr.triage-errors-row');\n")
 	b.WriteString("    var detailByParent = {};\n")
 	b.WriteString("    for (var d = 0; d < detailRows.length; d++) {\n")
 	b.WriteString("      var detail = detailRows[d];\n")
-	b.WriteString("      var parentId = detail.getAttribute('data-parent-id') || '';\n")
+	b.WriteString("      var parentId = detail.getAttribute('data-parent-row-id') || '';\n")
 	b.WriteString("      if (parentId) { detailByParent[parentId] = detail; }\n")
 	b.WriteString("    }\n")
 	b.WriteString("    var visibleInspector = 0;\n")
@@ -521,12 +641,18 @@ func buildHTML(
 	b.WriteString("    }\n")
 	b.WriteString("    if (countEl) { countEl.textContent = visibleInspector + ' signatures shown'; }\n")
 	b.WriteString("  }\n")
-	b.WriteString("  var controls = [envSelect, laneSelect, minSupportInput, flaggedOnly, reviewOnly, searchInput, sortSelect];\n")
+	b.WriteString("  var controls = [envSelect, laneSelect, minSupportInput, flaggedOnly, reviewOnly, searchInput];\n")
 	b.WriteString("  for (var k = 0; k < controls.length; k++) {\n")
 	b.WriteString("    var control = controls[k];\n")
 	b.WriteString("    if (!control) { continue; }\n")
 	b.WriteString("    control.addEventListener('input', applyFilters);\n")
 	b.WriteString("    control.addEventListener('change', applyFilters);\n")
+	b.WriteString("  }\n")
+	b.WriteString("  if (table) {\n")
+	b.WriteString("    var sortButtons = table.querySelectorAll('button.triage-sort-button');\n")
+	b.WriteString("    for (var s = 0; s < sortButtons.length; s++) {\n")
+	b.WriteString("      sortButtons[s].addEventListener('click', function () { window.setTimeout(applyFilters, 0); });\n")
+	b.WriteString("    }\n")
 	b.WriteString("  }\n")
 	b.WriteString("  applyFilters();\n")
 	b.WriteString("})();\n")
@@ -614,6 +740,96 @@ func sortedValuesFromRows(rows []qualitySignatureRow, valueFn func(qualitySignat
 	}
 	sort.Strings(out)
 	return out
+}
+
+func qualityRowsToTriageRows(rows []qualitySignatureRow) []triagehtml.SignatureRow {
+	supportByEnvironment := map[string]int{}
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		supportByEnvironment[environment] += maxInt(row.SupportCount, 0)
+	}
+
+	out := make([]triagehtml.SignatureRow, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		share := qualityPct(maxInt(row.SupportCount, 0), supportByEnvironment[environment])
+		searchQuery := fmt.Sprintf(
+			"lane=%s; job=%s; test=%s; suite=%s; success=%s",
+			cleanInline(row.Lane, 40),
+			cleanInline(row.JobName, 80),
+			cleanInline(row.TestName, 120),
+			cleanInline(row.TestSuite, 80),
+			qualitySuccessLabel(row.PassRate, row.Runs),
+		)
+		contributingTests := qualityContributingTestsToTriage(row.ContributingTests)
+		if len(contributingTests) == 0 {
+			contributingTests = []triagehtml.ContributingTest{
+				{
+					Lane:         strings.TrimSpace(row.Lane),
+					JobName:      strings.TrimSpace(row.JobName),
+					TestName:     strings.TrimSpace(row.TestName),
+					SupportCount: row.SupportCount,
+				},
+			}
+		}
+		triageRow := triagehtml.SignatureRow{
+			Environment:       environment,
+			Lane:              strings.TrimSpace(row.Lane),
+			JobName:           strings.TrimSpace(row.JobName),
+			TestName:          strings.TrimSpace(row.TestName),
+			TestSuite:         strings.TrimSpace(row.TestSuite),
+			Phrase:            strings.TrimSpace(row.Phrase),
+			ClusterID:         strings.TrimSpace(row.Phase1ClusterID),
+			SearchQuery:       searchQuery,
+			SearchIndex:       strings.TrimSpace(row.SearchIndex),
+			SupportCount:      row.SupportCount,
+			SupportShare:      share,
+			PostGoodCount:     row.PostGoodCommitCount,
+			QualityScore:      row.QualityScore,
+			QualityNoteLabels: append([]string(nil), row.IssueLabels...),
+			ReviewNoteLabels:  append([]string(nil), row.ReviewReasons...),
+			ContributingTests: contributingTests,
+			FullErrorSamples:  append([]string(nil), row.FullErrorSamples...),
+			References:        toTriageRunReferences(row.References),
+		}
+		if len(row.SparkCounts) > 0 {
+			triageRow.TrendCounts = append([]int(nil), row.SparkCounts...)
+			triageRow.TrendRange = strings.TrimSpace(row.SparkRange)
+			triageRow.TrendSparkline = strings.TrimSpace(row.Sparkline)
+		}
+		out = append(out, triageRow)
+	}
+	return out
+}
+
+func qualityContributingTestsToTriage(rows []qualityContributingTest) []triagehtml.ContributingTest {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]triagehtml.ContributingTest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.ContributingTest{
+			Lane:         strings.TrimSpace(row.Lane),
+			JobName:      strings.TrimSpace(row.JobName),
+			TestName:     strings.TrimSpace(row.TestName),
+			SupportCount: row.SupportCount,
+		})
+	}
+	return out
+}
+
+func qualitySuccessLabel(passRate *float64, runs int) string {
+	if passRate == nil {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.2f%% (%d runs)", *passRate, runs)
+}
+
+func maxInt(value int, minimum int) int {
+	if value < minimum {
+		return minimum
+	}
+	return value
 }
 
 func signatureRowHTML(row qualitySignatureRow, suspiciousOnly bool) string {
@@ -851,7 +1067,11 @@ func (row qualitySignatureRow) exampleRunSummary() string {
 }
 
 func qualityIssueCodes(cluster testCluster, fullErrorSamples []string) []string {
-	phrase := strings.TrimSpace(cluster.CanonicalEvidencePhrase)
+	return qualityIssueCodesForPhrase(cluster.CanonicalEvidencePhrase, fullErrorSamples)
+}
+
+func qualityIssueCodesForPhrase(rawPhrase string, fullErrorSamples []string) []string {
+	phrase := strings.TrimSpace(rawPhrase)
 	normalized := strings.ToLower(phrase)
 	set := map[string]struct{}{}
 	add := func(code string) {
@@ -1015,15 +1235,28 @@ func isGenericFailurePhrase(input string) bool {
 }
 
 func isSourceDeserializationNoOutput(phrase string, fullErrorSamples []string) bool {
-	if containsDeserializationNoOutputSignal(phrase) {
-		return true
-	}
+	hasDeserializationNoOutput := containsDeserializationNoOutputSignal(phrase)
 	for _, sample := range fullErrorSamples {
 		if containsDeserializationNoOutputSignal(sample) {
-			return true
+			hasDeserializationNoOutput = true
+			break
 		}
 	}
-	return false
+	if !hasDeserializationNoOutput {
+		return false
+	}
+
+	// If command execution details are present, the signature has concrete
+	// semantic context and should not be treated as a no-output defect.
+	if containsCompanionCommandErrorSignal(phrase) {
+		return false
+	}
+	for _, sample := range fullErrorSamples {
+		if containsCompanionCommandErrorSignal(sample) {
+			return false
+		}
+	}
+	return true
 }
 
 func containsDeserializationNoOutputSignal(value string) bool {
@@ -1033,6 +1266,28 @@ func containsDeserializationNoOutputSignal(value string) bool {
 	}
 	hasDeserialization := strings.Contains(normalized, "deserializaion error") || strings.Contains(normalized, "deserialization error")
 	return hasDeserialization && strings.Contains(normalized, "no output from command")
+}
+
+func containsCompanionCommandErrorSignal(value string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
+	if normalized == "" {
+		return false
+	}
+	if !strings.Contains(normalized, "command error:") {
+		return false
+	}
+	if strings.Contains(normalized, "command error: no output from command") {
+		return false
+	}
+	if strings.Contains(normalized, "command error: exit status ") {
+		return true
+	}
+	parts := strings.SplitN(normalized, "command error:", 2)
+	if len(parts) < 2 {
+		return false
+	}
+	detail := strings.TrimSpace(parts[1])
+	return detail != "" && detail != "no output from command"
 }
 
 func toQualityFlaggedSignatureExports(rows []qualitySignatureRow) []qualityFlaggedSignatureExport {

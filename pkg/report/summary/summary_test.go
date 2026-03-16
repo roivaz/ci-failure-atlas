@@ -397,7 +397,6 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 		"title=\"Other environments where the same canonical signature phrase appears.\"",
 		"<th>Trend</th>",
 		"2026-03-01..2026-03-07",
-		"Quality score",
 		"bad PR score: 1/3 (post-good=0)",
 		"Full failure examples",
 		"Full failure examples (1)",
@@ -409,7 +408,6 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 		"prow job",
 		"raw dev timeout sample",
 		"full signature:",
-		"context type stub leaked",
 		">INT<",
 	}
 	for _, snippet := range requiredSnippets {
@@ -442,6 +440,9 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 	}
 	if strings.Contains(report, "<th>Contributing tests</th>") {
 		t.Fatalf("expected HTML report to not include contributing tests main column")
+	}
+	if strings.Contains(report, "<th>Quality score</th>") || strings.Contains(report, "<th>Quality flags</th>") || strings.Contains(report, "<th>Review flags</th>") {
+		t.Fatalf("expected global triage report quality/review columns to be hidden by default")
 	}
 	if strings.Contains(report, "<span class=\"bad-pr-flag\"") {
 		t.Fatalf("expected HTML report to not show bad-pr icon for score 1/3 rows")
