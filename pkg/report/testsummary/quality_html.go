@@ -445,6 +445,7 @@ func buildHTML(
 	generatedAt time.Time,
 	configuredWindowStart string,
 	configuredWindowEnd string,
+	impactTotalJobs int,
 ) string {
 	var b strings.Builder
 	windowStart, windowEnd, hasWindow := resolvedQualityWindow(rows, configuredWindowStart, configuredWindowEnd)
@@ -581,6 +582,7 @@ func buildHTML(
 			IncludeTrend:       true,
 			GitHubRepoOwner:    defaultGitHubRepoOwner,
 			GitHubRepoName:     defaultGitHubRepoName,
+			ImpactTotalJobs:    impactTotalJobs,
 			LoadedRowsLimit:    -1,
 			InitialVisibleRows: -1,
 		}))

@@ -160,6 +160,7 @@ func Compile(
 				postGoodCount++
 			}
 			references = append(references, semanticcontracts.ReferenceRecord{
+				RowID:          strings.TrimSpace(row.RowID),
 				RunURL:         strings.TrimSpace(row.RunURL),
 				OccurredAt:     strings.TrimSpace(row.OccurredAt),
 				SignatureID:    strings.TrimSpace(row.SignatureID),

@@ -30,32 +30,37 @@ type ContributingTest struct {
 }
 
 type SignatureRow struct {
-	Environment       string
-	Lane              string
-	JobName           string
-	TestName          string
-	TestSuite         string
-	Phrase            string
-	ClusterID         string
-	SearchQuery       string
-	SearchIndex       string
-	SupportCount      int
-	TrendSparkline    string
-	TrendCounts       []int
-	TrendRange        string
-	SupportShare      float64
-	PostGoodCount     int
-	AlsoSeenIn        []string
-	QualityScore      int
-	QualityNoteLabels []string
-	ReviewNoteLabels  []string
-	ContributingTests []ContributingTest
-	FullErrorSamples  []string
-	References        []RunReference
-	PriorWeeksPresent int
-	PriorWeekStarts   []string
-	PriorJobsAffected int
-	PriorLastSeenAt   string
+	Environment         string
+	Lane                string
+	JobName             string
+	TestName            string
+	TestSuite           string
+	Phrase              string
+	ClusterID           string
+	SearchQuery         string
+	SearchIndex         string
+	SupportCount        int
+	TrendSparkline      string
+	TrendCounts         []int
+	TrendRange          string
+	SupportShare        float64
+	PostGoodCount       int
+	AlsoSeenIn          []string
+	QualityScore        int
+	QualityNoteLabels   []string
+	ReviewNoteLabels    []string
+	ContributingTests   []ContributingTest
+	FullErrorSamples    []string
+	References          []RunReference
+	ScoringReferences   []RunReference
+	PriorWeeksPresent   int
+	PriorWeekStarts     []string
+	PriorJobsAffected   int
+	PriorLastSeenAt     string
+	ManualIssueID       string
+	ManualIssueConflict bool
+	SelectionValue      string
+	LinkedChildren      []SignatureRow
 }
 
 type TableOptions struct {
@@ -75,6 +80,17 @@ type TableOptions struct {
 	AffectedRunsSummaryLabel string
 	LoadedRowsLimit          int
 	InitialVisibleRows       int
+	InitialSortKey           string
+	InitialSortDirection     string
+	ImpactTotalJobs          int
+	ShowLinkedChildQuality   bool
+	ShowLinkedChildReview    bool
+	ShowCount                bool
+	ShowAfterLastPush        bool
+	ShowShare                bool
+	ShowManualIssue          bool
+	IncludeSelection         bool
+	SelectionInputName       string
 }
 
 type ReportView string
@@ -98,7 +114,7 @@ type ReportChromeOptions struct {
 
 const (
 	defaultLoadedRowsLimit  = 50
-	defaultSortKey          = "flake_score"
+	defaultSortKey          = sortKeyImpact
 	defaultSortDirection    = "desc"
 	sortDirectionAscending  = "asc"
 	sortDirectionDescending = "desc"
@@ -107,6 +123,8 @@ const (
 	sortKeyAfterLastPush    = "after_last_push"
 	sortKeyFlakeScore       = "flake_score"
 	sortKeyShare            = "share"
+	sortKeyImpact           = "impact"
+	sortKeyManualCluster    = "manual_cluster"
 )
 
 func StylesCSS() string {
@@ -116,6 +134,8 @@ func StylesCSS() string {
 		"    .triage-table thead th:first-child { width: 36%; max-width: 360px; }",
 		"    .triage-table tbody tr:not(.triage-errors-row) > td:first-child { width: 36%; max-width: 360px; }",
 		"    .triage-table th { background: #f3f4f6; color: #374151; font-weight: 700; }",
+		"    .triage-select-col { width: 38px; text-align: center; }",
+		"    .triage-row-select { width: 14px; height: 14px; cursor: pointer; }",
 		"    .triage-table th.triage-sortable { white-space: nowrap; }",
 		"    .triage-sort-button { all: unset; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: inherit; font: inherit; font-weight: 700; }",
 		"    .triage-sort-indicator { display: inline-block; min-width: 10px; text-align: center; font-size: 10px; color: #6b7280; }",
@@ -126,6 +146,10 @@ func StylesCSS() string {
 		"    .badge-ok { background: #dcfce7; color: #166534; }",
 		"    .quality-high { color: #991b1b; font-weight: 700; }",
 		"    .quality-low { color: #374151; }",
+		"    .impact-score { font-weight: 700; color: inherit; }",
+		"    .impact-high { color: inherit; }",
+		"    .impact-medium { color: inherit; }",
+		"    .impact-low { color: inherit; }",
 		"    .flake-score { font-weight: 700; }",
 		"    .flake-high { color: #166534; }",
 		"    .flake-medium { color: #92400e; }",
@@ -140,6 +164,14 @@ func StylesCSS() string {
 		"    .triage-errors-row details.full-errors-toggle, .triage-errors-row details.affected-runs-toggle, .triage-errors-row details.contributing-tests-toggle { margin: 0; }",
 		"    .triage-errors-row details.full-errors-toggle > summary, .triage-errors-row details.affected-runs-toggle > summary, .triage-errors-row details.contributing-tests-toggle > summary { display: inline-flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 600; color: #1e3a8a; background: #dbeafe; border: 1px solid #93c5fd; border-radius: 999px; padding: 2px 10px; }",
 		"    .triage-errors-row details.full-errors-toggle[open] > summary, .triage-errors-row details.affected-runs-toggle[open] > summary, .triage-errors-row details.contributing-tests-toggle[open] > summary { background: #bfdbfe; border-color: #60a5fa; color: #1e40af; }",
+		"    .triage-errors-row details.linked-signatures-toggle > summary, .triage-errors-row details.linked-child-toggle > summary { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: #1e3a8a; background: #dbeafe; border: 1px solid #93c5fd; border-radius: 8px; padding: 4px 10px; }",
+		"    .triage-errors-row details.linked-signatures-toggle[open] > summary, .triage-errors-row details.linked-child-toggle[open] > summary { background: #bfdbfe; border-color: #60a5fa; color: #1e40af; }",
+		"    .triage-linked-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }",
+		"    .triage-linked-item { border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; padding: 6px 8px; }",
+		"    .triage-linked-item-summary { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }",
+		"    .triage-linked-item-meta { color: #4b5563; font-size: 11px; }",
+		"    .triage-linked-item-flags { margin: 6px 0 6px; }",
+		"    .triage-linked-item-header { margin-top: 4px; }",
 		"    .triage-errors-row .runs-scroll { margin-top: 6px; max-height: 172px; overflow-y: auto; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }",
 		"    .triage-errors-row .runs-table { border-collapse: collapse; width: 100%; font-size: 11px; }",
 		"    .triage-errors-row .runs-table th, .triage-errors-row .runs-table td { padding: 4px 6px; border-bottom: 1px solid #dbeafe; text-align: left; vertical-align: top; }",
@@ -173,9 +205,16 @@ func ThemeCSS() string {
 		"    :root[data-theme=\"dark\"] .triage-errors-row .runs-table th, :root[data-theme=\"dark\"] .triage-errors-row .runs-table td, :root[data-theme=\"dark\"] .triage-errors-row .tests-table th, :root[data-theme=\"dark\"] .triage-errors-row .tests-table td, :root[data-theme=\"dark\"] .inspector-errors-row .runs-table th, :root[data-theme=\"dark\"] .inspector-errors-row .runs-table td { border-bottom-color: #334155; }",
 		"    :root[data-theme=\"dark\"] .triage-errors-row details.full-errors-toggle > summary, :root[data-theme=\"dark\"] .triage-errors-row details.affected-runs-toggle > summary, :root[data-theme=\"dark\"] .triage-errors-row details.contributing-tests-toggle > summary { color: #e2e8f0; background: #1f2937; border-color: #334155; }",
 		"    :root[data-theme=\"dark\"] .triage-errors-row details.full-errors-toggle[open] > summary, :root[data-theme=\"dark\"] .triage-errors-row details.affected-runs-toggle[open] > summary, :root[data-theme=\"dark\"] .triage-errors-row details.contributing-tests-toggle[open] > summary { color: #e2e8f0; background: #2563eb; border-color: #2563eb; }",
+		"    :root[data-theme=\"dark\"] .triage-errors-row details.linked-signatures-toggle > summary, :root[data-theme=\"dark\"] .triage-errors-row details.linked-child-toggle > summary { color: #e2e8f0; background: #1f2937; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .triage-errors-row details.linked-signatures-toggle[open] > summary, :root[data-theme=\"dark\"] .triage-errors-row details.linked-child-toggle[open] > summary { color: #e2e8f0; background: #2563eb; border-color: #2563eb; }",
+		"    :root[data-theme=\"dark\"] .triage-linked-item { background: #0f172a; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .triage-linked-item-meta { color: #94a3b8; }",
 		"    :root[data-theme=\"dark\"] pre { background: #020617; color: #e2e8f0; border: 1px solid #334155; }",
 		"    :root[data-theme=\"dark\"] .triage-header-help { border-color: #334155; color: #93c5fd; background: #1e293b; }",
 		"    :root[data-theme=\"dark\"] .triage-sort-indicator { color: #94a3b8; }",
+		"    :root[data-theme=\"dark\"] .impact-high { color: inherit; }",
+		"    :root[data-theme=\"dark\"] .impact-medium { color: inherit; }",
+		"    :root[data-theme=\"dark\"] .impact-low { color: inherit; }",
 		"    :root[data-theme=\"dark\"] .flake-high { color: #34d399; }",
 		"    :root[data-theme=\"dark\"] .flake-medium { color: #fbbf24; }",
 		"    :root[data-theme=\"dark\"] .flake-low { color: #94a3b8; }",
@@ -399,8 +438,21 @@ func renderReportChromeViewLink(href string, label string, active bool) string {
 
 func RenderTable(rows []SignatureRow, options TableOptions) string {
 	opts := normalizedOptions(options)
+	initialSortKey := strings.TrimSpace(opts.InitialSortKey)
+	if !isSortableKey(initialSortKey) {
+		initialSortKey = defaultSortKey
+	}
+	initialSortDirection := strings.TrimSpace(strings.ToLower(opts.InitialSortDirection))
+	if initialSortDirection != sortDirectionAscending && initialSortDirection != sortDirectionDescending {
+		initialSortDirection = defaultSortDirection
+	}
 	orderedRows := append([]SignatureRow(nil), rows...)
-	SortRowsByDefaultPriority(orderedRows)
+	impactTotalJobs := opts.ImpactTotalJobs
+	if impactTotalJobs <= 0 {
+		impactTotalJobs = totalAffectedJobs(orderedRows)
+	}
+	opts.ImpactTotalJobs = impactTotalJobs
+	sortRowsByDefaultPriorityWithImpact(orderedRows, impactTotalJobs)
 	if opts.LoadedRowsLimit > 0 && len(orderedRows) > opts.LoadedRowsLimit {
 		orderedRows = orderedRows[:opts.LoadedRowsLimit]
 	}
@@ -412,18 +464,32 @@ func RenderTable(rows []SignatureRow, options TableOptions) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(
 		"    <table class=\"triage-table\" data-sortable=\"true\" data-sort-key=\"%s\" data-sort-dir=\"%s\" data-initial-visible=\"%d\">\n",
-		defaultSortKey,
-		defaultSortDirection,
+		initialSortKey,
+		initialSortDirection,
 		initialVisibleRows,
 	))
 	b.WriteString("      <thead><tr>")
-	headers := []string{
-		"<th>Signature</th>",
-		renderSortableHeaderCell("Count", sortKeyCount, ""),
-		renderSortableHeaderCell("After last push", sortKeyAfterLastPush, "Job run occurred after last push of a PR that merges."),
-		renderSortableHeaderCell("Jobs affected", sortKeyJobsAffected, "Unique job runs affected by this signature in the selected window."),
-		renderSortableHeaderCell("Flake score", sortKeyFlakeScore, "Heuristic score for unresolved recurrent flakes (0-14). Higher means more likely ongoing flake; likely bad-PR patterns reduce this score."),
-		renderSortableHeaderCell("Share", sortKeyShare, ""),
+	headers := make([]string, 0, 12)
+	if opts.IncludeSelection {
+		headers = append(headers, "<th class=\"triage-select-col\">Select</th>")
+	}
+	headers = append(headers, "<th>Signature</th>")
+	headers = append(headers,
+		renderSortableHeaderCell("Jobs affected", sortKeyJobsAffected, "Unique job runs affected by this signature in the selected window.", initialSortKey, initialSortDirection),
+		renderSortableHeaderCell("Impact", sortKeyImpact, "Relative impact = jobs affected / overall job count from metrics.", initialSortKey, initialSortDirection),
+		renderSortableHeaderCell("Flake score", sortKeyFlakeScore, "Heuristic score for unresolved recurrent flakes (0-14). Higher means more likely ongoing flake; likely bad-PR patterns reduce this score.", initialSortKey, initialSortDirection),
+	)
+	if opts.ShowCount {
+		headers = append(headers, renderSortableHeaderCell("Count", sortKeyCount, "", initialSortKey, initialSortDirection))
+	}
+	if opts.ShowAfterLastPush {
+		headers = append(headers, renderSortableHeaderCell("After last push", sortKeyAfterLastPush, "Job run occurred after last push of a PR that merges.", initialSortKey, initialSortDirection))
+	}
+	if opts.ShowShare {
+		headers = append(headers, renderSortableHeaderCell("Share", sortKeyShare, "", initialSortKey, initialSortDirection))
+	}
+	if opts.ShowManualIssue {
+		headers = append(headers, renderSortableHeaderCell("Phase3 cluster", sortKeyManualCluster, "Internal cluster id created automatically when linking selected signatures.", initialSortKey, initialSortDirection))
 	}
 	if opts.IncludeTrend {
 		headers = append(headers, fmt.Sprintf("<th>%s</th>", html.EscapeString(opts.TrendHeaderLabel)))
@@ -472,7 +538,7 @@ func renderTooltipHeaderCell(label string, tooltip string) string {
 	)
 }
 
-func renderSortableHeaderCell(label string, sortKey string, tooltip string) string {
+func renderSortableHeaderCell(label string, sortKey string, tooltip string, activeSortKey string, activeSortDirection string) string {
 	trimmedLabel := strings.TrimSpace(label)
 	if trimmedLabel == "" {
 		trimmedLabel = "n/a"
@@ -483,9 +549,14 @@ func renderSortableHeaderCell(label string, sortKey string, tooltip string) stri
 	}
 	ariaSort := "none"
 	indicator := ""
-	if trimmedSortKey == defaultSortKey && defaultSortDirection == sortDirectionDescending {
-		ariaSort = "descending"
-		indicator = "v"
+	if trimmedSortKey == strings.TrimSpace(activeSortKey) {
+		if strings.TrimSpace(activeSortDirection) == sortDirectionAscending {
+			ariaSort = "ascending"
+			indicator = "^"
+		} else {
+			ariaSort = "descending"
+			indicator = "v"
+		}
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(
@@ -531,10 +602,12 @@ func renderTableSortScriptTag() string {
     return left < right ? -1 : 1;
   }
   function defaultCompareRows(leftRow, rightRow) {
-    var flakeDiff = parseNumber(rightRow.getAttribute("data-sort-flake")) - parseNumber(leftRow.getAttribute("data-sort-flake"));
-    if (flakeDiff !== 0) { return flakeDiff; }
+    var impactDiff = parseNumber(rightRow.getAttribute("data-sort-impact")) - parseNumber(leftRow.getAttribute("data-sort-impact"));
+    if (impactDiff !== 0) { return impactDiff; }
     var jobsDiff = parseNumber(rightRow.getAttribute("data-sort-jobs")) - parseNumber(leftRow.getAttribute("data-sort-jobs"));
     if (jobsDiff !== 0) { return jobsDiff; }
+    var flakeDiff = parseNumber(rightRow.getAttribute("data-sort-flake")) - parseNumber(leftRow.getAttribute("data-sort-flake"));
+    if (flakeDiff !== 0) { return flakeDiff; }
     var shareDiff = parseNumber(rightRow.getAttribute("data-sort-share")) - parseNumber(leftRow.getAttribute("data-sort-share"));
     if (shareDiff !== 0) { return shareDiff; }
     var countDiff = parseNumber(rightRow.getAttribute("data-sort-count")) - parseNumber(leftRow.getAttribute("data-sort-count"));
@@ -556,6 +629,9 @@ func renderTableSortScriptTag() string {
       case "jobs_affected":
         diff = parseNumber(leftRow.getAttribute("data-sort-jobs")) - parseNumber(rightRow.getAttribute("data-sort-jobs"));
         break;
+      case "impact":
+        diff = parseNumber(leftRow.getAttribute("data-sort-impact")) - parseNumber(rightRow.getAttribute("data-sort-impact"));
+        break;
       case "after_last_push":
         diff = parseNumber(leftRow.getAttribute("data-sort-post-good")) - parseNumber(rightRow.getAttribute("data-sort-post-good"));
         break;
@@ -564,6 +640,9 @@ func renderTableSortScriptTag() string {
         break;
       case "share":
         diff = parseNumber(leftRow.getAttribute("data-sort-share")) - parseNumber(rightRow.getAttribute("data-sort-share"));
+        break;
+      case "manual_cluster":
+        diff = compareStrings(leftRow.getAttribute("data-sort-manual"), rightRow.getAttribute("data-sort-manual"));
         break;
       default:
         diff = 0;
@@ -646,7 +725,7 @@ func renderTableSortScriptTag() string {
       return;
     }
     table.setAttribute("data-sort-init", "true");
-    var sortKey = table.getAttribute("data-sort-key") || "flake_score";
+    var sortKey = table.getAttribute("data-sort-key") || "impact";
     var sortDirection = table.getAttribute("data-sort-dir") || "desc";
     var buttons = table.querySelectorAll("button.triage-sort-button");
     for (var i = 0; i < buttons.length; i++) {
@@ -655,7 +734,7 @@ func renderTableSortScriptTag() string {
         if (!key) {
           return;
         }
-        var currentKey = table.getAttribute("data-sort-key") || "flake_score";
+        var currentKey = table.getAttribute("data-sort-key") || "impact";
         var currentDirection = table.getAttribute("data-sort-dir") || "desc";
         var nextDirection = "desc";
         if (key === currentKey) {
@@ -940,7 +1019,7 @@ func FormatCounts(values []int) string {
 }
 
 func BadPRScoreAndReasons(row SignatureRow) (int, []string) {
-	if row.PostGoodCount > 0 {
+	if rowPostGoodCount(row) > 0 {
 		return 0, nil
 	}
 
@@ -962,14 +1041,14 @@ func FlakeScoreAndReasons(row SignatureRow) (int, []string) {
 	score := 0
 	reasons := make([]string, 0, 7)
 
-	jobsAffected := affectedJobCount(row)
+	jobsAffected := rowJobsAffected(row)
 	jobPoints := flakeAffectedJobPoints(jobsAffected)
 	if jobPoints > 0 {
 		score += jobPoints
 		reasons = append(reasons, fmt.Sprintf("jobs affected +%d", jobPoints))
 	}
 
-	postGoodPoints := flakePostGoodPoints(row.PostGoodCount)
+	postGoodPoints := flakePostGoodPoints(rowPostGoodCount(row))
 	if postGoodPoints > 0 {
 		score += postGoodPoints
 		reasons = append(reasons, fmt.Sprintf("after last push +%d", postGoodPoints))
@@ -981,7 +1060,7 @@ func FlakeScoreAndReasons(row SignatureRow) (int, []string) {
 		reasons = append(reasons, fmt.Sprintf("daily spread +%d", spreadPoints))
 	}
 
-	recentPoints := flakeRecentPoints(row.References, row.TrendRange)
+	recentPoints := flakeRecentPoints(rowScoreReferences(row), row.TrendRange)
 	if recentPoints > 0 {
 		score += recentPoints
 		reasons = append(reasons, fmt.Sprintf("recent occurrence +%d", recentPoints))
@@ -1017,6 +1096,80 @@ func FlakeScoreAndReasons(row SignatureRow) (int, []string) {
 
 func affectedJobCount(row SignatureRow) int {
 	return len(OrderedUniqueReferences(row.References))
+}
+
+func rowScoreReferences(row SignatureRow) []RunReference {
+	if len(row.ScoringReferences) > 0 {
+		return row.ScoringReferences
+	}
+	return row.References
+}
+
+func rowPostGoodCount(row SignatureRow) int {
+	if len(row.LinkedChildren) == 0 {
+		return row.PostGoodCount
+	}
+	total := 0
+	for _, child := range row.LinkedChildren {
+		total += child.PostGoodCount
+	}
+	if total > 0 {
+		return total
+	}
+	return row.PostGoodCount
+}
+
+func rowJobsAffected(row SignatureRow) int {
+	if len(row.LinkedChildren) == 0 {
+		return affectedJobCount(row)
+	}
+	total := 0
+	for _, child := range row.LinkedChildren {
+		total += affectedJobCount(child)
+	}
+	if total > 0 {
+		return total
+	}
+	return affectedJobCount(row)
+}
+
+func totalAffectedJobs(rows []SignatureRow) int {
+	seenRuns := map[string]struct{}{}
+	for _, row := range rows {
+		for _, reference := range OrderedUniqueReferences(row.References) {
+			runURL := strings.TrimSpace(reference.RunURL)
+			if runURL == "" {
+				continue
+			}
+			seenRuns[runURL] = struct{}{}
+		}
+	}
+	return len(seenRuns)
+}
+
+func impactShare(jobsAffected int, impactTotalJobs int) float64 {
+	if impactTotalJobs <= 0 {
+		return 0
+	}
+	return (float64(jobsAffected) * 100.0) / float64(impactTotalJobs)
+}
+
+func impactScoreClass(percent float64) string {
+	switch {
+	case percent >= 20:
+		return "impact-high"
+	case percent >= 8:
+		return "impact-medium"
+	default:
+		return "impact-low"
+	}
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func flakeAffectedJobPoints(jobsAffected int) int {
@@ -1153,16 +1306,25 @@ func flakeScoreClass(score int) string {
 }
 
 func SortRowsByDefaultPriority(rows []SignatureRow) {
+	sortRowsByDefaultPriorityWithImpact(rows, totalAffectedJobs(rows))
+}
+
+func sortRowsByDefaultPriorityWithImpact(rows []SignatureRow, impactTotalJobs int) {
 	sort.Slice(rows, func(i, j int) bool {
+		impactI := impactShare(rowJobsAffected(rows[i]), impactTotalJobs)
+		impactJ := impactShare(rowJobsAffected(rows[j]), impactTotalJobs)
+		if impactI != impactJ {
+			return impactI > impactJ
+		}
+		jobsI := rowJobsAffected(rows[i])
+		jobsJ := rowJobsAffected(rows[j])
+		if jobsI != jobsJ {
+			return jobsI > jobsJ
+		}
 		flakeI, _ := FlakeScoreAndReasons(rows[i])
 		flakeJ, _ := FlakeScoreAndReasons(rows[j])
 		if flakeI != flakeJ {
 			return flakeI > flakeJ
-		}
-		jobsI := affectedJobCount(rows[i])
-		jobsJ := affectedJobCount(rows[j])
-		if jobsI != jobsJ {
-			return jobsI > jobsJ
 		}
 		if rows[i].SupportShare != rows[j].SupportShare {
 			return rows[i].SupportShare > rows[j].SupportShare
@@ -1170,8 +1332,10 @@ func SortRowsByDefaultPriority(rows []SignatureRow) {
 		if rows[i].SupportCount != rows[j].SupportCount {
 			return rows[i].SupportCount > rows[j].SupportCount
 		}
-		if rows[i].PostGoodCount != rows[j].PostGoodCount {
-			return rows[i].PostGoodCount > rows[j].PostGoodCount
+		postGoodI := rowPostGoodCount(rows[i])
+		postGoodJ := rowPostGoodCount(rows[j])
+		if postGoodI != postGoodJ {
+			return postGoodI > postGoodJ
 		}
 		if strings.TrimSpace(rows[i].Environment) != strings.TrimSpace(rows[j].Environment) {
 			return strings.TrimSpace(rows[i].Environment) < strings.TrimSpace(rows[j].Environment)
@@ -1193,8 +1357,10 @@ func SortRowsByBadPRScore(rows []SignatureRow) {
 		if rows[i].SupportCount != rows[j].SupportCount {
 			return rows[i].SupportCount > rows[j].SupportCount
 		}
-		if rows[i].PostGoodCount != rows[j].PostGoodCount {
-			return rows[i].PostGoodCount > rows[j].PostGoodCount
+		postGoodI := rowPostGoodCount(rows[i])
+		postGoodJ := rowPostGoodCount(rows[j])
+		if postGoodI != postGoodJ {
+			return postGoodI > postGoodJ
 		}
 		if rows[i].SupportShare != rows[j].SupportShare {
 			return rows[i].SupportShare > rows[j].SupportShare
@@ -1222,7 +1388,7 @@ func isOnlySeenInDev(row SignatureRow) bool {
 }
 
 func isSingleKnownPR(row SignatureRow) bool {
-	references := OrderedUniqueReferences(row.References)
+	references := OrderedUniqueReferences(rowScoreReferences(row))
 	if len(references) == 0 {
 		return false
 	}
@@ -1256,6 +1422,17 @@ func normalizedOptions(options TableOptions) TableOptions {
 	if strings.TrimSpace(opts.TrendHeaderLabel) == "" {
 		opts.TrendHeaderLabel = "Trend"
 	}
+	if strings.TrimSpace(opts.SelectionInputName) == "" {
+		opts.SelectionInputName = "cluster_id"
+	}
+	opts.InitialSortKey = strings.TrimSpace(opts.InitialSortKey)
+	if !isSortableKey(opts.InitialSortKey) {
+		opts.InitialSortKey = defaultSortKey
+	}
+	opts.InitialSortDirection = strings.ToLower(strings.TrimSpace(opts.InitialSortDirection))
+	if opts.InitialSortDirection != sortDirectionAscending && opts.InitialSortDirection != sortDirectionDescending {
+		opts.InitialSortDirection = defaultSortDirection
+	}
 	if opts.IncludeQualityNotes {
 		opts.ShowQualityFlags = true
 	}
@@ -1278,6 +1455,15 @@ func normalizedOptions(options TableOptions) TableOptions {
 	return opts
 }
 
+func isSortableKey(value string) bool {
+	switch strings.TrimSpace(value) {
+	case sortKeyCount, sortKeyJobsAffected, sortKeyImpact, sortKeyAfterLastPush, sortKeyFlakeScore, sortKeyShare, sortKeyManualCluster:
+		return true
+	default:
+		return false
+	}
+}
+
 func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	var b strings.Builder
 	phrase := strings.TrimSpace(row.Phrase)
@@ -1287,14 +1473,6 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	otherEnvironments := "none"
 	if len(row.AlsoSeenIn) > 0 {
 		otherEnvironments = strings.Join(row.AlsoSeenIn, ", ")
-	}
-	clusterID := cleanInline(strings.TrimSpace(row.ClusterID), 180)
-	if clusterID == "" {
-		clusterID = "n/a"
-	}
-	searchQuery := cleanInline(strings.TrimSpace(row.SearchQuery), 180)
-	if searchQuery == "" {
-		searchQuery = "n/a"
 	}
 	qualityClass := "quality-low"
 	if row.QualityScore >= 8 {
@@ -1337,7 +1515,15 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	if len(badPRReasons) > 0 {
 		badPRDetails = fmt.Sprintf("%s (%s)", badPRDetails, strings.Join(badPRReasons, "; "))
 	}
-	jobsAffected := affectedJobCount(row)
+	jobsAffected := rowJobsAffected(row)
+	postGoodCount := rowPostGoodCount(row)
+	impactPercent := impactShare(jobsAffected, opts.ImpactTotalJobs)
+	impactLabel := fmt.Sprintf("%.2f%%", impactPercent)
+	impactTitle := fmt.Sprintf(
+		"Impact from jobs affected / overall job count from metrics: %d/%d jobs",
+		jobsAffected,
+		maxInt(opts.ImpactTotalJobs, 0),
+	)
 	flakeScore, flakeReasons := FlakeScoreAndReasons(row)
 	flakeDetails := fmt.Sprintf("flake score: %d/14", flakeScore)
 	if len(flakeReasons) > 0 {
@@ -1348,36 +1534,76 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 		flakeCellTitle = "flake score"
 	}
 	flakeClass := flakeScoreClass(flakeScore)
+	manualSortValue := strings.TrimSpace(row.ManualIssueID)
+	if manualSortValue == "" {
+		manualSortValue = "~" + strings.ToLower(strings.TrimSpace(row.Environment)) + "|" + strings.TrimSpace(row.ClusterID)
+	}
 	b.WriteString(fmt.Sprintf(
-		"        <tr class=\"triage-row\" data-row-id=\"%s\" data-sort-count=\"%d\" data-sort-post-good=\"%d\" data-sort-jobs=\"%d\" data-sort-flake=\"%d\" data-sort-share=\"%.6f\" data-sort-environment=\"%s\" data-sort-phrase=\"%s\" data-sort-cluster=\"%s\" data-filter-env=\"%s\" data-filter-lane=\"%s\" data-filter-search=\"%s\" data-filter-flagged=\"%t\" data-filter-review=\"%t\">",
+		"        <tr class=\"triage-row\" data-row-id=\"%s\" data-sort-count=\"%d\" data-sort-post-good=\"%d\" data-sort-jobs=\"%d\" data-sort-impact=\"%.6f\" data-sort-flake=\"%d\" data-sort-share=\"%.6f\" data-sort-environment=\"%s\" data-sort-phrase=\"%s\" data-sort-cluster=\"%s\" data-sort-manual=\"%s\" data-filter-env=\"%s\" data-filter-lane=\"%s\" data-filter-search=\"%s\" data-filter-flagged=\"%t\" data-filter-review=\"%t\">",
 		html.EscapeString(strings.TrimSpace(rowID)),
 		row.SupportCount,
-		row.PostGoodCount,
+		postGoodCount,
 		jobsAffected,
+		impactPercent,
 		flakeScore,
 		row.SupportShare,
 		html.EscapeString(strings.ToLower(strings.TrimSpace(row.Environment))),
 		html.EscapeString(strings.TrimSpace(row.Phrase)),
 		html.EscapeString(strings.TrimSpace(row.ClusterID)),
+		html.EscapeString(strings.ToLower(manualSortValue)),
 		html.EscapeString(strings.ToLower(strings.TrimSpace(row.Environment))),
 		html.EscapeString(strings.TrimSpace(row.Lane)),
 		html.EscapeString(strings.ToLower(filterSearchValue)),
 		isFlagged,
 		hasReviewFlags,
 	))
-	b.WriteString(fmt.Sprintf("<td><details class=\"signature-toggle\"><summary>%s</summary><div class=\"muted\">full signature:</div><pre>%s</pre><div class=\"muted\">cluster: %s</div><div class=\"muted\">query: %s</div><div class=\"muted\">%s</div><div class=\"muted\">%s</div></details></td>",
-		summaryText,
-		html.EscapeString(phrase),
-		html.EscapeString(clusterID),
-		html.EscapeString(searchQuery),
-		html.EscapeString(badPRDetails),
-		html.EscapeString(flakeDetails),
-	))
-	b.WriteString(fmt.Sprintf("<td>%d</td>", row.SupportCount))
-	b.WriteString(fmt.Sprintf("<td>%d</td>", row.PostGoodCount))
+	if opts.IncludeSelection {
+		selectionValue := strings.TrimSpace(row.SelectionValue)
+		if selectionValue == "" {
+			selectionValue = strings.TrimSpace(row.ClusterID)
+		}
+		if selectionValue == "" {
+			selectionValue = strings.TrimSpace(rowID)
+		}
+		b.WriteString(fmt.Sprintf(
+			"<td class=\"triage-select-col\"><input class=\"triage-row-select\" type=\"checkbox\" name=\"%s\" value=\"%s\" /></td>",
+			html.EscapeString(strings.TrimSpace(opts.SelectionInputName)),
+			html.EscapeString(selectionValue),
+		))
+	}
+	var signatureDetails strings.Builder
+	signatureDetails.WriteString("<td><details class=\"signature-toggle\">")
+	signatureDetails.WriteString(fmt.Sprintf("<summary>%s</summary>", summaryText))
+	signatureDetails.WriteString("<div class=\"muted\">full signature:</div>")
+	signatureDetails.WriteString(fmt.Sprintf("<pre>%s</pre>", html.EscapeString(phrase)))
+	if successDetails := successDetailsFromSearchQuery(row.SearchQuery); successDetails != "" {
+		signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(successDetails)))
+	}
+	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(badPRDetails)))
+	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(flakeDetails)))
+	signatureDetails.WriteString("</details></td>")
+	b.WriteString(signatureDetails.String())
 	b.WriteString(fmt.Sprintf("<td>%d</td>", jobsAffected))
+	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"impact-score %s\">%s</span></td>", html.EscapeString(impactTitle), impactScoreClass(impactPercent), html.EscapeString(impactLabel)))
 	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"flake-score %s\">%d</span></td>", html.EscapeString(flakeCellTitle), flakeClass, flakeScore))
-	b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", row.SupportShare))
+	if opts.ShowCount {
+		b.WriteString(fmt.Sprintf("<td>%d</td>", row.SupportCount))
+	}
+	if opts.ShowAfterLastPush {
+		b.WriteString(fmt.Sprintf("<td>%d</td>", postGoodCount))
+	}
+	if opts.ShowShare {
+		b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", row.SupportShare))
+	}
+	if opts.ShowManualIssue {
+		manualIssueLabel := strings.TrimSpace(row.ManualIssueID)
+		if manualIssueLabel == "" {
+			manualIssueLabel = "<span class=\"muted\">unlinked</span>"
+		} else {
+			manualIssueLabel = html.EscapeString(manualIssueLabel)
+		}
+		b.WriteString(fmt.Sprintf("<td>%s</td>", manualIssueLabel))
+	}
 	if opts.IncludeTrend {
 		b.WriteString(renderTrendCell(row))
 	}
@@ -1417,6 +1643,29 @@ func defaultSearchIndex(row SignatureRow) string {
 		filtered = append(filtered, trimmed)
 	}
 	return strings.Join(filtered, " ")
+}
+
+func successDetailsFromSearchQuery(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	for _, part := range strings.Split(trimmed, ";") {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			continue
+		}
+		const prefix = "success="
+		if !strings.HasPrefix(strings.ToLower(entry), prefix) {
+			continue
+		}
+		successValue := strings.TrimSpace(entry[len(prefix):])
+		if successValue == "" {
+			return ""
+		}
+		return "success: " + successValue
+	}
+	return ""
 }
 
 func renderTrendCell(row SignatureRow) string {
@@ -1530,6 +1779,11 @@ func renderDetailRow(row SignatureRow, rowID string, colSpan int, opts TableOpti
 		html.EscapeString(strings.TrimSpace(rowID)),
 		colSpan,
 	))
+	if len(row.LinkedChildren) > 0 {
+		b.WriteString(renderLinkedChildrenDetails(row.LinkedChildren, opts))
+		b.WriteString("</td></tr>\n")
+		return b.String()
+	}
 	b.WriteString("<div class=\"triage-detail-actions\">")
 	b.WriteString(renderFullErrorDetails(row.FullErrorSamples, opts.FullErrorsSummaryLabel))
 	b.WriteString(renderContributingTestsDetails(row.ContributingTests, opts.ContributingSummaryLabel))
@@ -1537,6 +1791,94 @@ func renderDetailRow(row SignatureRow, rowID string, colSpan int, opts TableOpti
 	b.WriteString("</div>")
 	b.WriteString("</td></tr>\n")
 	return b.String()
+}
+
+func renderLinkedChildrenDetails(children []SignatureRow, opts TableOptions) string {
+	if len(children) == 0 {
+		return "<span class=\"muted\">No linked signatures.</span>"
+	}
+	ordered := append([]SignatureRow(nil), children...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].SupportCount != ordered[j].SupportCount {
+			return ordered[i].SupportCount > ordered[j].SupportCount
+		}
+		if ordered[i].PostGoodCount != ordered[j].PostGoodCount {
+			return ordered[i].PostGoodCount > ordered[j].PostGoodCount
+		}
+		if strings.TrimSpace(ordered[i].Phrase) != strings.TrimSpace(ordered[j].Phrase) {
+			return strings.TrimSpace(ordered[i].Phrase) < strings.TrimSpace(ordered[j].Phrase)
+		}
+		return strings.TrimSpace(ordered[i].ClusterID) < strings.TrimSpace(ordered[j].ClusterID)
+	})
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("<details class=\"linked-signatures-toggle\"><summary>Linked signatures (%d)</summary>", len(ordered)))
+	b.WriteString("<div class=\"triage-linked-list\">")
+	for index, child := range ordered {
+		phrase := strings.TrimSpace(child.Phrase)
+		if phrase == "" {
+			phrase = "(unknown evidence)"
+		}
+		jobsAffected := affectedJobCount(child)
+		badPRScore, badPRReasons := BadPRScoreAndReasons(child)
+		badPRDetails := fmt.Sprintf("bad PR score: %d/3", badPRScore)
+		if len(badPRReasons) > 0 {
+			badPRDetails = fmt.Sprintf("%s (%s)", badPRDetails, strings.Join(badPRReasons, "; "))
+		}
+		flakeScore, flakeReasons := FlakeScoreAndReasons(child)
+		flakeDetails := fmt.Sprintf("flake score: %d/14", flakeScore)
+		if len(flakeReasons) > 0 {
+			flakeDetails = fmt.Sprintf("%s (%s)", flakeDetails, strings.Join(flakeReasons, "; "))
+		}
+		b.WriteString("<details class=\"linked-child-toggle triage-linked-item\">")
+		b.WriteString(fmt.Sprintf(
+			"<summary><span class=\"triage-linked-item-summary\"><strong>%d.</strong> %s</span><span class=\"triage-linked-item-meta\">jobs affected: %d</span></summary>",
+			index+1,
+			html.EscapeString(cleanInline(phrase, 220)),
+			jobsAffected,
+		))
+		b.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(badPRDetails)))
+		b.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(flakeDetails)))
+		if opts.ShowLinkedChildQuality || opts.ShowLinkedChildReview {
+			b.WriteString("<div class=\"triage-linked-item-flags\">")
+			if opts.ShowLinkedChildQuality {
+				b.WriteString(renderQualityBadges(child.QualityNoteLabels))
+			}
+			if opts.ShowLinkedChildReview {
+				b.WriteString(renderReviewBadges(child.ReviewNoteLabels))
+			}
+			b.WriteString("</div>")
+		}
+		b.WriteString("<div class=\"triage-detail-actions\">")
+		b.WriteString(renderFullErrorDetails(child.FullErrorSamples, opts.FullErrorsSummaryLabel))
+		b.WriteString(renderContributingTestsDetails(child.ContributingTests, opts.ContributingSummaryLabel))
+		b.WriteString(renderAffectedRunsDetails(child.References, opts))
+		b.WriteString("</div>")
+		b.WriteString("</details>")
+	}
+	b.WriteString("</div></details>")
+	return b.String()
+}
+
+func renderQualityBadges(labels []string) string {
+	if len(labels) == 0 {
+		return "<span class=\"badge badge-ok\">quality: ok</span>"
+	}
+	parts := make([]string, 0, len(labels))
+	for _, label := range labels {
+		parts = append(parts, fmt.Sprintf("<span class=\"badge badge-quality\">%s</span>", html.EscapeString(label)))
+	}
+	return strings.Join(parts, "")
+}
+
+func renderReviewBadges(labels []string) string {
+	if len(labels) == 0 {
+		return "<span class=\"badge badge-ok\">review: none</span>"
+	}
+	parts := make([]string, 0, len(labels))
+	for _, label := range labels {
+		parts = append(parts, fmt.Sprintf("<span class=\"badge badge-review\">%s</span>", html.EscapeString(label)))
+	}
+	return strings.Join(parts, "")
 }
 
 func renderFullErrorDetails(samples []string, summaryLabel string) string {

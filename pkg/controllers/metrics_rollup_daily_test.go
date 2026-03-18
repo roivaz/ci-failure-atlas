@@ -543,6 +543,7 @@ func mustCompleteSourceOptionsForMetrics(t *testing.T, envs []string) *sourceopt
 	raw.SippyReleaseInt = "INT"
 	raw.SippyReleaseStg = "STG"
 	raw.SippyReleaseProd = "PROD"
+	raw.HistoryHorizonWeeks = 2
 
 	validated, err := raw.Validate()
 	if err != nil {

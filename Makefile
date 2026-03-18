@@ -15,7 +15,7 @@ SUBDIR ?= $(START_DATE)
 
 REPORTS_DIR ?= data/reports/$(SUBDIR)
 SITE_ROOT ?= site
-SITE_WEEKS ?= 4
+HISTORY_WEEKS ?= 4
 AZ_STORAGE_ACCOUNT ?= cihealthreports
 AZ_STORAGE_AUTH_MODE ?= login
 AZ_RESOURCE_GROUP ?= ci-health-reports
@@ -62,7 +62,7 @@ help:
 	@echo "  END_DATE=$(END_DATE)"
 	@echo "  SUBDIR=$(SUBDIR)"
 	@echo "  SITE_ROOT=$(SITE_ROOT)"
-	@echo "  SITE_WEEKS=$(SITE_WEEKS)"
+	@echo "  HISTORY_WEEKS=$(HISTORY_WEEKS)"
 	@echo "  SOURCE_ENVS=$(SOURCE_ENVS)"
 	@echo "  AZ_STORAGE_ACCOUNT=$(AZ_STORAGE_ACCOUNT)"
 	@echo "  AZ_STORAGE_AUTH_MODE=$(AZ_STORAGE_AUTH_MODE)"
@@ -76,7 +76,7 @@ help:
 	@echo ""
 	@echo "Example:"
 	@echo "  make quality-report START_DATE=2026-03-01"
-	@echo "  make site-build START_DATE=2026-03-08 SITE_WEEKS=4"
+	@echo "  make site-build START_DATE=2026-03-08 HISTORY_WEEKS=4"
 	@echo "  make site-update-latest START_DATE=2026-03-08"
 	@echo "  make run RUN_ARGS='report quality --storage.ndjson.semantic-subdir 2026-03-08 --workflow.window.start 2026-03-08 --workflow.window.end 2026-03-15'"
 	@echo "  make deploy-static-website-storage AZ_RESOURCE_GROUP=my-rg AZ_STORAGE_ACCOUNT=myreportstorage"
@@ -120,9 +120,8 @@ run:
 	$(GO) run cmd/main.go $(RUN_ARGS)
 
 CONTROLLER_RUN_ENVS ?= dev,int,stg,prod
-CONTROLLER_RUN_LOOKBACK ?= 15d
-CONTROLLER_RUN_ACTIVE_WINDOW ?= 15d
-run-controllers: RUN_ARGS=run --source.envs $(CONTROLLER_RUN_ENVS) --source.sippy.lookback $(CONTROLLER_RUN_LOOKBACK) --source.reconcile.active-window $(CONTROLLER_RUN_ACTIVE_WINDOW)
+CONTROLLER_HISTORY_WEEKS ?= $(HISTORY_WEEKS)
+run-controllers: RUN_ARGS=run --source.envs $(CONTROLLER_RUN_ENVS) --history.weeks $(CONTROLLER_HISTORY_WEEKS)
 run-controllers: run
 
 tidy:
@@ -165,7 +164,7 @@ site-build: report-context
 		--site.root "$(SITE_ROOT)" \
 		--storage.ndjson.data-dir "data" \
 		--source.envs "$(SOURCE_ENVS)" \
-		--site.weeks "$(SITE_WEEKS)" \
+		--history.weeks "$(HISTORY_WEEKS)" \
 		--start-date "$(START_DATE)"
 
 site-build-from-existing:
@@ -177,7 +176,7 @@ site-build-from-existing:
 site-build-only-latest:
 	@make site-build \
 		START_DATE="$(START_DATE)" \
-		SITE_WEEKS="$(SITE_WEEKS)" \
+		HISTORY_WEEKS="$(HISTORY_WEEKS)" \
 		SOURCE_ENVS="$(SOURCE_ENVS)" \
 		SITE_ROOT="$(SITE_ROOT)"
 

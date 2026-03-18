@@ -13,6 +13,7 @@ import (
 
 	"ci-failure-atlas/pkg/report/triagehtml"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	phase3engine "ci-failure-atlas/pkg/semantic/engine/phase3"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
@@ -48,7 +49,7 @@ type Options struct {
 	TargetRate           float64
 	DataDirectory        string
 	SemanticSubdirectory string
-	FlakeLookbackDays    int
+	HistoryHorizonWeeks  int
 	Chrome               triagehtml.ReportChromeOptions
 }
 
@@ -58,7 +59,7 @@ type validatedOptions struct {
 	TargetRate           float64
 	DataDirectory        string
 	SemanticSubdirectory string
-	FlakeLookbackDays    int
+	HistoryHorizonWeeks  int
 	Chrome               triagehtml.ReportChromeOptions
 }
 
@@ -105,6 +106,7 @@ type semanticEnvSummary struct {
 
 type semanticSnapshot struct {
 	ByEnvironment                    map[string]semanticEnvSummary
+	ClusterSignaturesByEnv           map[string][]topSignature
 	PhraseSupportByEnv               map[string]map[string]int
 	PhrasePostGoodByEnv              map[string]map[string]int
 	PhraseReferencesByEnv            map[string]map[string][]triagehtml.RunReference
@@ -139,14 +141,15 @@ type topSignature struct {
 	ContributingTests []triagehtml.ContributingTest
 	References        []triagehtml.RunReference
 	FullErrorSamples  []string
+	LinkedChildren    []topSignature
 }
 
 func DefaultOptions() Options {
 	return Options{
-		OutputPath:        "data/reports/weekly-metrics.html",
-		StartDate:         "",
-		TargetRate:        95.0,
-		FlakeLookbackDays: 30,
+		OutputPath:          "data/reports/weekly-metrics.html",
+		StartDate:           "",
+		TargetRate:          95.0,
+		HistoryHorizonWeeks: 4,
 	}
 }
 
@@ -215,9 +218,9 @@ func GenerateWithComparison(
 		}
 	}
 	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-		DataDirectory:               validated.DataDirectory,
-		CurrentSemanticSubdir:       validated.SemanticSubdirectory,
-		GlobalSignatureLookbackDays: validated.FlakeLookbackDays,
+		DataDirectory:                validated.DataDirectory,
+		CurrentSemanticSubdir:        validated.SemanticSubdirectory,
+		GlobalSignatureLookbackWeeks: validated.HistoryHorizonWeeks,
 	})
 	if err != nil {
 		return fmt.Errorf("build global signature history resolver: %w", err)
@@ -279,6 +282,7 @@ func buildEnvReports(ctx context.Context, store storecontracts.Store, dates []st
 func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (semanticSnapshot, error) {
 	out := semanticSnapshot{
 		ByEnvironment:                    map[string]semanticEnvSummary{},
+		ClusterSignaturesByEnv:           map[string][]topSignature{},
 		PhraseSupportByEnv:               map[string]map[string]int{},
 		PhrasePostGoodByEnv:              map[string]map[string]int{},
 		PhraseReferencesByEnv:            map[string]map[string][]triagehtml.RunReference{},
@@ -290,9 +294,21 @@ func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (sema
 		PhraseFullErrorsByEnv:            map[string]map[string][]string{},
 	}
 
-	globalClusters, err := store.ListGlobalClusters(ctx)
+	sourceGlobalClusters, err := store.ListGlobalClusters(ctx)
 	if err != nil {
 		return out, err
+	}
+	phase3Links, err := store.ListPhase3Links(ctx)
+	if err != nil {
+		return out, err
+	}
+	linkedChildrenByMergedClusterKey, err := weeklyLinkedChildrenByMergedClusterKey(sourceGlobalClusters, phase3Links)
+	if err != nil {
+		return out, err
+	}
+	globalClusters, err := phase3engine.Merge(sourceGlobalClusters, phase3Links)
+	if err != nil {
+		return out, fmt.Errorf("merge phase3 linked global clusters: %w", err)
 	}
 	for _, row := range globalClusters {
 		environment := normalizeReportEnvironment(row.Environment)
@@ -397,6 +413,73 @@ func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (sema
 			}
 			signatureIDs[signatureID] = struct{}{}
 		}
+
+		qualityCodes := triagehtml.QualityIssueCodes(strings.TrimSpace(phrase))
+		qualityLabels := make([]string, 0, len(qualityCodes))
+		for _, code := range qualityCodes {
+			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+		}
+		linkedChildren := []topSignature(nil)
+		linkedChildrenRaw := linkedChildrenByMergedClusterKey[weeklyGlobalClusterKey(environment, row.Phase2ClusterID)]
+		if len(linkedChildrenRaw) > 0 {
+			linkedChildren = topSignaturesFromGlobalClusters(linkedChildrenRaw)
+		}
+		rowReferences := toTriageRunReferences(row.References)
+		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
+			rowReferences = append(rowReferences, triagehtml.RunReference{
+				RunURL:      sourceRunURL,
+				SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
+			})
+		}
+		out.ClusterSignaturesByEnv[environment] = append(out.ClusterSignaturesByEnv[environment], topSignature{
+			Environment:       environment,
+			Phrase:            strings.TrimSpace(phrase),
+			ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
+			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:      support,
+			PostGoodCount:     postGood,
+			QualityScore:      triagehtml.QualityScore(qualityCodes),
+			QualityNoteLabels: qualityLabels,
+			ContributingTests: triagehtml.OrderedContributingTests(toTriageContributingTests(row.ContributingTests)),
+			References:        rowReferences,
+			LinkedChildren:    linkedChildren,
+		})
+	}
+
+	// Keep phrase sample lookup aware of child phrases after phase3 merge.
+	for _, row := range sourceGlobalClusters {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		phrase := strings.TrimSpace(row.CanonicalEvidencePhrase)
+		if phrase == "" {
+			phrase = "(unknown evidence)"
+		}
+		if _, ok := out.PhraseSignatureIDs[environment]; !ok {
+			out.PhraseSignatureIDs[environment] = map[string]map[string]struct{}{}
+		}
+		if _, ok := out.PhraseSignatureIDs[environment][phrase]; !ok {
+			out.PhraseSignatureIDs[environment][phrase] = map[string]struct{}{}
+		}
+		signatureIDs := out.PhraseSignatureIDs[environment][phrase]
+		for _, signatureID := range row.MemberSignatureIDs {
+			trimmedSignatureID := strings.TrimSpace(signatureID)
+			if trimmedSignatureID == "" {
+				continue
+			}
+			signatureIDs[trimmedSignatureID] = struct{}{}
+		}
+		if sourceSignatureID := strings.TrimSpace(row.SearchQuerySourceSignatureID); sourceSignatureID != "" {
+			signatureIDs[sourceSignatureID] = struct{}{}
+		}
+		for _, ref := range row.References {
+			signatureID := strings.TrimSpace(ref.SignatureID)
+			if signatureID == "" {
+				continue
+			}
+			signatureIDs[signatureID] = struct{}{}
+		}
 	}
 
 	testClusters, err := store.ListTestClusters(ctx)
@@ -446,8 +529,8 @@ func validateOptions(opts Options) (validatedOptions, error) {
 	if opts.TargetRate <= 0 || opts.TargetRate > 100 {
 		return validatedOptions{}, fmt.Errorf("invalid --target-rate %.2f (expected range: 0 < target <= 100)", opts.TargetRate)
 	}
-	if opts.FlakeLookbackDays <= 0 {
-		opts.FlakeLookbackDays = 30
+	if opts.HistoryHorizonWeeks <= 0 {
+		opts.HistoryHorizonWeeks = 4
 	}
 	return validatedOptions{
 		OutputPath:           outputPath,
@@ -455,7 +538,7 @@ func validateOptions(opts Options) (validatedOptions, error) {
 		TargetRate:           opts.TargetRate,
 		DataDirectory:        strings.TrimSpace(opts.DataDirectory),
 		SemanticSubdirectory: strings.TrimSpace(opts.SemanticSubdirectory),
-		FlakeLookbackDays:    opts.FlakeLookbackDays,
+		HistoryHorizonWeeks:  opts.HistoryHorizonWeeks,
 		Chrome:               opts.Chrome,
 	}, nil
 }
@@ -882,7 +965,7 @@ func buildHTML(
 
 		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(signaturesPanelID), html.EscapeString(environment)))
 		b.WriteString(fmt.Sprintf(
-			"      <p class=\"panel-note\">Up to %d semantic signatures are loaded in this window (minimum %.2f%% share), with %d shown by default. Default sorting is flake score desc, jobs affected desc, share desc, count desc; click headers to re-sort.</p>\n",
+			"      <p class=\"panel-note\">Up to %d semantic signatures are loaded in this window (minimum %.2f%% share), with %d shown by default. Default sorting is impact desc, jobs affected desc, flake score desc; click headers to re-sort.</p>\n",
 			weeklySignatureLoadedRowsLimit,
 			weeklySignatureMinSharePct,
 			weeklySignatureVisibleRows,
@@ -899,27 +982,18 @@ func buildHTML(
 		} else {
 			triageRows := make([]triagehtml.SignatureRow, 0, len(signatures))
 			for _, item := range signatures {
-				triageRow := triagehtml.SignatureRow{
-					Environment:       item.Environment,
-					Phrase:            item.Phrase,
-					ClusterID:         item.ClusterID,
-					SearchQuery:       item.SearchQuery,
-					SupportCount:      item.SupportCount,
-					SupportShare:      item.SupportShare,
-					PostGoodCount:     item.PostGoodCount,
-					AlsoSeenIn:        append([]string(nil), item.SeenInOtherEnvs...),
-					QualityScore:      item.QualityScore,
-					QualityNoteLabels: append([]string(nil), item.QualityNoteLabels...),
-					ContributingTests: append([]triagehtml.ContributingTest(nil), item.ContributingTests...),
-					FullErrorSamples:  append([]string(nil), item.FullErrorSamples...),
-					References:        append([]triagehtml.RunReference(nil), item.References...),
-				}
+				triageRow := topSignatureToTriageRow(item)
 				if historyResolver != nil {
-					presence := historyResolver.PresenceFor(semhistory.SignatureKey{
-						Environment: item.Environment,
-						Phrase:      item.Phrase,
-						SearchQuery: item.SearchQuery,
-					})
+					presence := semhistory.SignaturePresence{}
+					if len(triageRow.LinkedChildren) > 0 && strings.TrimSpace(item.ClusterID) != "" {
+						presence = historyResolver.PresenceForPhase3Cluster(item.Environment, item.ClusterID)
+					} else {
+						presence = historyResolver.PresenceFor(semhistory.SignatureKey{
+							Environment: item.Environment,
+							Phrase:      item.Phrase,
+							SearchQuery: item.SearchQuery,
+						})
+					}
 					triageRow.PriorWeeksPresent = presence.PriorWeeksPresent
 					triageRow.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
 					triageRow.PriorJobsAffected = presence.PriorJobsAffected
@@ -942,6 +1016,7 @@ func buildHTML(
 				IncludeTrend:       true,
 				GitHubRepoOwner:    triagehtml.DefaultGitHubRepoOwner,
 				GitHubRepoName:     triagehtml.DefaultGitHubRepoName,
+				ImpactTotalJobs:    report.Totals.RunCount,
 				LoadedRowsLimit:    weeklySignatureLoadedRowsLimit,
 				InitialVisibleRows: weeklySignatureVisibleRows,
 			}))
@@ -1248,6 +1323,116 @@ func preferBelowTargetTest(candidate belowTargetTest, existing belowTargetTest) 
 }
 
 func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {
+	if len(snapshot.ClusterSignaturesByEnv) > 0 {
+		return rankTopSignaturesByEnvironmentFromClusters(snapshot, limit, minShare)
+	}
+	return rankTopSignaturesByEnvironmentFromPhrases(snapshot, limit, minShare)
+}
+
+func rankTopSignaturesByEnvironmentFromClusters(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {
+	out := make(map[string][]topSignature, len(reportEnvironments))
+	for _, environment := range reportEnvironments {
+		totalSupport := 0
+		clusterRows := snapshot.ClusterSignaturesByEnv[environment]
+		for _, item := range clusterRows {
+			support := item.SupportCount
+			if support > 0 {
+				totalSupport += support
+			}
+		}
+
+		rows := make([]topSignature, 0, len(clusterRows))
+		for _, source := range clusterRows {
+			phrase := strings.TrimSpace(source.Phrase)
+			if phrase == "" {
+				phrase = "(unknown evidence)"
+			}
+			support := source.SupportCount
+			if support <= 0 {
+				continue
+			}
+			otherEnvironments := make([]string, 0, len(reportEnvironments)-1)
+			for _, candidateEnvironment := range reportEnvironments {
+				if candidateEnvironment == environment {
+					continue
+				}
+				if snapshot.PhraseSupportByEnv[candidateEnvironment][phrase] <= 0 {
+					continue
+				}
+				otherEnvironments = append(otherEnvironments, strings.ToUpper(candidateEnvironment))
+			}
+			share := 0.0
+			if totalSupport > 0 {
+				share = float64(support) * 100.0 / float64(totalSupport)
+			}
+			if minShare > 0 && share < minShare {
+				continue
+			}
+			references := append([]triagehtml.RunReference(nil), source.References...)
+			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.SignatureRow{
+				Environment:   environment,
+				PostGoodCount: source.PostGoodCount,
+				AlsoSeenIn:    otherEnvironments,
+				References:    references,
+			})
+			linkedChildren := make([]topSignature, 0, len(source.LinkedChildren))
+			for _, child := range source.LinkedChildren {
+				childEnvironment := normalizeReportEnvironment(child.Environment)
+				if childEnvironment == "" {
+					childEnvironment = environment
+				}
+				childPhrase := strings.TrimSpace(child.Phrase)
+				if childPhrase == "" {
+					childPhrase = "(unknown evidence)"
+				}
+				childSupport := child.SupportCount
+				childShare := 0.0
+				if totalSupport > 0 && childSupport > 0 {
+					childShare = float64(childSupport) * 100.0 / float64(totalSupport)
+				}
+				linkedChildren = append(linkedChildren, topSignature{
+					Environment:       childEnvironment,
+					Phrase:            childPhrase,
+					ClusterID:         strings.TrimSpace(child.ClusterID),
+					SearchQuery:       strings.TrimSpace(child.SearchQuery),
+					SupportCount:      childSupport,
+					SupportShare:      childShare,
+					PostGoodCount:     child.PostGoodCount,
+					QualityScore:      child.QualityScore,
+					QualityNoteLabels: append([]string(nil), child.QualityNoteLabels...),
+					ContributingTests: append([]triagehtml.ContributingTest(nil), child.ContributingTests...),
+					References:        append([]triagehtml.RunReference(nil), child.References...),
+					FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[childEnvironment][childPhrase]...),
+				})
+			}
+			rows = append(rows, topSignature{
+				Environment:       environment,
+				Phrase:            phrase,
+				ClusterID:         strings.TrimSpace(source.ClusterID),
+				SearchQuery:       strings.TrimSpace(source.SearchQuery),
+				SupportCount:      support,
+				SupportShare:      share,
+				PostGoodCount:     source.PostGoodCount,
+				BadPRScore:        badPRScore,
+				SeenInOtherEnvs:   otherEnvironments,
+				QualityScore:      source.QualityScore,
+				QualityNoteLabels: append([]string(nil), source.QualityNoteLabels...),
+				ContributingTests: append([]triagehtml.ContributingTest(nil), source.ContributingTests...),
+				References:        references,
+				FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
+				LinkedChildren:    linkedChildren,
+			})
+		}
+		sortTopSignatures(rows)
+		if limit > 0 && len(rows) > limit {
+			rows = rows[:limit]
+		}
+		out[environment] = rows
+	}
+	return out
+}
+
+func rankTopSignaturesByEnvironmentFromPhrases(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {
 	out := make(map[string][]topSignature, len(reportEnvironments))
 	for _, environment := range reportEnvironments {
 		supportByPhrase := snapshot.PhraseSupportByEnv[environment]
@@ -1310,24 +1495,194 @@ func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int, minSha
 				FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
 			})
 		}
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].BadPRScore != rows[j].BadPRScore {
-				return rows[i].BadPRScore < rows[j].BadPRScore
-			}
-			if rows[i].SupportCount != rows[j].SupportCount {
-				return rows[i].SupportCount > rows[j].SupportCount
-			}
-			if rows[i].PostGoodCount != rows[j].PostGoodCount {
-				return rows[i].PostGoodCount > rows[j].PostGoodCount
-			}
-			return rows[i].Phrase < rows[j].Phrase
-		})
+		sortTopSignatures(rows)
 		if limit > 0 && len(rows) > limit {
 			rows = rows[:limit]
 		}
 		out[environment] = rows
 	}
 	return out
+}
+
+func sortTopSignatures(rows []topSignature) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].BadPRScore != rows[j].BadPRScore {
+			return rows[i].BadPRScore < rows[j].BadPRScore
+		}
+		if rows[i].SupportCount != rows[j].SupportCount {
+			return rows[i].SupportCount > rows[j].SupportCount
+		}
+		if rows[i].PostGoodCount != rows[j].PostGoodCount {
+			return rows[i].PostGoodCount > rows[j].PostGoodCount
+		}
+		return rows[i].Phrase < rows[j].Phrase
+	})
+}
+
+func topSignaturesFromGlobalClusters(rows []semanticcontracts.GlobalClusterRecord) []topSignature {
+	out := make([]topSignature, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		phrase := strings.TrimSpace(row.CanonicalEvidencePhrase)
+		if phrase == "" {
+			phrase = "(unknown evidence)"
+		}
+		support := row.SupportCount
+		if support < 0 {
+			support = 0
+		}
+		postGood := row.PostGoodCommitCount
+		if postGood < 0 {
+			postGood = 0
+		}
+		qualityCodes := triagehtml.QualityIssueCodes(phrase)
+		qualityLabels := make([]string, 0, len(qualityCodes))
+		for _, code := range qualityCodes {
+			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+		}
+		references := toTriageRunReferences(row.References)
+		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
+			references = append(references, triagehtml.RunReference{
+				RunURL:      sourceRunURL,
+				SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
+			})
+		}
+		out = append(out, topSignature{
+			Environment:       environment,
+			Phrase:            phrase,
+			ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
+			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:      support,
+			PostGoodCount:     postGood,
+			QualityScore:      triagehtml.QualityScore(qualityCodes),
+			QualityNoteLabels: qualityLabels,
+			ContributingTests: triagehtml.OrderedContributingTests(toTriageContributingTests(row.ContributingTests)),
+			References:        references,
+		})
+	}
+	return out
+}
+
+func topSignatureToTriageRow(item topSignature) triagehtml.SignatureRow {
+	row := triagehtml.SignatureRow{
+		Environment:       item.Environment,
+		Phrase:            item.Phrase,
+		ClusterID:         item.ClusterID,
+		SearchQuery:       item.SearchQuery,
+		SupportCount:      item.SupportCount,
+		SupportShare:      item.SupportShare,
+		PostGoodCount:     item.PostGoodCount,
+		AlsoSeenIn:        append([]string(nil), item.SeenInOtherEnvs...),
+		QualityScore:      item.QualityScore,
+		QualityNoteLabels: append([]string(nil), item.QualityNoteLabels...),
+		ContributingTests: append([]triagehtml.ContributingTest(nil), item.ContributingTests...),
+		FullErrorSamples:  append([]string(nil), item.FullErrorSamples...),
+		References:        append([]triagehtml.RunReference(nil), item.References...),
+	}
+	if len(item.LinkedChildren) == 0 {
+		return row
+	}
+	row.LinkedChildren = make([]triagehtml.SignatureRow, 0, len(item.LinkedChildren))
+	for _, child := range item.LinkedChildren {
+		childRow := topSignatureToTriageRow(child)
+		childRow.LinkedChildren = nil
+		row.LinkedChildren = append(row.LinkedChildren, childRow)
+	}
+	return row
+}
+
+func weeklyLinkedChildrenByMergedClusterKey(
+	globalClusters []semanticcontracts.GlobalClusterRecord,
+	phase3Links []semanticcontracts.Phase3LinkRecord,
+) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
+	if len(globalClusters) == 0 || len(phase3Links) == 0 {
+		return map[string][]semanticcontracts.GlobalClusterRecord{}, nil
+	}
+	phase3ClusterByAnchor := make(map[string]string, len(phase3Links))
+	for _, link := range phase3Links {
+		anchor := weeklyPhase3AnchorKey(link.Environment, link.RunURL, link.RowID)
+		clusterID := strings.TrimSpace(link.IssueID)
+		if anchor == "" || clusterID == "" {
+			continue
+		}
+		phase3ClusterByAnchor[anchor] = clusterID
+	}
+
+	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
+	for _, cluster := range globalClusters {
+		clusterIDs := weeklyPhase3ClusterIDsForGlobalCluster(cluster, phase3ClusterByAnchor)
+		if len(clusterIDs) == 0 {
+			continue
+		}
+		if len(clusterIDs) > 1 {
+			return nil, fmt.Errorf("global cluster %q/%q maps to multiple phase3 IDs: %v", cluster.Environment, cluster.Phase2ClusterID, clusterIDs)
+		}
+		key := weeklyGlobalClusterKey(cluster.Environment, clusterIDs[0])
+		grouped[key] = append(grouped[key], cluster)
+	}
+	for key := range grouped {
+		rows := grouped[key]
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].SupportCount != rows[j].SupportCount {
+				return rows[i].SupportCount > rows[j].SupportCount
+			}
+			if strings.TrimSpace(rows[i].CanonicalEvidencePhrase) != strings.TrimSpace(rows[j].CanonicalEvidencePhrase) {
+				return strings.TrimSpace(rows[i].CanonicalEvidencePhrase) < strings.TrimSpace(rows[j].CanonicalEvidencePhrase)
+			}
+			return strings.TrimSpace(rows[i].Phase2ClusterID) < strings.TrimSpace(rows[j].Phase2ClusterID)
+		})
+		grouped[key] = rows
+	}
+	return grouped, nil
+}
+
+func weeklyPhase3ClusterIDsForGlobalCluster(
+	cluster semanticcontracts.GlobalClusterRecord,
+	phase3ClusterByAnchor map[string]string,
+) []string {
+	seen := map[string]struct{}{}
+	for _, reference := range cluster.References {
+		clusterID := strings.TrimSpace(phase3ClusterByAnchor[weeklyPhase3AnchorKey(
+			cluster.Environment,
+			reference.RunURL,
+			reference.RowID,
+		)])
+		if clusterID == "" {
+			continue
+		}
+		seen[clusterID] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for clusterID := range seen {
+		out = append(out, clusterID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func weeklyPhase3AnchorKey(environment string, runURL string, rowID string) string {
+	env := normalizeReportEnvironment(environment)
+	run := strings.TrimSpace(runURL)
+	row := strings.TrimSpace(rowID)
+	if env == "" || run == "" || row == "" {
+		return ""
+	}
+	return env + "|" + run + "|" + row
+}
+
+func weeklyGlobalClusterKey(environment string, clusterID string) string {
+	env := normalizeReportEnvironment(environment)
+	cluster := strings.TrimSpace(clusterID)
+	if env == "" || cluster == "" {
+		return ""
+	}
+	return env + "|" + cluster
 }
 
 func toTriageRunReferences(rows []semanticcontracts.ReferenceRecord) []triagehtml.RunReference {

@@ -14,6 +14,7 @@ import (
 
 	"ci-failure-atlas/pkg/report/triagehtml"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	phase3engine "ci-failure-atlas/pkg/semantic/engine/phase3"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
@@ -32,23 +33,24 @@ type Options struct {
 	SplitByEnvironment   bool
 	DataDirectory        string
 	SemanticSubdirectory string
-	FlakeLookbackDays    int
+	HistoryHorizonWeeks  int
 	Chrome               triagehtml.ReportChromeOptions
 }
 
 const (
 	reportFormatHTML              = "html"
+	metricRunCount                = "run_count"
 	summaryFullErrorExamplesLimit = 3
 )
 
 func DefaultOptions() Options {
 	return Options{
-		OutputPath:         "data/reports/global-signature-triage.html",
-		Format:             reportFormatHTML,
-		Top:                10,
-		MinPercent:         1.0,
-		SplitByEnvironment: false,
-		FlakeLookbackDays:  30,
+		OutputPath:          "data/reports/global-signature-triage.html",
+		Format:              reportFormatHTML,
+		Top:                 10,
+		MinPercent:          1.0,
+		SplitByEnvironment:  false,
+		HistoryHorizonWeeks: 4,
 	}
 }
 
@@ -82,6 +84,7 @@ type globalCluster struct {
 	MemberSignatureIDs      []string           `json:"member_signature_ids"`
 	References              []reference        `json:"references"`
 	FullErrorSamples        []string           `json:"full_error_samples,omitempty"`
+	LinkedChildren          []globalCluster    `json:"linked_children,omitempty"`
 }
 
 type testCluster struct {
@@ -124,11 +127,33 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 
 	logger := loggerFromContext(ctx).WithValues("component", "report.summary")
 
-	globalRows, err := store.ListGlobalClusters(ctx)
+	sourceGlobalRows, err := store.ListGlobalClusters(ctx)
 	if err != nil {
 		return fmt.Errorf("list global clusters: %w", err)
 	}
+	phase3Links, err := store.ListPhase3Links(ctx)
+	if err != nil {
+		return fmt.Errorf("list phase3 links: %w", err)
+	}
+	linkedChildrenByClusterKey, err := linkedChildrenByMergedClusterKey(sourceGlobalRows, phase3Links)
+	if err != nil {
+		return fmt.Errorf("build linked child clusters: %w", err)
+	}
+	globalRows, err := phase3engine.Merge(sourceGlobalRows, phase3Links)
+	if err != nil {
+		return fmt.Errorf("apply phase3 materialized view: %w", err)
+	}
 	reportGlobalRows := toReportGlobalClusters(globalRows)
+	reportLinkedChildrenByClusterKey := toReportGlobalClusterGroupMap(linkedChildrenByClusterKey)
+	reportLinkedChildrenByClusterKey, err = attachGlobalFullErrorSamplesByGroup(
+		ctx,
+		store,
+		reportLinkedChildrenByClusterKey,
+		summaryFullErrorExamplesLimit,
+	)
+	if err != nil {
+		return fmt.Errorf("attach global full-error samples for linked child clusters: %w", err)
+	}
 	testRows, err := store.ListTestClusters(ctx)
 	if err != nil {
 		return fmt.Errorf("list test clusters: %w", err)
@@ -137,12 +162,24 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	if err != nil {
 		return fmt.Errorf("list review queue: %w", err)
 	}
+	targetEnvs := resolveSummaryTargetEnvironments(validated.Environments, globalRows, testRows, reviewRows)
+	metricWindowStart, metricWindowEnd := summaryMetricWindowBounds(validated)
+	overallJobsByEnvironment, err := metricRunTotalsByEnvironment(
+		ctx,
+		store,
+		targetEnvs,
+		metricWindowStart,
+		metricWindowEnd,
+	)
+	if err != nil {
+		return fmt.Errorf("load overall metric run counts: %w", err)
+	}
 
 	var report string
 	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-		DataDirectory:               validated.DataDirectory,
-		CurrentSemanticSubdir:       validated.SemanticSubdirectory,
-		GlobalSignatureLookbackDays: validated.FlakeLookbackDays,
+		DataDirectory:                validated.DataDirectory,
+		CurrentSemanticSubdir:        validated.SemanticSubdirectory,
+		GlobalSignatureLookbackWeeks: validated.HistoryHorizonWeeks,
 	})
 	if err != nil {
 		return fmt.Errorf("build global signature history resolver: %w", err)
@@ -151,19 +188,20 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	if htmlRowsErr != nil {
 		return fmt.Errorf("attach global full-error samples: %w", htmlRowsErr)
 	}
+	htmlGlobalRows = attachLinkedChildrenToGlobalRows(htmlGlobalRows, reportLinkedChildrenByClusterKey)
 	report = buildGlobalTriageHTML(
 		htmlGlobalRows,
 		validated.Top,
 		validated.MinPercent,
 		time.Now().UTC(),
 		validated.Environments,
+		overallJobsByEnvironment,
 		validated.WindowStart,
 		validated.WindowEnd,
 		historyResolver,
 		validated.Chrome,
 	)
 	if validated.SplitByEnvironment {
-		targetEnvs := resolveSummaryTargetEnvironments(validated.Environments, globalRows, testRows, reviewRows)
 		if len(targetEnvs) == 0 {
 			targetEnvs = []string{"unknown"}
 		}
@@ -176,12 +214,14 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			if htmlRowsErr != nil {
 				return fmt.Errorf("attach global full-error samples for env=%q: %w", environment, htmlRowsErr)
 			}
+			htmlGlobalRows = attachLinkedChildrenToGlobalRows(htmlGlobalRows, reportLinkedChildrenByClusterKey)
 			report := buildGlobalTriageHTML(
 				htmlGlobalRows,
 				validated.Top,
 				validated.MinPercent,
 				time.Now().UTC(),
 				[]string{environment},
+				overallJobsByEnvironment,
 				validated.WindowStart,
 				validated.WindowEnd,
 				historyResolver,
@@ -221,12 +261,14 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		if htmlRowsErr != nil {
 			return fmt.Errorf("attach global full-error samples for selected environments: %w", htmlRowsErr)
 		}
+		htmlGlobalRows = attachLinkedChildrenToGlobalRows(htmlGlobalRows, reportLinkedChildrenByClusterKey)
 		report = buildGlobalTriageHTML(
 			htmlGlobalRows,
 			validated.Top,
 			validated.MinPercent,
 			time.Now().UTC(),
 			validated.Environments,
+			overallJobsByEnvironment,
 			validated.WindowStart,
 			validated.WindowEnd,
 			historyResolver,
@@ -240,6 +282,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		"Wrote triage summary report.",
 		"output", validated.OutputPath,
 		"format", reportFormatHTML,
+		"phase3Links", len(phase3Links),
 		"globalClusters", len(filteredGlobalRows),
 		"testClusters", len(filteredTestRows),
 		"reviewItems", len(filteredReviewRows),
@@ -269,8 +312,8 @@ func validateOptions(opts Options) (Options, error) {
 	if err != nil {
 		return Options{}, err
 	}
-	if opts.FlakeLookbackDays <= 0 {
-		opts.FlakeLookbackDays = 30
+	if opts.HistoryHorizonWeeks <= 0 {
+		opts.HistoryHorizonWeeks = 4
 	}
 	opts.WindowStart = windowStart
 	opts.WindowEnd = windowEnd
@@ -288,6 +331,98 @@ func writeSummary(outputPath string, report string) error {
 		return fmt.Errorf("write summary report: %w", err)
 	}
 	return nil
+}
+
+func metricRunTotalsByEnvironment(
+	ctx context.Context,
+	store storecontracts.Store,
+	environments []string,
+	windowStart time.Time,
+	windowEnd time.Time,
+) (map[string]int, error) {
+	totals := map[string]int{}
+	normalizedEnvironments := normalizeReportEnvironments(environments)
+	if len(normalizedEnvironments) == 0 {
+		return totals, nil
+	}
+	dates, err := store.ListMetricDates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, date := range dates {
+		trimmedDate := strings.TrimSpace(date)
+		if trimmedDate == "" {
+			continue
+		}
+		if !windowStart.IsZero() && !windowEnd.IsZero() {
+			dateValue, ok := parseMetricDate(trimmedDate)
+			if !ok {
+				continue
+			}
+			if dateValue.Before(windowStart) || !dateValue.Before(windowEnd) {
+				continue
+			}
+		}
+		for _, environment := range normalizedEnvironments {
+			rows, err := store.ListMetricsDailyByDate(ctx, environment, trimmedDate)
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				if strings.TrimSpace(row.Metric) != metricRunCount {
+					continue
+				}
+				value := int(row.Value)
+				if value <= 0 {
+					continue
+				}
+				totals[environment] += value
+			}
+		}
+	}
+	return totals, nil
+}
+
+func summaryMetricWindowBounds(opts Options) (time.Time, time.Time) {
+	parseRFC3339UTC := func(value string) (time.Time, bool) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return time.Time{}, false
+		}
+		parsed, err := time.Parse(time.RFC3339, trimmed)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return parsed.UTC(), true
+	}
+	if start, okStart := parseRFC3339UTC(opts.WindowStart); okStart {
+		if end, okEnd := parseRFC3339UTC(opts.WindowEnd); okEnd && start.Before(end) {
+			return start, end
+		}
+	}
+	trimmedDataDir := strings.TrimSpace(opts.DataDirectory)
+	trimmedSemanticSubdir := strings.TrimSpace(opts.SemanticSubdirectory)
+	if trimmedDataDir == "" || trimmedSemanticSubdir == "" {
+		return time.Time{}, time.Time{}
+	}
+	metadata, exists, err := semhistory.ReadWindowMetadata(trimmedDataDir, trimmedSemanticSubdir)
+	if err != nil || !exists {
+		return time.Time{}, time.Time{}
+	}
+	start, okStart := parseRFC3339UTC(metadata.WindowStart)
+	end, okEnd := parseRFC3339UTC(metadata.WindowEnd)
+	if !okStart || !okEnd || !start.Before(end) {
+		return time.Time{}, time.Time{}
+	}
+	return start, end
+}
+
+func parseMetricDate(value string) (time.Time, bool) {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
 }
 
 func normalizeReportEnvironments(values []string) []string {
@@ -431,6 +566,117 @@ func filterReviewItemsByEnvironmentSet(rows []semanticcontracts.ReviewItemRecord
 			continue
 		}
 		out = append(out, row)
+	}
+	return out
+}
+
+func linkedChildrenByMergedClusterKey(
+	globalClusters []semanticcontracts.GlobalClusterRecord,
+	phase3Links []semanticcontracts.Phase3LinkRecord,
+) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
+	phase3ClusterByAnchor := map[string]string{}
+	for _, row := range phase3Links {
+		phase3ClusterID := strings.TrimSpace(row.IssueID)
+		if phase3ClusterID == "" {
+			continue
+		}
+		key := phase3AnchorKey(row.Environment, row.RunURL, row.RowID)
+		if key == "" {
+			continue
+		}
+		phase3ClusterByAnchor[key] = phase3ClusterID
+	}
+	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
+	for _, cluster := range globalClusters {
+		environment := normalizeReportEnvironment(cluster.Environment)
+		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
+		if environment == "" || clusterID == "" {
+			return nil, fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
+		}
+		phase3ClusterIDs := phase3ClusterIDsForGlobalCluster(cluster, phase3ClusterByAnchor)
+		if len(phase3ClusterIDs) > 1 {
+			return nil, fmt.Errorf(
+				"phase3 conflict: semantic cluster %s resolves to multiple phase3 cluster IDs (%s)",
+				clusterID,
+				strings.Join(phase3ClusterIDs, ", "),
+			)
+		}
+		if len(phase3ClusterIDs) == 0 {
+			continue
+		}
+		mergedClusterID := phase3ClusterIDs[0]
+		groupKey := reportGlobalClusterKey(environment, mergedClusterID)
+		grouped[groupKey] = append(grouped[groupKey], cluster)
+	}
+	for key := range grouped {
+		rows := grouped[key]
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].SupportCount != rows[j].SupportCount {
+				return rows[i].SupportCount > rows[j].SupportCount
+			}
+			if strings.TrimSpace(rows[i].CanonicalEvidencePhrase) != strings.TrimSpace(rows[j].CanonicalEvidencePhrase) {
+				return strings.TrimSpace(rows[i].CanonicalEvidencePhrase) < strings.TrimSpace(rows[j].CanonicalEvidencePhrase)
+			}
+			return strings.TrimSpace(rows[i].Phase2ClusterID) < strings.TrimSpace(rows[j].Phase2ClusterID)
+		})
+		grouped[key] = rows
+	}
+	return grouped, nil
+}
+
+func phase3ClusterIDsForGlobalCluster(
+	cluster semanticcontracts.GlobalClusterRecord,
+	phase3ClusterByAnchor map[string]string,
+) []string {
+	set := map[string]struct{}{}
+	environment := normalizeReportEnvironment(cluster.Environment)
+	for _, reference := range cluster.References {
+		key := phase3AnchorKey(environment, reference.RunURL, reference.RowID)
+		if key == "" {
+			continue
+		}
+		phase3ClusterID := strings.TrimSpace(phase3ClusterByAnchor[key])
+		if phase3ClusterID == "" {
+			continue
+		}
+		set[phase3ClusterID] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for phase3ClusterID := range set {
+		out = append(out, phase3ClusterID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func phase3AnchorKey(environment string, runURL string, rowID string) string {
+	normalizedEnvironment := normalizeReportEnvironment(environment)
+	trimmedRunURL := strings.TrimSpace(runURL)
+	trimmedRowID := strings.TrimSpace(rowID)
+	if normalizedEnvironment == "" || trimmedRunURL == "" || trimmedRowID == "" {
+		return ""
+	}
+	return normalizedEnvironment + "|" + trimmedRunURL + "|" + trimmedRowID
+}
+
+func reportGlobalClusterKey(environment string, clusterID string) string {
+	normalizedEnvironment := normalizeReportEnvironment(environment)
+	trimmedClusterID := strings.TrimSpace(clusterID)
+	if normalizedEnvironment == "" || trimmedClusterID == "" {
+		return ""
+	}
+	return normalizedEnvironment + "|" + trimmedClusterID
+}
+
+func toReportGlobalClusterGroupMap(
+	groups map[string][]semanticcontracts.GlobalClusterRecord,
+) map[string][]globalCluster {
+	if len(groups) == 0 {
+		return nil
+	}
+	out := make(map[string][]globalCluster, len(groups))
+	for key, rows := range groups {
+		out[key] = toReportGlobalClusters(rows)
 	}
 	return out
 }
@@ -637,6 +883,50 @@ func attachGlobalFullErrorSamples(
 		out[index].FullErrorSamples = samples
 	}
 	return out, nil
+}
+
+func attachGlobalFullErrorSamplesByGroup(
+	ctx context.Context,
+	store storecontracts.Store,
+	groups map[string][]globalCluster,
+	limit int,
+) (map[string][]globalCluster, error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]globalCluster, len(groups))
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		withSamples, err := attachGlobalFullErrorSamples(ctx, store, groups[key], limit)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = withSamples
+	}
+	return out, nil
+}
+
+func attachLinkedChildrenToGlobalRows(
+	rows []globalCluster,
+	linkedChildrenByClusterKey map[string][]globalCluster,
+) []globalCluster {
+	if len(rows) == 0 || len(linkedChildrenByClusterKey) == 0 {
+		return rows
+	}
+	out := append([]globalCluster(nil), rows...)
+	for index := range out {
+		key := reportGlobalClusterKey(out[index].Environment, out[index].Phase2ClusterID)
+		children := linkedChildrenByClusterKey[key]
+		if len(children) == 0 {
+			continue
+		}
+		out[index].LinkedChildren = append([]globalCluster(nil), children...)
+	}
+	return out
 }
 
 func appendUniqueLimitedSample(existing []string, candidate string, limit int) []string {

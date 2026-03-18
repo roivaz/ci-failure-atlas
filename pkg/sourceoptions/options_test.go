@@ -4,7 +4,6 @@ import (
 	"context"
 	"reflect"
 	"testing"
-	"time"
 )
 
 func TestDefaultOptionsSetsEnvironmentReleases(t *testing.T) {
@@ -32,9 +31,7 @@ func TestValidateAndCompleteEnvironments(t *testing.T) {
 	raw.Environments = []string{"DEV", "int", "dev", "stg"}
 	raw.SippyReleaseInt = "Int"
 	raw.SippyReleaseStg = "Stg"
-	raw.SippyLookback = "48h"
-	raw.ReconcileActiveWindow = "14d"
-	raw.UnresolvedPRRetryWindow = "7d"
+	raw.HistoryHorizonWeeks = 6
 
 	validated, err := raw.Validate()
 	if err != nil {
@@ -50,14 +47,8 @@ func TestValidateAndCompleteEnvironments(t *testing.T) {
 	if !reflect.DeepEqual(completed.Environments, want) {
 		t.Fatalf("environment list mismatch: got=%v want=%v", completed.Environments, want)
 	}
-	if completed.SippyLookback != 48*time.Hour {
-		t.Fatalf("lookback mismatch: got=%s want=%s", completed.SippyLookback, 48*time.Hour)
-	}
-	if completed.ReconcileActiveWindow != 14*24*time.Hour {
-		t.Fatalf("active window mismatch: got=%s want=%s", completed.ReconcileActiveWindow, 14*24*time.Hour)
-	}
-	if completed.UnresolvedPRRetryWindow != 7*24*time.Hour {
-		t.Fatalf("unresolved retry window mismatch: got=%s want=%s", completed.UnresolvedPRRetryWindow, 7*24*time.Hour)
+	if completed.HistoryHorizonWeeks != 6 {
+		t.Fatalf("history horizon mismatch: got=%d want=%d", completed.HistoryHorizonWeeks, 6)
 	}
 }
 
@@ -95,13 +86,13 @@ func TestValidateRejectsMissingEnvironmentRelease(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInvalidReconcileWindow(t *testing.T) {
+func TestValidateRejectsInvalidHistoryHorizonWeeks(t *testing.T) {
 	t.Parallel()
 
 	raw := DefaultOptions()
-	raw.ReconcileActiveWindow = "abc"
+	raw.HistoryHorizonWeeks = 0
 
 	if _, err := raw.Validate(); err == nil {
-		t.Fatalf("expected validate to reject invalid active window")
+		t.Fatalf("expected validate to reject invalid history horizon")
 	}
 }

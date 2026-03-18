@@ -27,7 +27,7 @@ const (
 	indexFileName           = "index.html"
 	defaultSiteRoot         = "site"
 	defaultDataDirectory    = "data"
-	defaultSiteWeeks        = 4
+	defaultHistoryWeeks     = 4
 	defaultWeeklyTargetRate = 95.0
 )
 
@@ -36,7 +36,7 @@ type BuildOptions struct {
 	SiteRoot           string
 	SourceEnvironments []string
 	CurrentWeekStart   string
-	Weeks              int
+	HistoryWeeks       int
 	FromExisting       bool
 }
 
@@ -85,7 +85,7 @@ func Build(ctx context.Context, opts BuildOptions) (BuildResult, error) {
 	}
 
 	if !resolved.FromExisting {
-		if err := generateSiteReportsForWeekStarts(ctx, resolved, weekStartsToGenerate(resolved.CurrentWeekStart, resolved.Weeks), true); err != nil {
+		if err := generateSiteReportsForWeekStarts(ctx, resolved, weekStartsToGenerate(resolved.CurrentWeekStart, resolved.HistoryWeeks), true); err != nil {
 			return BuildResult{}, err
 		}
 	} else {
@@ -169,6 +169,7 @@ func generateSiteReportsForWeekStarts(
 			nextWeekSubdirectory,
 			weekStart,
 			weekEndExclusive,
+			resolved.HistoryWeeks,
 			resolved.SourceEnvironments,
 		); err != nil {
 			return err
@@ -226,7 +227,7 @@ type normalizedBuildOptions struct {
 	SiteRoot           string
 	SourceEnvironments []string
 	CurrentWeekStart   time.Time
-	Weeks              int
+	HistoryWeeks       int
 	FromExisting       bool
 }
 
@@ -239,9 +240,9 @@ func normalizeBuildOptions(opts BuildOptions) (normalizedBuildOptions, error) {
 	if siteRoot == "" {
 		siteRoot = defaultSiteRoot
 	}
-	weeks := opts.Weeks
+	weeks := opts.HistoryWeeks
 	if weeks <= 0 {
-		weeks = defaultSiteWeeks
+		weeks = defaultHistoryWeeks
 	}
 	sourceEnvironments := normalizeSourceEnvironments(opts.SourceEnvironments)
 	currentWeekStart, err := resolveCurrentWeekStart(opts.CurrentWeekStart)
@@ -253,7 +254,7 @@ func normalizeBuildOptions(opts BuildOptions) (normalizedBuildOptions, error) {
 		SiteRoot:           siteRoot,
 		SourceEnvironments: sourceEnvironments,
 		CurrentWeekStart:   currentWeekStart,
-		Weeks:              weeks,
+		HistoryWeeks:       weeks,
 		FromExisting:       opts.FromExisting,
 	}, nil
 }
@@ -437,6 +438,7 @@ func generateSiteReportsForWeek(
 	nextWeekSubdirectory string,
 	windowStart time.Time,
 	windowEndExclusive time.Time,
+	historyWeeks int,
 	sourceEnvironments []string,
 ) error {
 	currentStore, err := ndjson.NewWithOptions(dataDirectory, ndjson.Options{
@@ -477,6 +479,7 @@ func generateSiteReportsForWeek(
 	weeklyOpts.TargetRate = defaultWeeklyTargetRate
 	weeklyOpts.DataDirectory = dataDirectory
 	weeklyOpts.SemanticSubdirectory = semanticSubdirectory
+	weeklyOpts.HistoryHorizonWeeks = historyWeeks
 	weeklyOpts.Chrome = buildReportChromeOptions(
 		semanticSubdirectory,
 		previousWeekSubdirectory,
@@ -496,6 +499,7 @@ func generateSiteReportsForWeek(
 	summaryOpts.Environments = append([]string(nil), sourceEnvironments...)
 	summaryOpts.DataDirectory = dataDirectory
 	summaryOpts.SemanticSubdirectory = semanticSubdirectory
+	summaryOpts.HistoryHorizonWeeks = historyWeeks
 	summaryOpts.Chrome = buildReportChromeOptions(
 		semanticSubdirectory,
 		previousWeekSubdirectory,

@@ -141,6 +141,53 @@ func TestFlakeScoreAndReasonsIncludesRequestedSignals(t *testing.T) {
 	}
 }
 
+func TestFlakeScoreAndReasonsAggregatedRowsUseLinkedPostGoodAndScoringReferences(t *testing.T) {
+	t.Parallel()
+
+	score, reasons := FlakeScoreAndReasons(SignatureRow{
+		Environment:   "dev",
+		PostGoodCount: 0,
+		TrendCounts:   []int{1, 1, 1, 1, 1, 1, 1},
+		TrendRange:    "2026-03-01..2026-03-07",
+		References: []RunReference{
+			{RunURL: "https://prow.example/run/stale", PRNumber: 4100, OccurredAt: "2026-03-01T00:00:00Z"},
+		},
+		ScoringReferences: []RunReference{
+			{RunURL: "https://prow.example/run/recent", PRNumber: 4101, OccurredAt: "2026-03-07T23:30:00Z"},
+			{RunURL: "https://prow.example/run/older", PRNumber: 4102, OccurredAt: "2026-03-04T12:00:00Z"},
+		},
+		LinkedChildren: []SignatureRow{
+			{
+				PostGoodCount: 1,
+				References:    []RunReference{{RunURL: "https://prow.example/child/1", OccurredAt: "2026-03-06T12:00:00Z"}},
+			},
+			{
+				PostGoodCount: 2,
+				References:    []RunReference{{RunURL: "https://prow.example/child/2", OccurredAt: "2026-03-07T12:00:00Z"}},
+			},
+		},
+	})
+	if score <= 0 {
+		t.Fatalf("expected positive flake score, got %d", score)
+	}
+	expectedSnippets := []string{
+		"after last push",
+		"recent occurrence",
+	}
+	for _, snippet := range expectedSnippets {
+		found := false
+		for _, reason := range reasons {
+			if strings.Contains(reason, snippet) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected reason containing %q, got %v", snippet, reasons)
+		}
+	}
+}
+
 func TestRenderTableShowsBadPRIndicator(t *testing.T) {
 	t.Parallel()
 
@@ -221,14 +268,12 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 	}, TableOptions{IncludeTrend: true})
 
 	required := []string{
-		"data-sort-key=\"count\"",
-		"data-sort-key=\"after_last_push\"",
 		"data-sort-key=\"jobs_affected\"",
+		"data-sort-key=\"impact\"",
 		"data-sort-key=\"flake_score\"",
-		"data-sort-key=\"share\"",
 		"<th>Trend</th>",
 		"<th>Seen in",
-		"title=\"Job run occurred after last push of a PR that merges.\"",
+		"title=\"Relative impact = jobs affected / overall job count from metrics.\"",
 		"title=\"Other environments where the same canonical signature phrase appears.\"",
 		"<svg class=\"trend-svg\"",
 		"2026-03-01..2026-03-07",
@@ -246,15 +291,16 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 	}
 	headerRow := html[headerStart:headerEnd]
 	signatureHeader := strings.Index(headerRow, "<th>Signature</th>")
-	countHeader := strings.Index(headerRow, "data-sort-key=\"count\"")
-	afterLastPushHeader := strings.Index(headerRow, "data-sort-key=\"after_last_push\"")
 	jobsAffectedHeader := strings.Index(headerRow, "data-sort-key=\"jobs_affected\"")
+	impactHeader := strings.Index(headerRow, "data-sort-key=\"impact\"")
 	flakeScoreHeader := strings.Index(headerRow, "data-sort-key=\"flake_score\"")
-	shareHeader := strings.Index(headerRow, "data-sort-key=\"share\"")
 	trendHeader := strings.Index(headerRow, "<th>Trend</th>")
 	seenInHeader := strings.Index(headerRow, "<th>Seen in")
-	if !(signatureHeader < countHeader && countHeader < afterLastPushHeader && afterLastPushHeader < jobsAffectedHeader && jobsAffectedHeader < flakeScoreHeader && flakeScoreHeader < shareHeader && shareHeader < trendHeader && trendHeader < seenInHeader) {
+	if !(signatureHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < flakeScoreHeader && flakeScoreHeader < trendHeader && trendHeader < seenInHeader) {
 		t.Fatalf("unexpected shared header order in rendered table")
+	}
+	if strings.Contains(html, "data-sort-key=\"count\"") || strings.Contains(html, "data-sort-key=\"after_last_push\"") || strings.Contains(html, "data-sort-key=\"share\"") {
+		t.Fatalf("expected count/after-last-push/share columns to be hidden by default")
 	}
 }
 
@@ -272,7 +318,7 @@ func TestRenderTableIncludesClientSortingAndVisibilityConfiguration(t *testing.T
 
 	for _, snippet := range []string{
 		"data-sortable=\"true\"",
-		"data-sort-key=\"flake_score\"",
+		"data-sort-key=\"impact\"",
 		"data-sort-dir=\"desc\"",
 		"data-initial-visible=\"1\"",
 		"data-row-id=\"triage-row-0\"",
@@ -412,5 +458,187 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 		if !strings.Contains(rendered, snippet) {
 			t.Fatalf("expected rendered report chrome to contain %q", snippet)
 		}
+	}
+}
+
+func TestRenderTableShowsManualIssueAndSelectionWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]SignatureRow{
+		{
+			Environment:   "dev",
+			Phrase:        "deadline exceeded",
+			ClusterID:     "cluster-1",
+			SupportCount:  3,
+			SupportShare:  50,
+			PostGoodCount: 1,
+			ManualIssueID: "p3c-abc123",
+		},
+		{
+			Environment:   "int",
+			Phrase:        "network timeout",
+			ClusterID:     "cluster-2",
+			SupportCount:  2,
+			SupportShare:  50,
+			PostGoodCount: 0,
+			ManualIssueID: "",
+		},
+	}, TableOptions{
+		ShowManualIssue:      true,
+		IncludeSelection:     true,
+		SelectionInputName:   "cluster_id",
+		InitialSortKey:       "manual_cluster",
+		InitialSortDirection: "asc",
+	})
+
+	for _, snippet := range []string{
+		"<th class=\"triage-select-col\">Select</th>",
+		"data-sort-key=\"manual_cluster\"",
+		"Phase3 cluster",
+		"name=\"cluster_id\" value=\"cluster-1\"",
+		">p3c-abc123</td>",
+		"data-sort-key=\"manual_cluster\" data-sort-dir=\"asc\"",
+	} {
+		if !strings.Contains(rendered, snippet) {
+			t.Fatalf("expected rendered table to contain %q", snippet)
+		}
+	}
+}
+
+func TestRenderTableUsesCustomSelectionValueWhenProvided(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]SignatureRow{
+		{
+			Environment:    "dev",
+			Phrase:         "deadline exceeded",
+			ClusterID:      "p3c-abc123",
+			SelectionValue: "dev|p3c-abc123",
+			SupportCount:   3,
+			SupportShare:   100,
+		},
+	}, TableOptions{
+		IncludeSelection:   true,
+		SelectionInputName: "cluster_id",
+	})
+
+	if !strings.Contains(rendered, "name=\"cluster_id\" value=\"dev|p3c-abc123\"") {
+		t.Fatalf("expected custom row selection value in rendered checkbox: %q", rendered)
+	}
+}
+
+func TestRenderTableLinkedRowsRenderChildExpandersInDetailRow(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]SignatureRow{
+		{
+			Environment:   "dev",
+			Phrase:        "aggregate phrase",
+			ClusterID:     "p3c-aggregate",
+			SupportCount:  9,
+			SupportShare:  100,
+			PostGoodCount: 99,
+			LinkedChildren: []SignatureRow{
+				{
+					Environment:       "dev",
+					Phrase:            "child phrase one",
+					ClusterID:         "phase2-dev-1",
+					SearchQuery:       "child one query",
+					SupportCount:      4,
+					SupportShare:      44.44,
+					PostGoodCount:     1,
+					QualityScore:      5,
+					QualityNoteLabels: []string{"generic fallback phrase"},
+					ReviewNoteLabels:  []string{"low-confidence-source"},
+					FullErrorSamples:  []string{"child one full error"},
+					ContributingTests: []ContributingTest{{Lane: "e2e", JobName: "job-one", TestName: "test-one", SupportCount: 4}},
+					References:        []RunReference{{RunURL: "https://prow.example/run/1", OccurredAt: "2026-03-15T10:00:00Z"}},
+				},
+				{
+					Environment:      "dev",
+					Phrase:           "child phrase two",
+					ClusterID:        "phase2-dev-2",
+					SearchQuery:      "child two query",
+					SupportCount:     5,
+					SupportShare:     55.56,
+					PostGoodCount:    1,
+					QualityScore:     1,
+					FullErrorSamples: []string{"child two full error"},
+					References:       []RunReference{{RunURL: "https://prow.example/run/2", OccurredAt: "2026-03-15T11:00:00Z"}},
+				},
+			},
+		},
+	}, TableOptions{
+		ShowQualityScore: true,
+		ShowQualityFlags: true,
+		ShowReviewFlags:  true,
+	})
+
+	for _, snippet := range []string{
+		"Linked signatures (2)",
+		"child phrase one",
+		"child phrase two",
+		"jobs affected: 1",
+		"bad PR score:",
+		"flake score:",
+		"Full failure examples (1)",
+		"Affected runs (1)",
+	} {
+		if !strings.Contains(rendered, snippet) {
+			t.Fatalf("expected linked-child detail rendering to contain %q", snippet)
+		}
+	}
+	if !strings.Contains(rendered, `data-sort-jobs="2"`) {
+		t.Fatalf("expected aggregate row jobs affected to sum linked children, got %q", rendered)
+	}
+	if !strings.Contains(rendered, `data-sort-post-good="2"`) {
+		t.Fatalf("expected aggregate row after-last-push to sum linked children, got %q", rendered)
+	}
+}
+
+func TestRenderTableHidesCountAfterShareByDefaultAndShowsImpact(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]SignatureRow{
+		{
+			Environment:   "dev",
+			Phrase:        "deadline exceeded",
+			ClusterID:     "cluster-1",
+			SupportCount:  3,
+			SupportShare:  75,
+			PostGoodCount: 1,
+			References: []RunReference{
+				{RunURL: "https://prow.example/run/1", OccurredAt: "2026-03-15T10:00:00Z"},
+				{RunURL: "https://prow.example/run/2", OccurredAt: "2026-03-15T11:00:00Z"},
+			},
+		},
+		{
+			Environment:   "dev",
+			Phrase:        "api timeout",
+			ClusterID:     "cluster-2",
+			SupportCount:  1,
+			SupportShare:  25,
+			PostGoodCount: 0,
+			References: []RunReference{
+				{RunURL: "https://prow.example/run/3", OccurredAt: "2026-03-15T12:00:00Z"},
+			},
+		},
+	}, TableOptions{})
+
+	required := []string{
+		"data-sort-key=\"jobs_affected\"",
+		"data-sort-key=\"impact\"",
+		"data-sort-key=\"flake_score\"",
+	}
+	for _, snippet := range required {
+		if !strings.Contains(rendered, snippet) {
+			t.Fatalf("expected rendered table to contain %q", snippet)
+		}
+	}
+	if strings.Contains(rendered, "data-sort-key=\"count\"") || strings.Contains(rendered, "data-sort-key=\"after_last_push\"") || strings.Contains(rendered, "data-sort-key=\"share\"") {
+		t.Fatalf("expected count/after-last-push/share columns hidden by default: %q", rendered)
+	}
+	if !strings.Contains(rendered, "Impact from jobs affected / overall job count from metrics") {
+		t.Fatalf("expected impact cell tooltip in rendered table: %q", rendered)
 	}
 }

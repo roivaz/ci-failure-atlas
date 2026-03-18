@@ -8,22 +8,16 @@ import (
 )
 
 const (
-	defaultActiveReconcileWindow   = 14 * 24 * time.Hour
-	defaultUnresolvedPRRetryWindow = 7 * 24 * time.Hour
+	defaultHistoryHorizonWeeks = 4
+	daysPerWeek                = 7
 )
 
 func activeReconcileWindow(source *sourceoptions.Options) time.Duration {
-	if source != nil && source.ReconcileActiveWindow > 0 {
-		return source.ReconcileActiveWindow
+	weeks := defaultHistoryHorizonWeeks
+	if source != nil && source.HistoryHorizonWeeks > 0 {
+		weeks = source.HistoryHorizonWeeks
 	}
-	return defaultActiveReconcileWindow
-}
-
-func unresolvedPRRetryWindow(source *sourceoptions.Options) time.Duration {
-	if source != nil && source.UnresolvedPRRetryWindow > 0 {
-		return source.UnresolvedPRRetryWindow
-	}
-	return defaultUnresolvedPRRetryWindow
+	return time.Duration(weeks*daysPerWeek) * 24 * time.Hour
 }
 
 func isTimestampWithinWindow(value string, window time.Duration, now time.Time) bool {
@@ -38,12 +32,5 @@ func isTimestampWithinWindow(value string, window time.Duration, now time.Time) 
 }
 
 func isRunWithinActiveWindow(run contracts.RunRecord, window time.Duration, now time.Time) bool {
-	return isTimestampWithinWindow(run.OccurredAt, window, now)
-}
-
-func isRunWithinUnresolvedRetryWindow(run contracts.RunRecord, window time.Duration, now time.Time) bool {
-	if run.MergedPR || run.PRNumber <= 0 {
-		return false
-	}
 	return isTimestampWithinWindow(run.OccurredAt, window, now)
 }

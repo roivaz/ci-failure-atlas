@@ -1218,6 +1218,101 @@ func TestUpsertGlobalClustersReplaceTargetEnvironment(t *testing.T) {
 	}
 }
 
+func TestUpsertPhase3GlobalClustersStoredSeparately(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := New(dataDir)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase2-dev-base",
+			CanonicalEvidencePhrase: "base phrase",
+			SearchQueryPhrase:       "base phrase",
+			SupportCount:            2,
+		},
+	}); err != nil {
+		t.Fatalf("upsert base global clusters: %v", err)
+	}
+
+	if err := store.UpsertPhase3GlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase3-dev-old",
+			CanonicalEvidencePhrase: "phase3 phrase old",
+			SearchQueryPhrase:       "phase3 phrase old",
+			SupportCount:            3,
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "int",
+			Phase2ClusterID:         "phase3-int-keep",
+			CanonicalEvidencePhrase: "phase3 phrase keep",
+			SearchQueryPhrase:       "phase3 phrase keep",
+			SupportCount:            5,
+		},
+	}); err != nil {
+		t.Fatalf("upsert phase3 global clusters: %v", err)
+	}
+	if err := store.UpsertPhase3GlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase3-dev-new",
+			CanonicalEvidencePhrase: "phase3 phrase new",
+			SearchQueryPhrase:       "phase3 phrase new",
+			SupportCount:            7,
+		},
+	}); err != nil {
+		t.Fatalf("replacement upsert phase3 global clusters: %v", err)
+	}
+
+	baseRows, err := store.ListGlobalClusters(ctx)
+	if err != nil {
+		t.Fatalf("list base global clusters: %v", err)
+	}
+	if len(baseRows) != 1 || baseRows[0].Phase2ClusterID != "phase2-dev-base" {
+		t.Fatalf("expected base global clusters unaffected, got=%+v", baseRows)
+	}
+
+	phase3Rows, err := store.ListPhase3GlobalClusters(ctx)
+	if err != nil {
+		t.Fatalf("list phase3 global clusters: %v", err)
+	}
+	if len(phase3Rows) != 2 {
+		t.Fatalf("unexpected phase3 global cluster row count: got=%d want=2 rows=%+v", len(phase3Rows), phase3Rows)
+	}
+	seen := map[string]semanticcontracts.GlobalClusterRecord{}
+	for _, row := range phase3Rows {
+		seen[row.Environment+"|"+row.Phase2ClusterID] = row
+	}
+	if _, ok := seen["dev|phase3-dev-old"]; ok {
+		t.Fatalf("expected old dev phase3 global cluster to be replaced, rows=%+v", phase3Rows)
+	}
+	if _, ok := seen["dev|phase3-dev-new"]; !ok {
+		t.Fatalf("expected new dev phase3 global cluster, rows=%+v", phase3Rows)
+	}
+	if _, ok := seen["int|phase3-int-keep"]; !ok {
+		t.Fatalf("expected int phase3 global cluster to be preserved, rows=%+v", phase3Rows)
+	}
+
+	baseGlobalPath := filepath.Join(dataDir, semanticDirectory, globalClustersFilename)
+	if _, statErr := os.Stat(baseGlobalPath); statErr != nil {
+		t.Fatalf("expected base global clusters file to exist: %v", statErr)
+	}
+	phase3GlobalPath := filepath.Join(dataDir, semanticDirectory, phase3GlobalClustersFilename)
+	if _, statErr := os.Stat(phase3GlobalPath); statErr != nil {
+		t.Fatalf("expected phase3 global clusters file to exist: %v", statErr)
+	}
+}
+
 func TestUpsertRequiresEnvironment(t *testing.T) {
 	t.Parallel()
 
@@ -1307,5 +1402,143 @@ func TestUpsertRequiresEnvironment(t *testing.T) {
 
 	if _, err := store.ListTestMetadataDailyByDate(ctx, "dev", "20260305"); err == nil {
 		t.Fatalf("expected ListTestMetadataDailyByDate to fail with invalid date")
+	}
+}
+
+func TestPhase3IssuesLinksAndEvents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	if err := store.UpsertPhase3Issues(ctx, []semanticcontracts.Phase3IssueRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "ISSUE-1",
+			Title:         "first issue",
+			CreatedAt:     "2026-03-16T10:00:00Z",
+			UpdatedAt:     "2026-03-16T10:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("upsert phase3 issue: %v", err)
+	}
+	if err := store.UpsertPhase3Issues(ctx, []semanticcontracts.Phase3IssueRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "ISSUE-1",
+			Title:         "updated title",
+			CreatedAt:     "2026-03-16T10:00:00Z",
+			UpdatedAt:     "2026-03-16T11:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("update phase3 issue: %v", err)
+	}
+	issues, err := store.ListPhase3Issues(ctx)
+	if err != nil {
+		t.Fatalf("list phase3 issues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].IssueID != "ISSUE-1" || issues[0].Title != "updated title" {
+		t.Fatalf("unexpected phase3 issues: %+v", issues)
+	}
+
+	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "ISSUE-1",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/1",
+			RowID:         "row-1",
+			UpdatedAt:     "2026-03-16T10:00:00Z",
+		},
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "ISSUE-1",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/1",
+			RowID:         "row-2",
+			UpdatedAt:     "2026-03-16T10:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("upsert phase3 links: %v", err)
+	}
+	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "ISSUE-2",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/1",
+			RowID:         "row-2",
+			UpdatedAt:     "2026-03-16T11:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("reassign phase3 link: %v", err)
+	}
+	links, err := store.ListPhase3Links(ctx)
+	if err != nil {
+		t.Fatalf("list phase3 links: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("unexpected phase3 link count: got=%d want=2", len(links))
+	}
+	linkByRow := map[string]semanticcontracts.Phase3LinkRecord{}
+	for _, row := range links {
+		linkByRow[row.RowID] = row
+	}
+	if linkByRow["row-1"].IssueID != "ISSUE-1" {
+		t.Fatalf("unexpected issue for row-1: %+v", linkByRow["row-1"])
+	}
+	if linkByRow["row-2"].IssueID != "ISSUE-2" {
+		t.Fatalf("expected row-2 reassigned to ISSUE-2, got %+v", linkByRow["row-2"])
+	}
+	if err := store.DeletePhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example/run/1",
+			RowID:       "row-1",
+		},
+	}); err != nil {
+		t.Fatalf("delete phase3 links: %v", err)
+	}
+	remainingLinks, err := store.ListPhase3Links(ctx)
+	if err != nil {
+		t.Fatalf("list remaining phase3 links: %v", err)
+	}
+	if len(remainingLinks) != 1 || remainingLinks[0].RowID != "row-2" {
+		t.Fatalf("unexpected remaining phase3 links: %+v", remainingLinks)
+	}
+
+	if err := store.AppendPhase3Events(ctx, []semanticcontracts.Phase3EventRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			EventID:       "evt-1",
+			Action:        "assign",
+			IssueID:       "ISSUE-1",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/1",
+			RowID:         "row-1",
+			At:            "2026-03-16T10:00:00Z",
+		},
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			EventID:       "evt-2",
+			Action:        "unassign",
+			IssueID:       "ISSUE-1",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/1",
+			RowID:         "row-1",
+			At:            "2026-03-16T11:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("append phase3 events: %v", err)
+	}
+	events, err := store.ListPhase3Events(ctx, 1)
+	if err != nil {
+		t.Fatalf("list phase3 events: %v", err)
+	}
+	if len(events) != 1 || events[0].EventID != "evt-2" {
+		t.Fatalf("unexpected phase3 event list: %+v", events)
 	}
 }

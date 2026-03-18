@@ -368,7 +368,7 @@ func mustCompleteSourceOptions(t *testing.T, envs []string) *sourceoptions.Optio
 	raw.SippyReleaseInt = "INT"
 	raw.SippyReleaseStg = "STG"
 	raw.SippyReleaseProd = "PROD"
-	raw.SippyLookback = "24h"
+	raw.HistoryHorizonWeeks = 2
 
 	validated, err := raw.Validate()
 	if err != nil {

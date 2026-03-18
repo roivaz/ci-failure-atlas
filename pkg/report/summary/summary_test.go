@@ -118,6 +118,101 @@ func TestGenerateWritesSummaryFromStore(t *testing.T) {
 	}
 }
 
+func TestGenerateAppliesPhase3MaterializedView(t *testing.T) {
+	t.Parallel()
+
+	ctx := logr.NewContext(context.Background(), logr.Discard())
+	store, err := ndjson.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "g-dev-a",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            2,
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RowID:       "row-a",
+					RunURL:      "https://prow.example/dev/run-a",
+					OccurredAt:  "2026-03-03T12:00:00Z",
+					SignatureID: "sig-a",
+				},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "g-dev-b",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            3,
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RowID:       "row-b",
+					RunURL:      "https://prow.example/dev/run-b",
+					OccurredAt:  "2026-03-03T12:10:00Z",
+					SignatureID: "sig-b",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed global clusters: %v", err)
+	}
+
+	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-shared",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/dev/run-a",
+			RowID:         "row-a",
+		},
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-shared",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/dev/run-b",
+			RowID:         "row-b",
+		},
+	}); err != nil {
+		t.Fatalf("seed phase3 links: %v", err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "global-signature-triage.html")
+	opts := DefaultOptions()
+	opts.OutputPath = outputPath
+	opts.Top = 10
+	opts.MinPercent = 0
+
+	if err := Generate(ctx, store, opts); err != nil {
+		t.Fatalf("generate summary: %v", err)
+	}
+
+	report, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read generated summary: %v", err)
+	}
+	content := string(report)
+	if !strings.Contains(content, `data-sort-cluster="p3c-shared"`) {
+		t.Fatalf("expected collapsed phase3 cluster id in rendered triage table: %q", content)
+	}
+	if !strings.Contains(content, "Linked signatures (2)") {
+		t.Fatalf("expected linked signatures expander in collapsed row detail: %q", content)
+	}
+	if !strings.Contains(content, "context deadline exceeded") || !strings.Contains(content, "jobs affected: 1") {
+		t.Fatalf("expected linked child signatures with jobs-affected details: %q", content)
+	}
+	if !strings.Contains(content, "Rows loaded: 1 / 1 signatures") {
+		t.Fatalf("expected single collapsed row in environment section: %q", content)
+	}
+}
+
 func TestGenerateWritesSummaryPerEnvironmentWhenSplitEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -386,13 +481,12 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 		"<section id=\"env-dev\" class=\"section\">",
 		"<section id=\"env-int\" class=\"section\">",
 		"<section id=\"env-prod\" class=\"section\">",
-		"data-sort-key=\"count\"",
-		"data-sort-key=\"after_last_push\"",
 		"data-sort-key=\"jobs_affected\"",
+		"data-sort-key=\"impact\"",
 		"data-sort-key=\"flake_score\"",
 		"<th>Seen in",
-		"title=\"Job run occurred after last push of a PR that merges.\"",
 		"title=\"Unique job runs affected by this signature in the selected window.\"",
+		"title=\"Relative impact = jobs affected / overall job count from metrics.\"",
 		"title=\"Heuristic score for unresolved recurrent flakes (0-14). Higher means more likely ongoing flake; likely bad-PR patterns reduce this score.\"",
 		"title=\"Other environments where the same canonical signature phrase appears.\"",
 		"<th>Trend</th>",
@@ -422,18 +516,19 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 	}
 	headerRow := report[headerStart:headerEnd]
 	signatureHeader := strings.Index(headerRow, "<th>Signature</th>")
-	countHeader := strings.Index(headerRow, "data-sort-key=\"count\"")
-	afterLastPushHeader := strings.Index(headerRow, "data-sort-key=\"after_last_push\"")
 	jobsAffectedHeader := strings.Index(headerRow, "data-sort-key=\"jobs_affected\"")
+	impactHeader := strings.Index(headerRow, "data-sort-key=\"impact\"")
 	flakeScoreHeader := strings.Index(headerRow, "data-sort-key=\"flake_score\"")
-	shareHeader := strings.Index(headerRow, "data-sort-key=\"share\"")
 	trendHeader := strings.Index(headerRow, "<th>Trend</th>")
 	seenInHeader := strings.Index(headerRow, "<th>Seen in")
-	if signatureHeader < 0 || countHeader < 0 || afterLastPushHeader < 0 || jobsAffectedHeader < 0 || flakeScoreHeader < 0 || shareHeader < 0 || trendHeader < 0 || seenInHeader < 0 {
+	if signatureHeader < 0 || jobsAffectedHeader < 0 || impactHeader < 0 || flakeScoreHeader < 0 || trendHeader < 0 || seenInHeader < 0 {
 		t.Fatalf("expected global triage headers to be present for order verification")
 	}
-	if !(signatureHeader < countHeader && countHeader < afterLastPushHeader && afterLastPushHeader < jobsAffectedHeader && jobsAffectedHeader < flakeScoreHeader && flakeScoreHeader < shareHeader && shareHeader < trendHeader && trendHeader < seenInHeader) {
-		t.Fatalf("expected global triage column order Signature, Count, After last push, Jobs affected, Flake score, Share, Trend, Seen in")
+	if !(signatureHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < flakeScoreHeader && flakeScoreHeader < trendHeader && trendHeader < seenInHeader) {
+		t.Fatalf("expected global triage column order Signature, Jobs affected, Impact, Flake score, Trend, Seen in")
+	}
+	if strings.Contains(report, "data-sort-key=\"count\"") || strings.Contains(report, "data-sort-key=\"after_last_push\"") || strings.Contains(report, "data-sort-key=\"share\"") {
+		t.Fatalf("expected count/after-last-push/share columns to be hidden by default")
 	}
 	if strings.Contains(report, "<th>Latest runs</th>") {
 		t.Fatalf("expected HTML report to not include latest runs main column")

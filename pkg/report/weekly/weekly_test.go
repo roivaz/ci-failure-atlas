@@ -196,10 +196,9 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 		"cards cards-post-good cards-dev",
 		"88.89% (8/9)",
 		"Source: Sippy test metadata (period: default, rolling 7-day window). Top 5 tests below 95.00% success; minimum 10 runs. This view uses the first metadata datapoint available after the report window end date; if unavailable, it falls back to the latest datapoint before the end date.",
-		"Up to 50 semantic signatures are loaded in this window (minimum 1.00% share), with 10 shown by default. Default sorting is flake score desc, jobs affected desc, share desc, count desc; click headers to re-sort.",
-		"data-sort-key=\"count\"",
-		"data-sort-key=\"after_last_push\"",
+		"Up to 50 semantic signatures are loaded in this window (minimum 1.00% share), with 10 shown by default. Default sorting is impact desc, jobs affected desc, flake score desc; click headers to re-sort.",
 		"data-sort-key=\"jobs_affected\"",
+		"data-sort-key=\"impact\"",
 		"data-sort-key=\"flake_score\"",
 		"<th>Trend</th>",
 		"2026-03-01..2026-03-07",
@@ -272,6 +271,111 @@ func TestGenerateWritesWeeklyReportForAllEnvironments(t *testing.T) {
 	}
 	if strings.Contains(report, "S:9") {
 		t.Fatalf("expected post-good successful runs to not exceed baseline success count; report=%q", report)
+	}
+}
+
+func TestGenerateTopSignaturesUsesPhase3LinkedRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := ndjson.New(dataDir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
+		{Environment: "dev", Date: "2026-03-01", Metric: metricRunCount, Value: 20},
+		{Environment: "dev", Date: "2026-03-01", Metric: metricFailureCount, Value: 3},
+	}); err != nil {
+		t.Fatalf("seed metrics: %v", err)
+	}
+
+	runA := "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-dev-linked-a/1"
+	runB := "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/example-dev-linked-b/1"
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "g-dev-a",
+			SupportCount:            8,
+			PostGoodCommitCount:     2,
+			CanonicalEvidencePhrase: "timeout waiting for condition",
+			MemberSignatureIDs:      []string{"sig-a"},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      runA,
+					OccurredAt:  "2026-03-01T10:00:00Z",
+					SignatureID: "sig-a",
+					RowID:       "row-a",
+				},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "g-dev-b",
+			SupportCount:            5,
+			PostGoodCommitCount:     1,
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			MemberSignatureIDs:      []string{"sig-b"},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      runB,
+					OccurredAt:  "2026-03-01T11:00:00Z",
+					SignatureID: "sig-b",
+					RowID:       "row-b",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed global clusters: %v", err)
+	}
+
+	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-weekly-test",
+			Environment:   "dev",
+			RunURL:        runA,
+			RowID:         "row-a",
+		},
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-weekly-test",
+			Environment:   "dev",
+			RunURL:        runB,
+			RowID:         "row-b",
+		},
+	}); err != nil {
+		t.Fatalf("seed phase3 links: %v", err)
+	}
+
+	outputPath := filepath.Join(dataDir, "reports", "weekly-phase3-linked.html")
+	if err := Generate(ctx, store, Options{
+		OutputPath: outputPath,
+		StartDate:  "2026-03-01",
+		TargetRate: 95,
+	}); err != nil {
+		t.Fatalf("generate weekly report: %v", err)
+	}
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read weekly report output: %v", err)
+	}
+	report := string(content)
+
+	for _, snippet := range []string{
+		`data-sort-cluster="p3c-weekly-test"`,
+		"Linked signatures (2)",
+		"context deadline exceeded",
+		"timeout waiting for condition",
+	} {
+		if !strings.Contains(report, snippet) {
+			t.Fatalf("expected weekly report to contain %q", snippet)
+		}
 	}
 }
 

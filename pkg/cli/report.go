@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ci-failure-atlas/pkg/ndjsonoptions"
+	reportreview "ci-failure-atlas/pkg/report/review"
 	reportsite "ci-failure-atlas/pkg/report/site"
 	reporttestsummary "ci-failure-atlas/pkg/report/testsummary"
 	"ci-failure-atlas/pkg/store/ndjson"
@@ -92,7 +93,7 @@ func NewReportCommand() (*cobra.Command, error) {
 	siteBuildDataDirectory := "data"
 	siteBuildRoot := "site"
 	siteBuildSourceEnvs := []string{"dev", "int", "stg", "prod"}
-	siteBuildWeeks := 4
+	siteBuildHistoryWeeks := 4
 	siteBuildStartDate := ""
 	siteBuildFromExisting := false
 	siteBuildCmd := &cobra.Command{
@@ -104,7 +105,7 @@ func NewReportCommand() (*cobra.Command, error) {
 				SiteRoot:           siteBuildRoot,
 				SourceEnvironments: siteBuildSourceEnvs,
 				CurrentWeekStart:   siteBuildStartDate,
-				Weeks:              siteBuildWeeks,
+				HistoryWeeks:       siteBuildHistoryWeeks,
 				FromExisting:       siteBuildFromExisting,
 			})
 			if err != nil {
@@ -122,7 +123,7 @@ func NewReportCommand() (*cobra.Command, error) {
 	siteBuildCmd.Flags().StringVar(&siteBuildDataDirectory, "storage.ndjson.data-dir", siteBuildDataDirectory, "root directory for NDJSON facts/state/semantic data")
 	siteBuildCmd.Flags().StringVar(&siteBuildRoot, "site.root", siteBuildRoot, "root directory for generated site HTML")
 	siteBuildCmd.Flags().StringSliceVar(&siteBuildSourceEnvs, "source.envs", siteBuildSourceEnvs, "environments to include (e.g. dev,int,stg,prod)")
-	siteBuildCmd.Flags().IntVar(&siteBuildWeeks, "site.weeks", siteBuildWeeks, "number of weekly 7-day windows to build, including current week")
+	siteBuildCmd.Flags().IntVar(&siteBuildHistoryWeeks, "history.weeks", siteBuildHistoryWeeks, "number of weekly 7-day windows to build and use as scoring/history horizon")
 	siteBuildCmd.Flags().StringVar(&siteBuildStartDate, "start-date", siteBuildStartDate, "current week start date (YYYY-MM-DD). Defaults to latest Sunday.")
 	siteBuildCmd.Flags().BoolVar(&siteBuildFromExisting, "from-existing", siteBuildFromExisting, "rebuild reports and indexes from existing semantic snapshots in data/semantic (skips data ingestion workflow)")
 
@@ -228,8 +229,60 @@ func NewReportCommand() (*cobra.Command, error) {
 	}
 	siteCmd.AddCommand(siteBuildCmd, sitePushCmd, siteRunCmd)
 
+	reviewDataDirectory := "data"
+	reviewSemanticSubdirectory := ""
+	reviewListen := "127.0.0.1:8081"
+	reviewHistoryWeeks := 4
+	reviewCmd := &cobra.Command{
+		Use:   "review",
+		Short: "Run a local dynamic semantic review app with manual Phase3 linking.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			handler, err := reportreview.NewHandler(reportreview.HandlerOptions{
+				DataDirectory:        reviewDataDirectory,
+				SemanticSubdirectory: reviewSemanticSubdirectory,
+				HistoryHorizonWeeks:  reviewHistoryWeeks,
+			})
+			if err != nil {
+				return err
+			}
+			listenAddress := strings.TrimSpace(reviewListen)
+			if listenAddress == "" {
+				listenAddress = "127.0.0.1:8081"
+			}
+			listener, err := net.Listen("tcp", listenAddress)
+			if err != nil {
+				return fmt.Errorf("listen on %q: %w", listenAddress, err)
+			}
+			defer func() {
+				_ = listener.Close()
+			}()
+
+			server := &http.Server{Handler: handler}
+			cmd.Printf(
+				"Serving semantic review app at %s (Ctrl+C to stop)\n",
+				siteRunURLFromListenAddress(listenAddress),
+			)
+
+			go func() {
+				<-cmd.Context().Done()
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = server.Shutdown(shutdownCtx)
+			}()
+			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return fmt.Errorf("serve semantic review app: %w", err)
+			}
+			return nil
+		},
+	}
+	reviewCmd.Flags().StringVar(&reviewDataDirectory, "storage.ndjson.data-dir", reviewDataDirectory, "root directory for NDJSON facts/state/semantic data")
+	reviewCmd.Flags().StringVar(&reviewSemanticSubdirectory, "storage.ndjson.semantic-subdir", reviewSemanticSubdirectory, "default semantic snapshot subdirectory (for example: 2026-03-15)")
+	reviewCmd.Flags().StringVar(&reviewListen, "site.listen", reviewListen, "listen address for local semantic review app (host:port)")
+	reviewCmd.Flags().IntVar(&reviewHistoryWeeks, "history.weeks", reviewHistoryWeeks, "number of most recent semantic weeks used for report history and cross-week phase3 propagation")
+
 	cmd.AddCommand(
 		qualityCmd,
+		reviewCmd,
 		siteCmd,
 	)
 

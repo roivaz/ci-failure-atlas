@@ -372,10 +372,7 @@ func (c *sourceSippyRunsController) getCheckpointTime(ctx context.Context, envir
 }
 
 func (c *sourceSippyRunsController) resolveSince(lastCheckpoint time.Time) time.Time {
-	lookback := c.deps.Source.SippyLookback
-	if lookback <= 0 {
-		lookback = 7 * 24 * time.Hour
-	}
+	lookback := activeReconcileWindow(c.deps.Source)
 	if !lastCheckpoint.IsZero() {
 		return lastCheckpoint.UTC().Add(-sourceSippyRunsReplayWindow).Truncate(time.Hour)
 	}

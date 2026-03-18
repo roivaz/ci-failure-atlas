@@ -146,6 +146,10 @@ type Phase1AssignmentRecord struct {
 }
 
 type ReferenceRecord struct {
+	// RowID points to the originating raw-failure row; used for durable
+	// human-in-the-loop linking across semantic reruns; propagated from phase1
+	// workset rows when available.
+	RowID string `json:"row_id,omitempty"`
 	// RunURL points to one backing CI run; used for drilldown and joins to facts;
 	// derived from workset/run records.
 	RunURL string `json:"run_url"`
@@ -314,4 +318,55 @@ type ReviewItemRecord struct {
 	// References are compact supporting links; used by reviewers to open concrete
 	// examples quickly; derived from merged source references.
 	References []ReferenceRecord `json:"references"`
+}
+
+type Phase3IssueRecord struct {
+	// SchemaVersion declares phase3 issue schema version; used for compatibility;
+	// emitted as SchemaVersionV1.
+	SchemaVersion string `json:"schema_version"`
+	// IssueID is the stable human-managed issue identifier; used as the primary
+	// key for manual semantic merge decisions.
+	IssueID string `json:"issue_id"`
+	// Title is an optional human-readable issue summary.
+	Title string `json:"title,omitempty"`
+	// CreatedAt stores issue creation time (RFC3339).
+	CreatedAt string `json:"created_at,omitempty"`
+	// UpdatedAt stores the latest issue mutation time (RFC3339).
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+type Phase3LinkRecord struct {
+	// SchemaVersion declares phase3 link schema version; used for compatibility;
+	// emitted as SchemaVersionV1.
+	SchemaVersion string `json:"schema_version"`
+	// IssueID references the manually managed phase3 issue.
+	IssueID string `json:"issue_id"`
+	// Environment scopes anchors by environment.
+	Environment string `json:"environment"`
+	// RunURL identifies the referenced run for this link anchor.
+	RunURL string `json:"run_url"`
+	// RowID is the stable raw-failure row anchor used for exact replay.
+	RowID string `json:"row_id"`
+	// UpdatedAt stores the latest link mutation time (RFC3339).
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+type Phase3EventRecord struct {
+	// SchemaVersion declares phase3 event schema version; used for compatibility;
+	// emitted as SchemaVersionV1.
+	SchemaVersion string `json:"schema_version"`
+	// EventID is the deterministic event identifier for audit rows.
+	EventID string `json:"event_id"`
+	// Action captures the mutation type (for example: assign, unassign).
+	Action string `json:"action"`
+	// IssueID references the affected manual issue when present.
+	IssueID string `json:"issue_id,omitempty"`
+	// Environment scopes event anchors by environment.
+	Environment string `json:"environment,omitempty"`
+	// RunURL identifies the run for event anchors when present.
+	RunURL string `json:"run_url,omitempty"`
+	// RowID identifies the raw-failure row for event anchors when present.
+	RowID string `json:"row_id,omitempty"`
+	// At stores event timestamp (RFC3339).
+	At string `json:"at"`
 }

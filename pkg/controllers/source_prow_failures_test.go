@@ -450,6 +450,7 @@ func mustCompleteSourceOptionsForProw(t *testing.T, envs ...string) *sourceoptio
 
 	raw := sourceoptions.DefaultOptions()
 	raw.ProwArtifactsBaseURL = "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs"
+	raw.HistoryHorizonWeeks = 2
 	if len(envs) > 0 {
 		raw.Environments = append([]string(nil), envs...)
 	}

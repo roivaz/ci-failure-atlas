@@ -467,6 +467,9 @@ func sortReferences(rows []semanticcontracts.ReferenceRecord) {
 		if rows[i].RunURL != rows[j].RunURL {
 			return rows[i].RunURL < rows[j].RunURL
 		}
+		if rows[i].RowID != rows[j].RowID {
+			return rows[i].RowID < rows[j].RowID
+		}
 		return rows[i].SignatureID < rows[j].SignatureID
 	})
 }
@@ -597,6 +600,7 @@ func normalizeReviewItem(row semanticcontracts.ReviewItemRecord) semanticcontrac
 
 func normalizeReference(row semanticcontracts.ReferenceRecord) semanticcontracts.ReferenceRecord {
 	return semanticcontracts.ReferenceRecord{
+		RowID:          strings.TrimSpace(row.RowID),
 		RunURL:         strings.TrimSpace(row.RunURL),
 		OccurredAt:     strings.TrimSpace(row.OccurredAt),
 		SignatureID:    strings.TrimSpace(row.SignatureID),
@@ -634,6 +638,10 @@ func finalizeReviewIDs(rows []semanticcontracts.ReviewItemRecord) []semanticcont
 }
 
 func referenceKey(row semanticcontracts.ReferenceRecord) string {
+	rowID := strings.TrimSpace(row.RowID)
+	if rowID != "" {
+		return "row|" + rowID
+	}
 	runURL := strings.TrimSpace(row.RunURL)
 	occurredAt := strings.TrimSpace(row.OccurredAt)
 	signatureID := strings.TrimSpace(row.SignatureID)

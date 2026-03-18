@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	"ci-failure-atlas/pkg/store/ndjson"
 )
 
 func TestBuildGeneratesIndexesAndSelectsLatestWeek(t *testing.T) {
@@ -199,6 +202,103 @@ func TestBuildFromExistingRebuildsReportsFromSemanticSnapshots(t *testing.T) {
 	}
 }
 
+func TestBuildFromExistingAppliesPhase3MaterializedViewToGlobalReport(t *testing.T) {
+	t.Parallel()
+
+	dataDirectory := filepath.Join(t.TempDir(), "data")
+	siteRoot := filepath.Join(t.TempDir(), "site")
+	semanticWeek := "2026-03-08"
+	store, err := ndjson.NewWithOptions(dataDirectory, ndjson.Options{
+		SemanticSubdirectory: semanticWeek,
+	})
+	if err != nil {
+		t.Fatalf("create semantic store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertGlobalClusters(context.Background(), []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "g-dev-a",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            2,
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RowID:       "row-a",
+					RunURL:      "https://prow.example/dev/run-a",
+					OccurredAt:  "2026-03-03T12:00:00Z",
+					SignatureID: "sig-a",
+				},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "g-dev-b",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            3,
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RowID:       "row-b",
+					RunURL:      "https://prow.example/dev/run-b",
+					OccurredAt:  "2026-03-03T12:10:00Z",
+					SignatureID: "sig-b",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed global clusters: %v", err)
+	}
+	if err := store.UpsertPhase3Links(context.Background(), []semanticcontracts.Phase3LinkRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-shared",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/dev/run-a",
+			RowID:         "row-a",
+		},
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-shared",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/dev/run-b",
+			RowID:         "row-b",
+		},
+	}); err != nil {
+		t.Fatalf("seed phase3 links: %v", err)
+	}
+
+	result, err := Build(context.Background(), BuildOptions{
+		DataDirectory: dataDirectory,
+		SiteRoot:      siteRoot,
+		FromExisting:  true,
+	})
+	if err != nil {
+		t.Fatalf("build site from semantic snapshots: %v", err)
+	}
+	if result.LatestWeek != semanticWeek {
+		t.Fatalf("unexpected latest week: got %q want %q", result.LatestWeek, semanticWeek)
+	}
+
+	globalBytes, err := os.ReadFile(filepath.Join(siteRoot, semanticWeek, globalReportFile))
+	if err != nil {
+		t.Fatalf("read rebuilt triage report: %v", err)
+	}
+	globalHTML := string(globalBytes)
+	if !strings.Contains(globalHTML, `data-sort-cluster="p3c-shared"`) {
+		t.Fatalf("expected triage report to include collapsed phase3 cluster id: %q", globalHTML)
+	}
+	if !strings.Contains(globalHTML, "Linked signatures (2)") {
+		t.Fatalf("expected triage report to include linked signatures expander for collapsed rows: %q", globalHTML)
+	}
+	if !strings.Contains(globalHTML, "context deadline exceeded") || !strings.Contains(globalHTML, "jobs affected: 1") {
+		t.Fatalf("expected triage report linked children to include jobs-affected details: %q", globalHTML)
+	}
+}
+
 func TestPushUploadsWeeksAndLatestFromMostRecentDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -263,8 +363,8 @@ func TestNormalizeBuildOptionsDefaults(t *testing.T) {
 	if normalized.SiteRoot != "site" {
 		t.Fatalf("expected default site root %q, got %q", "site", normalized.SiteRoot)
 	}
-	if normalized.Weeks != 4 {
-		t.Fatalf("expected default weeks 4, got %d", normalized.Weeks)
+	if normalized.HistoryWeeks != 4 {
+		t.Fatalf("expected default weeks 4, got %d", normalized.HistoryWeeks)
 	}
 	if len(normalized.SourceEnvironments) != 4 {
 		t.Fatalf("expected 4 default source environments, got %d", len(normalized.SourceEnvironments))

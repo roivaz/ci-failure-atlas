@@ -26,6 +26,7 @@ func buildGlobalTriageHTML(
 	minPercent float64,
 	generatedAt time.Time,
 	targetEnvironments []string,
+	overallJobsByEnvironment map[string]int,
 	configuredWindowStart string,
 	configuredWindowEnd string,
 	historyResolver semhistory.GlobalSignatureResolver,
@@ -173,12 +174,23 @@ func buildGlobalTriageHTML(
 				FullErrorSamples:  append([]string(nil), row.FullErrorSamples...),
 				References:        runReferences,
 			}
+			triageRow.LinkedChildren = toLinkedChildSignatureRows(
+				row.LinkedChildren,
+				totalEnvironmentSupport,
+				phraseEnvironments,
+				environment,
+			)
 			if historyResolver != nil {
-				presence := historyResolver.PresenceFor(semhistory.SignatureKey{
-					Environment: environment,
-					Phrase:      phrase,
-					SearchQuery: row.SearchQueryPhrase,
-				})
+				presence := semhistory.SignaturePresence{}
+				if len(triageRow.LinkedChildren) > 0 {
+					presence = historyResolver.PresenceForPhase3Cluster(environment, strings.TrimSpace(row.Phase2ClusterID))
+				} else {
+					presence = historyResolver.PresenceFor(semhistory.SignatureKey{
+						Environment: environment,
+						Phrase:      phrase,
+						SearchQuery: row.SearchQueryPhrase,
+					})
+				}
 				triageRow.PriorWeeksPresent = presence.PriorWeeksPresent
 				triageRow.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
 				triageRow.PriorJobsAffected = presence.PriorJobsAffected
@@ -209,6 +221,7 @@ func buildGlobalTriageHTML(
 			IncludeTrend:       true,
 			GitHubRepoOwner:    defaultGitHubRepoOwner,
 			GitHubRepoName:     defaultGitHubRepoName,
+			ImpactTotalJobs:    overallJobsByEnvironment[environment],
 			LoadedRowsLimit:    globalLoadedRowsLimit,
 			InitialVisibleRows: top,
 		}))
@@ -298,6 +311,57 @@ func toTriageRunReferences(rows []reference) []triagehtml.RunReference {
 			PRNumber:    row.PRNumber,
 		})
 	}
+	return out
+}
+
+func toLinkedChildSignatureRows(
+	children []globalCluster,
+	totalEnvironmentSupport int,
+	phraseEnvironments map[string]map[string]struct{},
+	environment string,
+) []triagehtml.SignatureRow {
+	if len(children) == 0 {
+		return nil
+	}
+	out := make([]triagehtml.SignatureRow, 0, len(children))
+	for _, child := range children {
+		phrase := strings.TrimSpace(child.CanonicalEvidencePhrase)
+		if phrase == "" {
+			phrase = "(unknown evidence)"
+		}
+		qualityCodes := globalQualityIssueCodes(phrase)
+		qualityLabels := make([]string, 0, len(qualityCodes))
+		for _, code := range qualityCodes {
+			qualityLabels = append(qualityLabels, globalQualityIssueLabel(code))
+		}
+		out = append(out, triagehtml.SignatureRow{
+			Environment:       normalizeReportEnvironment(child.Environment),
+			Phrase:            phrase,
+			ClusterID:         strings.TrimSpace(child.Phase2ClusterID),
+			SearchQuery:       strings.TrimSpace(child.SearchQueryPhrase),
+			SupportCount:      child.SupportCount,
+			SupportShare:      pct(child.SupportCount, totalEnvironmentSupport),
+			PostGoodCount:     child.PostGoodCommitCount,
+			AlsoSeenIn:        alsoSeenInOtherEnvironments(phraseEnvironments[phrase], environment),
+			QualityScore:      globalQualityScore(qualityCodes),
+			QualityNoteLabels: qualityLabels,
+			ContributingTests: toTriageContributingTests(child.ContributingTests),
+			FullErrorSamples:  append([]string(nil), child.FullErrorSamples...),
+			References:        toTriageRunReferences(child.References),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SupportCount != out[j].SupportCount {
+			return out[i].SupportCount > out[j].SupportCount
+		}
+		if out[i].PostGoodCount != out[j].PostGoodCount {
+			return out[i].PostGoodCount > out[j].PostGoodCount
+		}
+		if strings.TrimSpace(out[i].Phrase) != strings.TrimSpace(out[j].Phrase) {
+			return strings.TrimSpace(out[i].Phrase) < strings.TrimSpace(out[j].Phrase)
+		}
+		return strings.TrimSpace(out[i].ClusterID) < strings.TrimSpace(out[j].ClusterID)
+	})
 	return out
 }
 

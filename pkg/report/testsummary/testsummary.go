@@ -142,6 +142,7 @@ const sparklineWindowDays = 7
 
 const (
 	reportFormatHTML = "html"
+	metricRunCount   = "run_count"
 )
 
 func Run(ctx context.Context, args []string) error {
@@ -208,6 +209,16 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			if err != nil {
 				return fmt.Errorf("build quality rows for environment %q: %w", environment, err)
 			}
+			impactTotalJobs, err := metricRunTotalForRows(
+				ctx,
+				store,
+				buildResult.Rows,
+				validated.WindowStart,
+				validated.WindowEnd,
+			)
+			if err != nil {
+				return fmt.Errorf("load overall metric run counts for environment %q: %w", environment, err)
+			}
 			report := buildHTML(
 				buildResult.Rows,
 				buildResult.SemanticSource,
@@ -215,6 +226,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 				generatedAt,
 				validated.WindowStart,
 				validated.WindowEnd,
+				impactTotalJobs,
 			)
 			allFlaggedExports = append(allFlaggedExports, toQualityFlaggedSignatureExports(buildResult.Rows)...)
 			outputPath := outputPathForEnvironment(validated.OutputPath, environment)
@@ -276,6 +288,16 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	if err != nil {
 		return fmt.Errorf("build quality rows: %w", err)
 	}
+	impactTotalJobs, err := metricRunTotalForRows(
+		ctx,
+		store,
+		buildResult.Rows,
+		validated.WindowStart,
+		validated.WindowEnd,
+	)
+	if err != nil {
+		return fmt.Errorf("load overall metric run counts: %w", err)
+	}
 	report := buildHTML(
 		buildResult.Rows,
 		buildResult.SemanticSource,
@@ -283,6 +305,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		generatedAt,
 		validated.WindowStart,
 		validated.WindowEnd,
+		impactTotalJobs,
 	)
 	if err := writeTestSummary(validated.OutputPath, report); err != nil {
 		return err
@@ -386,6 +409,116 @@ func buildQualityRowsFromStoreScope(
 	result.MetadataByNoSuite = len(metadataByNoSuite)
 	result.FullErrorReferences = len(fullErrorsByReference)
 	return result, nil
+}
+
+func metricRunTotalForRows(
+	ctx context.Context,
+	store storecontracts.Store,
+	rows []qualitySignatureRow,
+	windowStartRaw string,
+	windowEndRaw string,
+) (int, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	envSet := map[string]struct{}{}
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		envSet[environment] = struct{}{}
+	}
+	environments := make([]string, 0, len(envSet))
+	for environment := range envSet {
+		environments = append(environments, environment)
+	}
+	sort.Strings(environments)
+	windowStart, windowEnd := metricWindowBounds(windowStartRaw, windowEndRaw)
+	totals, err := metricRunTotalsByEnvironment(ctx, store, environments, windowStart, windowEnd)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, environment := range environments {
+		total += totals[environment]
+	}
+	return total, nil
+}
+
+func metricRunTotalsByEnvironment(
+	ctx context.Context,
+	store storecontracts.Store,
+	environments []string,
+	windowStart time.Time,
+	windowEnd time.Time,
+) (map[string]int, error) {
+	totals := map[string]int{}
+	normalizedEnvironments := normalizeReportEnvironments(environments)
+	if len(normalizedEnvironments) == 0 {
+		return totals, nil
+	}
+	dates, err := store.ListMetricDates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, date := range dates {
+		trimmedDate := strings.TrimSpace(date)
+		if trimmedDate == "" {
+			continue
+		}
+		if !windowStart.IsZero() && !windowEnd.IsZero() {
+			dateValue, ok := parseMetricDate(trimmedDate)
+			if !ok {
+				continue
+			}
+			if dateValue.Before(windowStart) || !dateValue.Before(windowEnd) {
+				continue
+			}
+		}
+		for _, environment := range normalizedEnvironments {
+			rows, err := store.ListMetricsDailyByDate(ctx, environment, trimmedDate)
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				if strings.TrimSpace(row.Metric) != metricRunCount {
+					continue
+				}
+				value := int(row.Value)
+				if value <= 0 {
+					continue
+				}
+				totals[environment] += value
+			}
+		}
+	}
+	return totals, nil
+}
+
+func metricWindowBounds(windowStartRaw string, windowEndRaw string) (time.Time, time.Time) {
+	start, err := time.Parse(time.RFC3339, strings.TrimSpace(windowStartRaw))
+	if err != nil {
+		return time.Time{}, time.Time{}
+	}
+	end, err := time.Parse(time.RFC3339, strings.TrimSpace(windowEndRaw))
+	if err != nil {
+		return time.Time{}, time.Time{}
+	}
+	start = start.UTC()
+	end = end.UTC()
+	if !start.Before(end) {
+		return time.Time{}, time.Time{}
+	}
+	return start, end
+}
+
+func parseMetricDate(value string) (time.Time, bool) {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
 }
 
 func parse(args []string) (Options, error) {
