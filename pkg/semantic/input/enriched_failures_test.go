@@ -152,3 +152,89 @@ func TestBuildEnrichedFailuresReturnsErrorForMissingRunMetadata(t *testing.T) {
 		t.Fatalf("unexpected missing run metadata count: got=%d want=%d", got, want)
 	}
 }
+
+func TestBuildEnrichedFailuresUsesBulkStoreReads(t *testing.T) {
+	t.Parallel()
+
+	baseStore, err := ndjson.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { _ = baseStore.Close() })
+
+	ctx := context.Background()
+	if err := baseStore.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example/run/dev-1",
+			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			OccurredAt:  "2026-03-06T10:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := baseStore.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment:    "dev",
+			RowID:          "row-1",
+			RunURL:         "https://prow.example/run/dev-1",
+			TestName:       "test-dev",
+			TestSuite:      "suite-dev",
+			SignatureID:    "sig-dev",
+			OccurredAt:     "2026-03-06T10:05:00Z",
+			RawText:        "raw failure",
+			NormalizedText: "raw failure",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	store := &enrichedFailuresStoreSpy{Store: baseStore}
+	result, err := BuildEnrichedFailures(ctx, store, BuildOptions{})
+	if err != nil {
+		t.Fatalf("build enriched failures: %v", err)
+	}
+	if got, want := len(result.Rows), 1; got != want {
+		t.Fatalf("unexpected row count: got=%d want=%d", got, want)
+	}
+	if got, want := store.listRunsCalls, 1; got != want {
+		t.Fatalf("expected ListRuns to be called once, got=%d", got)
+	}
+	if got, want := store.listRawFailuresCalls, 1; got != want {
+		t.Fatalf("expected ListRawFailures to be called once, got=%d", got)
+	}
+	if store.getRunCalls != 0 {
+		t.Fatalf("expected GetRun to not be called, got=%d", store.getRunCalls)
+	}
+	if store.listRawFailuresByRunCalls != 0 {
+		t.Fatalf("expected ListRawFailuresByRun to not be called, got=%d", store.listRawFailuresByRunCalls)
+	}
+}
+
+type enrichedFailuresStoreSpy struct {
+	storecontracts.Store
+	listRunsCalls             int
+	listRawFailuresCalls      int
+	getRunCalls               int
+	listRawFailuresByRunCalls int
+}
+
+func (s *enrichedFailuresStoreSpy) ListRuns(ctx context.Context) ([]storecontracts.RunRecord, error) {
+	s.listRunsCalls++
+	return s.Store.ListRuns(ctx)
+}
+
+func (s *enrichedFailuresStoreSpy) ListRawFailures(ctx context.Context) ([]storecontracts.RawFailureRecord, error) {
+	s.listRawFailuresCalls++
+	return s.Store.ListRawFailures(ctx)
+}
+
+func (s *enrichedFailuresStoreSpy) GetRun(ctx context.Context, environment string, runURL string) (storecontracts.RunRecord, bool, error) {
+	s.getRunCalls++
+	return s.Store.GetRun(ctx, environment, runURL)
+}
+
+func (s *enrichedFailuresStoreSpy) ListRawFailuresByRun(ctx context.Context, environment string, runURL string) ([]storecontracts.RawFailureRecord, error) {
+	s.listRawFailuresByRunCalls++
+	return s.Store.ListRawFailuresByRun(ctx, environment, runURL)
+}

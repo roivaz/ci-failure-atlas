@@ -68,9 +68,23 @@ func BuildEnrichedFailures(ctx context.Context, store storecontracts.Store, opts
 		return BuildResult{}, fmt.Errorf("store is required")
 	}
 
-	keys, err := store.ListRawFailureRunKeys(ctx)
+	runs, err := store.ListRuns(ctx)
 	if err != nil {
-		return BuildResult{}, fmt.Errorf("list raw failure run keys: %w", err)
+		return BuildResult{}, fmt.Errorf("list runs: %w", err)
+	}
+	runByKey := make(map[string]storecontracts.RunRecord, len(runs))
+	for _, run := range runs {
+		normalizedRun := normalizeRun(run)
+		key := enrichedRunLookupKey(normalizedRun.Environment, normalizedRun.RunURL)
+		if key == "" {
+			continue
+		}
+		runByKey[key] = normalizedRun
+	}
+
+	rawRows, err := store.ListRawFailures(ctx)
+	if err != nil {
+		return BuildResult{}, fmt.Errorf("list raw failures: %w", err)
 	}
 
 	result := BuildResult{
@@ -79,77 +93,67 @@ func BuildEnrichedFailures(ctx context.Context, store storecontracts.Store, opts
 		InvalidRows: make([]BuildIssue, 0),
 	}
 
-	for _, key := range keys {
-		environment, runURL, splitErr := splitEnvironmentRunKey(key)
-		if splitErr != nil {
+	for _, row := range rawRows {
+		normalizedRow := normalizeRawFailure(row, row.Environment, row.RunURL)
+		environment := normalizeEnvironment(normalizedRow.Environment)
+		runURL := strings.TrimSpace(normalizedRow.RunURL)
+		if environment == "" || runURL == "" {
 			continue
 		}
 		if !isEnvironmentEnabled(environment, opts.EnvironmentSet) {
 			continue
 		}
 
-		rows, listErr := store.ListRawFailuresByRun(ctx, environment, runURL)
-		if listErr != nil {
-			return BuildResult{}, fmt.Errorf("list raw failures by run for key %q: %w", key, listErr)
+		result.Diagnostics.RawRowsTotal++
+		if normalizedRow.NonArtifactBacked {
+			result.Diagnostics.RowsSkippedNonArtifact++
+			continue
 		}
 
-		run, runFound, getErr := store.GetRun(ctx, environment, runURL)
-		if getErr != nil {
-			return BuildResult{}, fmt.Errorf("get run for key %q: %w", key, getErr)
-		}
-		normalizedRun := normalizeRun(run)
+		runKey := enrichedRunLookupKey(environment, runURL)
+		normalizedRun, runFound := runByKey[runKey]
 		if !runFound {
 			normalizedRun = storecontracts.RunRecord{}
 		}
 
-		for _, row := range rows {
-			result.Diagnostics.RawRowsTotal++
-
-			if row.NonArtifactBacked {
-				result.Diagnostics.RowsSkippedNonArtifact++
-				continue
-			}
-
-			normalizedRow := normalizeRawFailure(row, environment, runURL)
-			issues := validateRow(normalizedRow, normalizedRun, runFound)
-			if len(issues) > 0 {
-				result.Diagnostics.RowsSkippedInvalid++
-				for _, issue := range issues {
-					incrementIssueCounters(&result.Diagnostics, issue.Reason)
-					if len(result.InvalidRows) < invalidRowsSampleLimit {
-						result.InvalidRows = append(result.InvalidRows, issue)
-					}
+		issues := validateRow(normalizedRow, normalizedRun, runFound)
+		if len(issues) > 0 {
+			result.Diagnostics.RowsSkippedInvalid++
+			for _, issue := range issues {
+				incrementIssueCounters(&result.Diagnostics, issue.Reason)
+				if len(result.InvalidRows) < invalidRowsSampleLimit {
+					result.InvalidRows = append(result.InvalidRows, issue)
 				}
-				continue
 			}
-
-			if !isRowWithinWindow(normalizedRow, normalizedRun, opts.WindowStart, opts.WindowEnd) {
-				result.Diagnostics.RowsSkippedOutsideWindow++
-				continue
-			}
-
-			occurredAt := normalizedRow.OccurredAt
-			if occurredAt == "" {
-				occurredAt = strings.TrimSpace(normalizedRun.OccurredAt)
-			}
-
-			result.Rows = append(result.Rows, EnrichedFailure{
-				Environment:    environment,
-				RunURL:         runURL,
-				RowID:          normalizedRow.RowID,
-				OccurredAt:     occurredAt,
-				JobName:        strings.TrimSpace(normalizedRun.JobName),
-				Lane:           string(testrules.ClassifyLane(environment, normalizedRow.TestSuite, normalizedRow.TestName)),
-				PRNumber:       normalizedRun.PRNumber,
-				PostGoodCommit: normalizedRun.PostGoodCommit,
-				TestName:       normalizedRow.TestName,
-				TestSuite:      normalizedRow.TestSuite,
-				SignatureID:    normalizedRow.SignatureID,
-				RawText:        normalizedRow.RawText,
-				NormalizedText: normalizedRow.NormalizedText,
-			})
-			result.Diagnostics.RowsIncluded++
+			continue
 		}
+
+		if !isRowWithinWindow(normalizedRow, normalizedRun, opts.WindowStart, opts.WindowEnd) {
+			result.Diagnostics.RowsSkippedOutsideWindow++
+			continue
+		}
+
+		occurredAt := normalizedRow.OccurredAt
+		if occurredAt == "" {
+			occurredAt = strings.TrimSpace(normalizedRun.OccurredAt)
+		}
+
+		result.Rows = append(result.Rows, EnrichedFailure{
+			Environment:    environment,
+			RunURL:         runURL,
+			RowID:          normalizedRow.RowID,
+			OccurredAt:     occurredAt,
+			JobName:        strings.TrimSpace(normalizedRun.JobName),
+			Lane:           string(testrules.ClassifyLane(environment, normalizedRow.TestSuite, normalizedRow.TestName)),
+			PRNumber:       normalizedRun.PRNumber,
+			PostGoodCommit: normalizedRun.PostGoodCommit,
+			TestName:       normalizedRow.TestName,
+			TestSuite:      normalizedRow.TestSuite,
+			SignatureID:    normalizedRow.SignatureID,
+			RawText:        normalizedRow.RawText,
+			NormalizedText: normalizedRow.NormalizedText,
+		})
+		result.Diagnostics.RowsIncluded++
 	}
 
 	sort.Slice(result.Rows, func(i, j int) bool {
@@ -195,20 +199,13 @@ func BuildEnrichedFailures(ctx context.Context, store storecontracts.Store, opts
 	return result, nil
 }
 
-func splitEnvironmentRunKey(key string) (string, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(key), "|", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid key %q: expected environment|run_url", key)
+func enrichedRunLookupKey(environment string, runURL string) string {
+	normalizedEnvironment := normalizeEnvironment(environment)
+	normalizedRunURL := strings.TrimSpace(runURL)
+	if normalizedEnvironment == "" || normalizedRunURL == "" {
+		return ""
 	}
-	environment := normalizeEnvironment(parts[0])
-	runURL := strings.TrimSpace(parts[1])
-	if environment == "" {
-		return "", "", fmt.Errorf("invalid key %q: missing environment", key)
-	}
-	if runURL == "" {
-		return "", "", fmt.Errorf("invalid key %q: missing run_url", key)
-	}
-	return environment, runURL, nil
+	return normalizedEnvironment + "|" + normalizedRunURL
 }
 
 func isEnvironmentEnabled(environment string, envSet map[string]struct{}) bool {
@@ -244,15 +241,16 @@ func normalizeRawFailure(row storecontracts.RawFailureRecord, fallbackEnvironmen
 		normalizedRunURL = strings.TrimSpace(fallbackRunURL)
 	}
 	return storecontracts.RawFailureRecord{
-		Environment:    normalizedEnvironment,
-		RowID:          strings.TrimSpace(row.RowID),
-		RunURL:         normalizedRunURL,
-		TestName:       strings.TrimSpace(row.TestName),
-		TestSuite:      strings.TrimSpace(row.TestSuite),
-		SignatureID:    strings.TrimSpace(row.SignatureID),
-		OccurredAt:     strings.TrimSpace(row.OccurredAt),
-		RawText:        strings.TrimSpace(row.RawText),
-		NormalizedText: strings.TrimSpace(row.NormalizedText),
+		Environment:       normalizedEnvironment,
+		RowID:             strings.TrimSpace(row.RowID),
+		RunURL:            normalizedRunURL,
+		NonArtifactBacked: row.NonArtifactBacked,
+		TestName:          strings.TrimSpace(row.TestName),
+		TestSuite:         strings.TrimSpace(row.TestSuite),
+		SignatureID:       strings.TrimSpace(row.SignatureID),
+		OccurredAt:        strings.TrimSpace(row.OccurredAt),
+		RawText:           strings.TrimSpace(row.RawText),
+		NormalizedText:    strings.TrimSpace(row.NormalizedText),
 	}
 }
 

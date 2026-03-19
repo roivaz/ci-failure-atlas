@@ -157,6 +157,57 @@ func (s *Store) UpsertRuns(ctx context.Context, runs []contracts.RunRecord) erro
 	return writeNDJSON(path, merged)
 }
 
+func (s *Store) ListRuns(ctx context.Context) ([]contracts.RunRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RunRecord](s.runsPath())
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]contracts.RunRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizeRunRecord(row)
+		if normalized.Environment == "" || normalized.RunURL == "" {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Environment != out[j].Environment {
+			return out[i].Environment < out[j].Environment
+		}
+		if out[i].RunURL != out[j].RunURL {
+			return out[i].RunURL < out[j].RunURL
+		}
+		if out[i].OccurredAt != out[j].OccurredAt {
+			return out[i].OccurredAt < out[j].OccurredAt
+		}
+		if out[i].PRNumber != out[j].PRNumber {
+			return out[i].PRNumber < out[j].PRNumber
+		}
+		if out[i].PRSHA != out[j].PRSHA {
+			return out[i].PRSHA < out[j].PRSHA
+		}
+		if out[i].FinalMergedSHA != out[j].FinalMergedSHA {
+			return out[i].FinalMergedSHA < out[j].FinalMergedSHA
+		}
+		if out[i].MergedPR != out[j].MergedPR {
+			return !out[i].MergedPR && out[j].MergedPR
+		}
+		if out[i].PostGoodCommit != out[j].PostGoodCommit {
+			return !out[i].PostGoodCommit && out[j].PostGoodCommit
+		}
+		return out[i].JobName < out[j].JobName
+	})
+	return out, nil
+}
+
 func (s *Store) ListRunKeys(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -621,6 +672,42 @@ func (s *Store) UpsertRawFailures(ctx context.Context, rows []contracts.RawFailu
 	})
 
 	return writeNDJSON(path, merged)
+}
+
+func (s *Store) ListRawFailures(ctx context.Context) ([]contracts.RawFailureRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.RawFailureRecord](s.rawFailuresPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.RawFailureRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizeRawFailureRecord(row)
+		if normalized.Environment == "" || normalized.RunURL == "" || normalized.RowID == "" || normalized.SignatureID == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Environment != filtered[j].Environment {
+			return filtered[i].Environment < filtered[j].Environment
+		}
+		if filtered[i].RowID != filtered[j].RowID {
+			return filtered[i].RowID < filtered[j].RowID
+		}
+		if filtered[i].RunURL != filtered[j].RunURL {
+			return filtered[i].RunURL < filtered[j].RunURL
+		}
+		return filtered[i].SignatureID < filtered[j].SignatureID
+	})
+	return filtered, nil
 }
 
 func (s *Store) ListRawFailureRunKeys(ctx context.Context) ([]string, error) {

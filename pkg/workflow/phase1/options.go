@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ci-failure-atlas/pkg/ndjsonoptions"
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	phase1engine "ci-failure-atlas/pkg/semantic/engine/phase1"
 	semanticinput "ci-failure-atlas/pkg/semantic/input"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
@@ -66,6 +67,24 @@ type completedOptions struct {
 
 type Options struct {
 	*completedOptions
+}
+
+type PipelineTimings struct {
+	EnrichInput time.Duration
+	Workset     time.Duration
+	Normalize   time.Duration
+	Classify    time.Duration
+	Compile     time.Duration
+}
+
+type PipelineResult struct {
+	Diagnostics  semanticinput.Diagnostics
+	Workset      []semanticcontracts.Phase1WorksetRecord
+	Normalized   []semanticcontracts.Phase1NormalizedRecord
+	Assignments  []semanticcontracts.Phase1AssignmentRecord
+	TestClusters []semanticcontracts.TestClusterRecord
+	ReviewItems  []semanticcontracts.ReviewItemRecord
+	Timings      PipelineTimings
 }
 
 var supportedWorkflowEnvironments = []string{"dev", "int", "stg", "prod"}
@@ -124,6 +143,57 @@ func (o *Options) Cleanup() {
 	}
 }
 
+func (o *Options) RunPipeline(ctx context.Context) (PipelineResult, error) {
+	if o == nil {
+		return PipelineResult{}, fmt.Errorf("options are required")
+	}
+	start := time.Now()
+	enriched, err := semanticinput.BuildEnrichedFailures(ctx, o.Store, semanticinput.BuildOptions{
+		EnvironmentSet: copyStringSet(o.EnvironmentSet),
+		WindowStart:    cloneTimePointer(o.WindowStart),
+		WindowEnd:      cloneTimePointer(o.WindowEnd),
+	})
+	if err != nil {
+		return PipelineResult{}, fmt.Errorf("build enriched semantic input rows: %w", err)
+	}
+	enrichDuration := time.Since(start)
+
+	start = time.Now()
+	workset := phase1engine.BuildWorkset(enriched.Rows)
+	worksetDuration := time.Since(start)
+
+	start = time.Now()
+	normalized := phase1engine.Normalize(workset)
+	normalizeDuration := time.Since(start)
+
+	start = time.Now()
+	assignments := phase1engine.Classify(normalized)
+	classifyDuration := time.Since(start)
+
+	start = time.Now()
+	testClusters, reviewItems, err := phase1engine.Compile(workset, assignments)
+	if err != nil {
+		return PipelineResult{}, fmt.Errorf("compile phase1 outputs: %w", err)
+	}
+	compileDuration := time.Since(start)
+
+	return PipelineResult{
+		Diagnostics:  enriched.Diagnostics,
+		Workset:      workset,
+		Normalized:   normalized,
+		Assignments:  assignments,
+		TestClusters: testClusters,
+		ReviewItems:  reviewItems,
+		Timings: PipelineTimings{
+			EnrichInput: enrichDuration,
+			Workset:     worksetDuration,
+			Normalize:   normalizeDuration,
+			Classify:    classifyDuration,
+			Compile:     compileDuration,
+		},
+	}, nil
+}
+
 func (o *Options) Run(ctx context.Context) error {
 	logger, err := logr.FromContext(ctx)
 	if err != nil {
@@ -131,36 +201,24 @@ func (o *Options) Run(ctx context.Context) error {
 	}
 	defer o.Cleanup()
 
-	enriched, err := semanticinput.BuildEnrichedFailures(ctx, o.Store, semanticinput.BuildOptions{
-		EnvironmentSet: copyStringSet(o.EnvironmentSet),
-		WindowStart:    cloneTimePointer(o.WindowStart),
-		WindowEnd:      cloneTimePointer(o.WindowEnd),
-	})
+	pipeline, err := o.RunPipeline(ctx)
 	if err != nil {
-		return fmt.Errorf("build enriched semantic input rows: %w", err)
+		return err
 	}
 
-	workset := phase1engine.BuildWorkset(enriched.Rows)
-	normalized := phase1engine.Normalize(workset)
-	assignments := phase1engine.Classify(normalized)
-	testClusters, reviewItems, err := phase1engine.Compile(workset, assignments)
-	if err != nil {
-		return fmt.Errorf("compile phase1 outputs: %w", err)
-	}
-
-	if err := o.Store.UpsertPhase1Workset(ctx, workset); err != nil {
+	if err := o.Store.UpsertPhase1Workset(ctx, pipeline.Workset); err != nil {
 		return fmt.Errorf("upsert phase1 workset: %w", err)
 	}
-	if err := o.Store.UpsertPhase1Normalized(ctx, normalized); err != nil {
+	if err := o.Store.UpsertPhase1Normalized(ctx, pipeline.Normalized); err != nil {
 		return fmt.Errorf("upsert phase1 normalized rows: %w", err)
 	}
-	if err := o.Store.UpsertPhase1Assignments(ctx, assignments); err != nil {
+	if err := o.Store.UpsertPhase1Assignments(ctx, pipeline.Assignments); err != nil {
 		return fmt.Errorf("upsert phase1 assignments: %w", err)
 	}
-	if err := o.Store.UpsertTestClusters(ctx, testClusters); err != nil {
+	if err := o.Store.UpsertTestClusters(ctx, pipeline.TestClusters); err != nil {
 		return fmt.Errorf("upsert test clusters: %w", err)
 	}
-	if err := o.Store.UpsertReviewQueue(ctx, reviewItems); err != nil {
+	if err := o.Store.UpsertReviewQueue(ctx, pipeline.ReviewItems); err != nil {
 		return fmt.Errorf("upsert review queue: %w", err)
 	}
 
@@ -169,16 +227,21 @@ func (o *Options) Run(ctx context.Context) error {
 		"envs", strings.Join(o.Environments, ","),
 		"window_start", formatOptionalTime(o.WindowStart),
 		"window_end", formatOptionalTime(o.WindowEnd),
-		"raw_rows_total", enriched.Diagnostics.RawRowsTotal,
-		"rows_included", enriched.Diagnostics.RowsIncluded,
-		"rows_skipped_outside_window", enriched.Diagnostics.RowsSkippedOutsideWindow,
-		"rows_skipped_non_artifact", enriched.Diagnostics.RowsSkippedNonArtifact,
-		"rows_skipped_invalid", enriched.Diagnostics.RowsSkippedInvalid,
-		"workset_rows", len(workset),
-		"normalized_rows", len(normalized),
-		"assignments", len(assignments),
-		"test_clusters", len(testClusters),
-		"review_items", len(reviewItems),
+		"raw_rows_total", pipeline.Diagnostics.RawRowsTotal,
+		"rows_included", pipeline.Diagnostics.RowsIncluded,
+		"rows_skipped_outside_window", pipeline.Diagnostics.RowsSkippedOutsideWindow,
+		"rows_skipped_non_artifact", pipeline.Diagnostics.RowsSkippedNonArtifact,
+		"rows_skipped_invalid", pipeline.Diagnostics.RowsSkippedInvalid,
+		"workset_rows", len(pipeline.Workset),
+		"normalized_rows", len(pipeline.Normalized),
+		"assignments", len(pipeline.Assignments),
+		"test_clusters", len(pipeline.TestClusters),
+		"review_items", len(pipeline.ReviewItems),
+		"duration_enrich_input_ms", pipeline.Timings.EnrichInput.Milliseconds(),
+		"duration_workset_ms", pipeline.Timings.Workset.Milliseconds(),
+		"duration_normalize_ms", pipeline.Timings.Normalize.Milliseconds(),
+		"duration_classify_ms", pipeline.Timings.Classify.Milliseconds(),
+		"duration_compile_ms", pipeline.Timings.Compile.Milliseconds(),
 	)
 	return nil
 }

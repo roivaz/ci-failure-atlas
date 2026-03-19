@@ -100,6 +100,7 @@ type DeadLetterRecord struct {
 
 type RunStore interface {
 	UpsertRuns(ctx context.Context, runs []RunRecord) error
+	ListRuns(ctx context.Context) ([]RunRecord, error)
 	ListRunKeys(ctx context.Context) ([]string, error)
 	ListRunDates(ctx context.Context) ([]string, error)
 	ListRunsByDate(ctx context.Context, environment string, date string) ([]RunRecord, error)
@@ -120,6 +121,7 @@ type ArtifactFailureStore interface {
 
 type RawFailureStore interface {
 	UpsertRawFailures(ctx context.Context, rows []RawFailureRecord) error
+	ListRawFailures(ctx context.Context) ([]RawFailureRecord, error)
 	ListRawFailureRunKeys(ctx context.Context) ([]string, error)
 	ListRawFailuresByRun(ctx context.Context, environment string, runURL string) ([]RawFailureRecord, error)
 	ListRawFailuresByDate(ctx context.Context, environment string, date string) ([]RawFailureRecord, error)
