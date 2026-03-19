@@ -904,6 +904,40 @@ func (s *Store) UpsertMetricsDaily(ctx context.Context, rows []contracts.MetricD
 	return writeNDJSON(path, merged)
 }
 
+func (s *Store) ListMetricsDaily(ctx context.Context) ([]contracts.MetricDailyRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := readNDJSON[contracts.MetricDailyRecord](s.metricsDailyPath())
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]contracts.MetricDailyRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizeMetricDailyRecord(row)
+		if normalized.Environment == "" || normalized.Date == "" || normalized.Metric == "" {
+			continue
+		}
+		filtered = append(filtered, normalized)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Environment != filtered[j].Environment {
+			return filtered[i].Environment < filtered[j].Environment
+		}
+		if filtered[i].Date != filtered[j].Date {
+			return filtered[i].Date < filtered[j].Date
+		}
+		return filtered[i].Metric < filtered[j].Metric
+	})
+	return filtered, nil
+}
+
 func (s *Store) ListMetricsDailyByDate(ctx context.Context, environment string, date string) ([]contracts.MetricDailyRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

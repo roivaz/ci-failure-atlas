@@ -468,6 +468,20 @@ func TestUpsertMetricsDailyAndListDates(t *testing.T) {
 		t.Fatalf("metric dates mismatch: got=%v want=%v", dates, wantDates)
 	}
 
+	allMetrics, err := store.ListMetricsDaily(ctx)
+	if err != nil {
+		t.Fatalf("list all metrics: %v", err)
+	}
+	if len(allMetrics) != 3 {
+		t.Fatalf("unexpected all metrics row count: got=%d want=3", len(allMetrics))
+	}
+	if allMetrics[0].Environment != "dev" || allMetrics[0].Date != "2026-03-04" || allMetrics[0].Metric != "novelty_rate" {
+		t.Fatalf("unexpected first all-metrics row: %+v", allMetrics[0])
+	}
+	if allMetrics[2].Environment != "int" || allMetrics[2].Date != "2026-03-05" || allMetrics[2].Metric != "top_n_share" {
+		t.Fatalf("unexpected last all-metrics row: %+v", allMetrics[2])
+	}
+
 	devRowsByDate, err := store.ListMetricsDailyByDate(ctx, "dev", "2026-03-05")
 	if err != nil {
 		t.Fatalf("list metrics by date: %v", err)

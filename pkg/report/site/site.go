@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
+
 	reportsummary "ci-failure-atlas/pkg/report/summary"
 	"ci-failure-atlas/pkg/report/triagehtml"
 	reportweekly "ci-failure-atlas/pkg/report/weekly"
@@ -441,6 +443,8 @@ func generateSiteReportsForWeek(
 	historyWeeks int,
 	sourceEnvironments []string,
 ) error {
+	logger := loggerFromContext(ctx).WithValues("component", "report.site")
+	totalStart := time.Now()
 	currentStore, err := ndjson.NewWithOptions(dataDirectory, ndjson.Options{
 		SemanticSubdirectory: semanticSubdirectory,
 	})
@@ -473,6 +477,18 @@ func generateSiteReportsForWeek(
 		return fmt.Errorf("create site week directory %q: %w", siteWeekDirectory, err)
 	}
 
+	historyStart := time.Now()
+	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
+		DataDirectory:                dataDirectory,
+		CurrentSemanticSubdir:        semanticSubdirectory,
+		GlobalSignatureLookbackWeeks: historyWeeks,
+	})
+	if err != nil {
+		return fmt.Errorf("build global signature history resolver for week %q: %w", semanticSubdirectory, err)
+	}
+	historyElapsed := time.Since(historyStart)
+
+	weeklyStart := time.Now()
 	weeklyOpts := reportweekly.DefaultOptions()
 	weeklyOpts.OutputPath = filepath.Join(siteWeekDirectory, weeklyReportFile)
 	weeklyOpts.StartDate = windowStart.UTC().Format("2006-01-02")
@@ -480,6 +496,7 @@ func generateSiteReportsForWeek(
 	weeklyOpts.DataDirectory = dataDirectory
 	weeklyOpts.SemanticSubdirectory = semanticSubdirectory
 	weeklyOpts.HistoryHorizonWeeks = historyWeeks
+	weeklyOpts.HistoryResolver = historyResolver
 	weeklyOpts.Chrome = buildReportChromeOptions(
 		semanticSubdirectory,
 		previousWeekSubdirectory,
@@ -489,7 +506,9 @@ func generateSiteReportsForWeek(
 	if err := reportweekly.GenerateWithComparison(ctx, currentStore, previousSemanticStore, weeklyOpts); err != nil {
 		return fmt.Errorf("generate weekly HTML for week %q: %w", semanticSubdirectory, err)
 	}
+	weeklyElapsed := time.Since(weeklyStart)
 
+	summaryStart := time.Now()
 	summaryOpts := reportsummary.DefaultOptions()
 	summaryOpts.OutputPath = filepath.Join(siteWeekDirectory, globalReportFile)
 	summaryOpts.Format = "html"
@@ -500,6 +519,7 @@ func generateSiteReportsForWeek(
 	summaryOpts.DataDirectory = dataDirectory
 	summaryOpts.SemanticSubdirectory = semanticSubdirectory
 	summaryOpts.HistoryHorizonWeeks = historyWeeks
+	summaryOpts.HistoryResolver = historyResolver
 	summaryOpts.Chrome = buildReportChromeOptions(
 		semanticSubdirectory,
 		previousWeekSubdirectory,
@@ -509,6 +529,16 @@ func generateSiteReportsForWeek(
 	if err := reportsummary.Generate(ctx, currentStore, summaryOpts); err != nil {
 		return fmt.Errorf("generate global triage HTML for week %q: %w", semanticSubdirectory, err)
 	}
+	summaryElapsed := time.Since(summaryStart)
+
+	logger.Info(
+		"Generated site reports for week.",
+		"week", semanticSubdirectory,
+		"history_resolver_ms", historyElapsed.Milliseconds(),
+		"weekly_ms", weeklyElapsed.Milliseconds(),
+		"summary_ms", summaryElapsed.Milliseconds(),
+		"total_ms", time.Since(totalStart).Milliseconds(),
+	)
 
 	return nil
 }
@@ -918,6 +948,14 @@ func normalizedContainer(value string) string {
 		return "$web"
 	}
 	return trimmed
+}
+
+func loggerFromContext(ctx context.Context) logr.Logger {
+	logger, err := logr.FromContext(ctx)
+	if err != nil {
+		return logr.Discard()
+	}
+	return logger
 }
 
 type azBlobUploader struct {

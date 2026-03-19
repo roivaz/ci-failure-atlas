@@ -654,32 +654,30 @@ func metricRunTotalsByEnvironment(
 	if store == nil {
 		return totals, nil
 	}
-	normalizedEnvironments := make([]string, 0, len(environments))
-	seen := map[string]struct{}{}
+	environmentSet := map[string]struct{}{}
 	for _, environment := range environments {
 		normalized := normalizeEnvironment(environment)
 		if normalized == "" {
 			continue
 		}
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		normalizedEnvironments = append(normalizedEnvironments, normalized)
+		environmentSet[normalized] = struct{}{}
 	}
-	if len(normalizedEnvironments) == 0 {
+	if len(environmentSet) == 0 {
 		return totals, nil
 	}
-	sort.Strings(normalizedEnvironments)
-	dates, err := store.ListMetricDates(ctx)
+	rows, err := store.ListMetricsDaily(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, date := range dates {
-		trimmedDate := strings.TrimSpace(date)
-		if trimmedDate == "" {
+	for _, row := range rows {
+		environment := normalizeEnvironment(row.Environment)
+		if _, ok := environmentSet[environment]; !ok {
 			continue
 		}
+		if strings.TrimSpace(row.Metric) != metricRunCount {
+			continue
+		}
+		trimmedDate := strings.TrimSpace(row.Date)
 		if !windowStart.IsZero() && !windowEnd.IsZero() {
 			dateValue, ok := parseMetricDate(trimmedDate)
 			if !ok {
@@ -689,22 +687,11 @@ func metricRunTotalsByEnvironment(
 				continue
 			}
 		}
-		for _, environment := range normalizedEnvironments {
-			rows, err := store.ListMetricsDailyByDate(ctx, environment, trimmedDate)
-			if err != nil {
-				return nil, err
-			}
-			for _, row := range rows {
-				if strings.TrimSpace(row.Metric) != metricRunCount {
-					continue
-				}
-				value := int(row.Value)
-				if value <= 0 {
-					continue
-				}
-				totals[environment] += value
-			}
+		value := int(row.Value)
+		if value <= 0 {
+			continue
 		}
+		totals[environment] += value
 	}
 	return totals, nil
 }

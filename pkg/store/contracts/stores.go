@@ -129,6 +129,7 @@ type RawFailureStore interface {
 
 type MetricsStore interface {
 	UpsertMetricsDaily(ctx context.Context, rows []MetricDailyRecord) error
+	ListMetricsDaily(ctx context.Context) ([]MetricDailyRecord, error)
 	ListMetricsDailyByDate(ctx context.Context, environment string, date string) ([]MetricDailyRecord, error)
 	ListMetricDates(ctx context.Context) ([]string, error)
 }

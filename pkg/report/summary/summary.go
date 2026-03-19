@@ -34,6 +34,7 @@ type Options struct {
 	DataDirectory        string
 	SemanticSubdirectory string
 	HistoryHorizonWeeks  int
+	HistoryResolver      semhistory.GlobalSignatureResolver
 	Chrome               triagehtml.ReportChromeOptions
 }
 
@@ -145,15 +146,15 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	}
 	reportGlobalRows := toReportGlobalClusters(globalRows)
 	reportLinkedChildrenByClusterKey := toReportGlobalClusterGroupMap(linkedChildrenByClusterKey)
-	reportLinkedChildrenByClusterKey, err = attachGlobalFullErrorSamplesByGroup(
-		ctx,
-		store,
+	rawFailuresByRun, err := loadRawFailuresByEnvironmentRun(ctx, store)
+	if err != nil {
+		return fmt.Errorf("list raw failures: %w", err)
+	}
+	reportLinkedChildrenByClusterKey = attachGlobalFullErrorSamplesByGroup(
 		reportLinkedChildrenByClusterKey,
 		summaryFullErrorExamplesLimit,
+		rawFailuresByRun,
 	)
-	if err != nil {
-		return fmt.Errorf("attach global full-error samples for linked child clusters: %w", err)
-	}
 	testRows, err := store.ListTestClusters(ctx)
 	if err != nil {
 		return fmt.Errorf("list test clusters: %w", err)
@@ -176,18 +177,18 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	}
 
 	var report string
-	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-		DataDirectory:                validated.DataDirectory,
-		CurrentSemanticSubdir:        validated.SemanticSubdirectory,
-		GlobalSignatureLookbackWeeks: validated.HistoryHorizonWeeks,
-	})
-	if err != nil {
-		return fmt.Errorf("build global signature history resolver: %w", err)
+	historyResolver := validated.HistoryResolver
+	if historyResolver == nil {
+		historyResolver, err = semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
+			DataDirectory:                validated.DataDirectory,
+			CurrentSemanticSubdir:        validated.SemanticSubdirectory,
+			GlobalSignatureLookbackWeeks: validated.HistoryHorizonWeeks,
+		})
+		if err != nil {
+			return fmt.Errorf("build global signature history resolver: %w", err)
+		}
 	}
-	htmlGlobalRows, htmlRowsErr := attachGlobalFullErrorSamples(ctx, store, reportGlobalRows, summaryFullErrorExamplesLimit)
-	if htmlRowsErr != nil {
-		return fmt.Errorf("attach global full-error samples: %w", htmlRowsErr)
-	}
+	htmlGlobalRows := attachGlobalFullErrorSamples(reportGlobalRows, summaryFullErrorExamplesLimit, rawFailuresByRun)
 	htmlGlobalRows = attachLinkedChildrenToGlobalRows(htmlGlobalRows, reportLinkedChildrenByClusterKey)
 	report = buildGlobalTriageHTML(
 		htmlGlobalRows,
@@ -210,10 +211,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			filteredTestRows := filterTestClustersByEnvironment(testRows, environment)
 			filteredReviewRows := filterReviewItemsByEnvironment(reviewRows, environment)
 			reportFilteredGlobalRows := toReportGlobalClusters(filteredGlobalRows)
-			htmlGlobalRows, htmlRowsErr := attachGlobalFullErrorSamples(ctx, store, reportFilteredGlobalRows, summaryFullErrorExamplesLimit)
-			if htmlRowsErr != nil {
-				return fmt.Errorf("attach global full-error samples for env=%q: %w", environment, htmlRowsErr)
-			}
+			htmlGlobalRows := attachGlobalFullErrorSamples(reportFilteredGlobalRows, summaryFullErrorExamplesLimit, rawFailuresByRun)
 			htmlGlobalRows = attachLinkedChildrenToGlobalRows(htmlGlobalRows, reportLinkedChildrenByClusterKey)
 			report := buildGlobalTriageHTML(
 				htmlGlobalRows,
@@ -257,10 +255,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		filteredTestRows = filterTestClustersByEnvironmentSet(testRows, envSet)
 		filteredReviewRows = filterReviewItemsByEnvironmentSet(reviewRows, envSet)
 		reportFilteredGlobalRows := toReportGlobalClusters(filteredGlobalRows)
-		htmlGlobalRows, htmlRowsErr := attachGlobalFullErrorSamples(ctx, store, reportFilteredGlobalRows, summaryFullErrorExamplesLimit)
-		if htmlRowsErr != nil {
-			return fmt.Errorf("attach global full-error samples for selected environments: %w", htmlRowsErr)
-		}
+		htmlGlobalRows := attachGlobalFullErrorSamples(reportFilteredGlobalRows, summaryFullErrorExamplesLimit, rawFailuresByRun)
 		htmlGlobalRows = attachLinkedChildrenToGlobalRows(htmlGlobalRows, reportLinkedChildrenByClusterKey)
 		report = buildGlobalTriageHTML(
 			htmlGlobalRows,
@@ -345,15 +340,23 @@ func metricRunTotalsByEnvironment(
 	if len(normalizedEnvironments) == 0 {
 		return totals, nil
 	}
-	dates, err := store.ListMetricDates(ctx)
+	environmentSet := make(map[string]struct{}, len(normalizedEnvironments))
+	for _, environment := range normalizedEnvironments {
+		environmentSet[environment] = struct{}{}
+	}
+	rows, err := store.ListMetricsDaily(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, date := range dates {
-		trimmedDate := strings.TrimSpace(date)
-		if trimmedDate == "" {
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := environmentSet[environment]; !ok {
 			continue
 		}
+		if strings.TrimSpace(row.Metric) != metricRunCount {
+			continue
+		}
+		trimmedDate := strings.TrimSpace(row.Date)
 		if !windowStart.IsZero() && !windowEnd.IsZero() {
 			dateValue, ok := parseMetricDate(trimmedDate)
 			if !ok {
@@ -363,22 +366,11 @@ func metricRunTotalsByEnvironment(
 				continue
 			}
 		}
-		for _, environment := range normalizedEnvironments {
-			rows, err := store.ListMetricsDailyByDate(ctx, environment, trimmedDate)
-			if err != nil {
-				return nil, err
-			}
-			for _, row := range rows {
-				if strings.TrimSpace(row.Metric) != metricRunCount {
-					continue
-				}
-				value := int(row.Value)
-				if value <= 0 {
-					continue
-				}
-				totals[environment] += value
-			}
+		value := int(row.Value)
+		if value <= 0 {
+			continue
 		}
+		totals[environment] += value
 	}
 	return totals, nil
 }
@@ -801,17 +793,49 @@ func min(a, b int) int {
 	return b
 }
 
-func attachGlobalFullErrorSamples(
+func loadRawFailuresByEnvironmentRun(
 	ctx context.Context,
 	store storecontracts.Store,
+) (map[string][]storecontracts.RawFailureRecord, error) {
+	rows, err := store.ListRawFailures(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byRun := map[string][]storecontracts.RawFailureRecord{}
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		runURL := strings.TrimSpace(row.RunURL)
+		if environment == "" || runURL == "" {
+			continue
+		}
+		key := environment + "|" + runURL
+		byRun[key] = append(byRun[key], row)
+	}
+	for key := range byRun {
+		runRows := byRun[key]
+		sort.Slice(runRows, func(i, j int) bool {
+			if runRows[i].OccurredAt != runRows[j].OccurredAt {
+				return runRows[i].OccurredAt < runRows[j].OccurredAt
+			}
+			if runRows[i].RowID != runRows[j].RowID {
+				return runRows[i].RowID < runRows[j].RowID
+			}
+			return runRows[i].SignatureID < runRows[j].SignatureID
+		})
+		byRun[key] = runRows
+	}
+	return byRun, nil
+}
+
+func attachGlobalFullErrorSamples(
 	clusters []globalCluster,
 	limit int,
-) ([]globalCluster, error) {
+	runFailuresByRun map[string][]storecontracts.RawFailureRecord,
+) []globalCluster {
 	if len(clusters) == 0 || limit <= 0 {
-		return append([]globalCluster(nil), clusters...), nil
+		return append([]globalCluster(nil), clusters...)
 	}
 	out := append([]globalCluster(nil), clusters...)
-	runFailureCache := map[string][]storecontracts.RawFailureRecord{}
 	for index := range out {
 		cluster := out[index]
 		signatureIDs := map[string]struct{}{}
@@ -854,15 +878,7 @@ func attachGlobalFullErrorSamples(
 				continue
 			}
 			cacheKey := environment + "|" + runURL
-			runRows, ok := runFailureCache[cacheKey]
-			if !ok {
-				loadedRows, err := store.ListRawFailuresByRun(ctx, environment, runURL)
-				if err != nil {
-					return nil, fmt.Errorf("list raw failures by run env=%q run=%q: %w", environment, runURL, err)
-				}
-				runRows = loadedRows
-				runFailureCache[cacheKey] = runRows
-			}
+			runRows := runFailuresByRun[cacheKey]
 			for _, runRow := range runRows {
 				if len(samples) >= limit {
 					break
@@ -882,17 +898,16 @@ func attachGlobalFullErrorSamples(
 		}
 		out[index].FullErrorSamples = samples
 	}
-	return out, nil
+	return out
 }
 
 func attachGlobalFullErrorSamplesByGroup(
-	ctx context.Context,
-	store storecontracts.Store,
 	groups map[string][]globalCluster,
 	limit int,
-) (map[string][]globalCluster, error) {
+	runFailuresByRun map[string][]storecontracts.RawFailureRecord,
+) map[string][]globalCluster {
 	if len(groups) == 0 {
-		return nil, nil
+		return nil
 	}
 	out := make(map[string][]globalCluster, len(groups))
 	keys := make([]string, 0, len(groups))
@@ -901,13 +916,9 @@ func attachGlobalFullErrorSamplesByGroup(
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		withSamples, err := attachGlobalFullErrorSamples(ctx, store, groups[key], limit)
-		if err != nil {
-			return nil, err
-		}
-		out[key] = withSamples
+		out[key] = attachGlobalFullErrorSamples(groups[key], limit, runFailuresByRun)
 	}
-	return out, nil
+	return out
 }
 
 func attachLinkedChildrenToGlobalRows(

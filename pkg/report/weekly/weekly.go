@@ -50,6 +50,7 @@ type Options struct {
 	DataDirectory        string
 	SemanticSubdirectory string
 	HistoryHorizonWeeks  int
+	HistoryResolver      semhistory.GlobalSignatureResolver
 	Chrome               triagehtml.ReportChromeOptions
 }
 
@@ -60,6 +61,7 @@ type validatedOptions struct {
 	DataDirectory        string
 	SemanticSubdirectory string
 	HistoryHorizonWeeks  int
+	HistoryResolver      semhistory.GlobalSignatureResolver
 	Chrome               triagehtml.ReportChromeOptions
 }
 
@@ -188,15 +190,16 @@ func GenerateWithComparison(
 	if err != nil {
 		return fmt.Errorf("load current semantic snapshot: %w", err)
 	}
-	if err := loadSignatureFullErrorSamplesByEnvironment(
-		ctx,
-		store,
+	rawFailureRows, err := store.ListRawFailures(ctx)
+	if err != nil {
+		return fmt.Errorf("list raw failures: %w", err)
+	}
+	loadSignatureFullErrorSamplesByEnvironment(
 		currentDates,
+		rawFailureRows,
 		&currentSemantic,
 		weeklySignatureFullErrorExamples,
-	); err != nil {
-		return fmt.Errorf("load signature full-error samples: %w", err)
-	}
+	)
 	testsBelowTargetByEnv, err := loadBelowTargetTestsByEnvironment(
 		ctx,
 		store,
@@ -217,13 +220,16 @@ func GenerateWithComparison(
 			return fmt.Errorf("load previous semantic snapshot: %w", err)
 		}
 	}
-	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-		DataDirectory:                validated.DataDirectory,
-		CurrentSemanticSubdir:        validated.SemanticSubdirectory,
-		GlobalSignatureLookbackWeeks: validated.HistoryHorizonWeeks,
-	})
-	if err != nil {
-		return fmt.Errorf("build global signature history resolver: %w", err)
+	historyResolver := validated.HistoryResolver
+	if historyResolver == nil {
+		historyResolver, err = semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
+			DataDirectory:                validated.DataDirectory,
+			CurrentSemanticSubdir:        validated.SemanticSubdirectory,
+			GlobalSignatureLookbackWeeks: validated.HistoryHorizonWeeks,
+		})
+		if err != nil {
+			return fmt.Errorf("build global signature history resolver: %w", err)
+		}
 	}
 
 	startDate := validated.StartDate.UTC()
@@ -252,6 +258,10 @@ func GenerateWithComparison(
 }
 
 func buildEnvReports(ctx context.Context, store storecontracts.Store, dates []string) ([]envReport, error) {
+	metricsByEnvironmentDate, err := loadMetricsDailyByEnvironmentDate(ctx, store, reportEnvironments, dates)
+	if err != nil {
+		return nil, err
+	}
 	reports := make([]envReport, 0, len(reportEnvironments))
 	for _, env := range reportEnvironments {
 		report := envReport{
@@ -259,10 +269,7 @@ func buildEnvReports(ctx context.Context, store storecontracts.Store, dates []st
 			Days:        make([]dayReport, 0, len(dates)),
 		}
 		for _, date := range dates {
-			rows, err := store.ListMetricsDailyByDate(ctx, env, date)
-			if err != nil {
-				return nil, fmt.Errorf("list metrics for env=%q date=%q: %w", env, date, err)
-			}
+			rows := metricsByEnvironmentDate[weeklyEnvironmentDateKey(env, date)]
 			dayCounts := collectCounts(rows)
 			day := dayReport{
 				Date:   date,
@@ -277,6 +284,55 @@ func buildEnvReports(ctx context.Context, store storecontracts.Store, dates []st
 		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+func loadMetricsDailyByEnvironmentDate(
+	ctx context.Context,
+	store storecontracts.Store,
+	environments []string,
+	dates []string,
+) (map[string][]storecontracts.MetricDailyRecord, error) {
+	rows, err := store.ListMetricsDaily(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list metrics daily: %w", err)
+	}
+	environmentSet := map[string]struct{}{}
+	for _, environment := range environments {
+		normalized := normalizeReportEnvironment(environment)
+		if normalized == "" {
+			continue
+		}
+		environmentSet[normalized] = struct{}{}
+	}
+	dateSet := map[string]struct{}{}
+	for _, date := range dates {
+		trimmed := strings.TrimSpace(date)
+		if trimmed == "" {
+			continue
+		}
+		dateSet[trimmed] = struct{}{}
+	}
+	out := make(map[string][]storecontracts.MetricDailyRecord, len(environmentSet)*len(dateSet))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := environmentSet[environment]; !ok {
+			continue
+		}
+		date := strings.TrimSpace(row.Date)
+		if _, ok := dateSet[date]; !ok {
+			continue
+		}
+		key := weeklyEnvironmentDateKey(environment, date)
+		out[key] = append(out[key], row)
+	}
+	for key := range out {
+		metricRows := out[key]
+		sort.Slice(metricRows, func(i, j int) bool {
+			return strings.TrimSpace(metricRows[i].Metric) < strings.TrimSpace(metricRows[j].Metric)
+		})
+		out[key] = metricRows
+	}
+	return out, nil
 }
 
 func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (semanticSnapshot, error) {
@@ -539,6 +595,7 @@ func validateOptions(opts Options) (validatedOptions, error) {
 		DataDirectory:        strings.TrimSpace(opts.DataDirectory),
 		SemanticSubdirectory: strings.TrimSpace(opts.SemanticSubdirectory),
 		HistoryHorizonWeeks:  opts.HistoryHorizonWeeks,
+		HistoryResolver:      opts.HistoryResolver,
 		Chrome:               opts.Chrome,
 	}, nil
 }
@@ -1750,18 +1807,18 @@ func mergeTriageContributingTests(existing []triagehtml.ContributingTest, incomi
 }
 
 func loadSignatureFullErrorSamplesByEnvironment(
-	ctx context.Context,
-	store storecontracts.Store,
 	dates []string,
+	rawRows []storecontracts.RawFailureRecord,
 	snapshot *semanticSnapshot,
 	limit int,
-) error {
+) {
 	if snapshot == nil || limit <= 0 || len(dates) == 0 {
-		return nil
+		return
 	}
 	if snapshot.PhraseFullErrorsByEnv == nil {
 		snapshot.PhraseFullErrorsByEnv = map[string]map[string][]string{}
 	}
+	rawByEnvironmentDate := indexRawFailuresByEnvironmentDate(rawRows)
 	for environment, signatureIDsByPhrase := range snapshot.PhraseSignatureIDs {
 		if len(signatureIDsByPhrase) == 0 {
 			continue
@@ -1787,11 +1844,7 @@ func loadSignatureFullErrorSamplesByEnvironment(
 			if date == "" {
 				continue
 			}
-			rows, err := store.ListRawFailuresByDate(ctx, environment, date)
-			if err != nil {
-				return fmt.Errorf("list raw failures for env=%q date=%q: %w", environment, date, err)
-			}
-			for _, row := range rows {
+			for _, row := range rawByEnvironmentDate[weeklyEnvironmentDateKey(environment, date)] {
 				signatureID := strings.TrimSpace(row.SignatureID)
 				if signatureID == "" {
 					continue
@@ -1814,7 +1867,39 @@ func loadSignatureFullErrorSamplesByEnvironment(
 			}
 		}
 	}
-	return nil
+}
+
+func indexRawFailuresByEnvironmentDate(rows []storecontracts.RawFailureRecord) map[string][]storecontracts.RawFailureRecord {
+	out := map[string][]storecontracts.RawFailureRecord{}
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		date, ok := dateFromTimestamp(row.OccurredAt)
+		if !ok {
+			continue
+		}
+		key := weeklyEnvironmentDateKey(environment, date)
+		if key == "" {
+			continue
+		}
+		out[key] = append(out[key], row)
+	}
+	for key := range out {
+		rawRows := out[key]
+		sort.Slice(rawRows, func(i, j int) bool {
+			if rawRows[i].OccurredAt != rawRows[j].OccurredAt {
+				return rawRows[i].OccurredAt < rawRows[j].OccurredAt
+			}
+			if rawRows[i].RunURL != rawRows[j].RunURL {
+				return rawRows[i].RunURL < rawRows[j].RunURL
+			}
+			if rawRows[i].RowID != rawRows[j].RowID {
+				return rawRows[i].RowID < rawRows[j].RowID
+			}
+			return rawRows[i].SignatureID < rawRows[j].SignatureID
+		})
+		out[key] = rawRows
+	}
+	return out
 }
 
 func appendUniqueLimitedSample(existing []string, candidate string, limit int) []string {
@@ -2115,6 +2200,29 @@ func formatSignedPercentPointCell(value float64) string {
 
 func normalizeReportEnvironment(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func weeklyEnvironmentDateKey(environment string, date string) string {
+	normalizedEnvironment := normalizeReportEnvironment(environment)
+	trimmedDate := strings.TrimSpace(date)
+	if normalizedEnvironment == "" || trimmedDate == "" {
+		return ""
+	}
+	return normalizedEnvironment + "|" + trimmedDate
+}
+
+func dateFromTimestamp(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", false
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+		return ts.UTC().Format("2006-01-02"), true
+	}
+	if ts, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return ts.UTC().Format("2006-01-02"), true
+	}
+	return "", false
 }
 
 func formatSignedInt(value int) string {
