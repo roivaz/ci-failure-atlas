@@ -40,7 +40,7 @@ This document freezes the phase1 behavior we preserve from the Python reference 
 
 ## Intentional Deviations
 
-- `workflow phase1` persists intermediate artifacts (`phase1_workset`, `phase1_normalized`, `phase1_assignments`) in `data/semantic/` for reproducibility and debugging.
+- The site-driven semantic build path persists only core artifacts by default (`phase1_workset`, `test_clusters`, `review_queue`, `global_clusters`) for runtime speed and lower storage churn.
 - Compile-stage search phrase recovery uses the same precedence model, but remains fail-open: if no explicit candidate is provable, it derives a literal fallback from row excerpts and marks `search_query_source_not_found`.
 
 ## Behavioral Guardrails

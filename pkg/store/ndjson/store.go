@@ -23,25 +23,24 @@ const (
 	semanticDirectory = "semantic"
 	stateDirectory    = "state"
 
-	runsFilename                 = "runs.ndjson"
-	pullRequestsFilename         = "pull_requests.ndjson"
-	artifactFailuresFilename     = "artifact_failures.ndjson"
-	rawFailuresFilename          = "raw_failures.ndjson"
-	metricsDailyFilename         = "metrics_daily.ndjson"
-	testMetadataDailyFile        = "test_metadata_daily.ndjson"
-	phase1WorksetFilename        = "phase1_workset.ndjson"
-	phase1NormalizedFilename     = "phase1_normalized.ndjson"
-	phase1AssignmentsFile        = "phase1_assignments.ndjson"
-	testClustersFilename         = "test_clusters.ndjson"
-	globalClustersFilename       = "global_clusters.ndjson"
-	phase3GlobalClustersFilename = "global_clusters_phase3.ndjson"
-	reviewQueueFilename          = "review_queue.ndjson"
-	checkpointsFilename          = "checkpoints.ndjson"
-	deadLettersFilename          = "dead_letters.ndjson"
-	phase3Directory              = "phase3"
-	phase3IssuesFilename         = "issues.ndjson"
-	phase3LinksFilename          = "links.ndjson"
-	phase3EventsFilename         = "events.ndjson"
+	runsFilename             = "runs.ndjson"
+	pullRequestsFilename     = "pull_requests.ndjson"
+	artifactFailuresFilename = "artifact_failures.ndjson"
+	rawFailuresFilename      = "raw_failures.ndjson"
+	metricsDailyFilename     = "metrics_daily.ndjson"
+	testMetadataDailyFile    = "test_metadata_daily.ndjson"
+	phase1WorksetFilename    = "phase1_workset.ndjson"
+	phase1NormalizedFilename = "phase1_normalized.ndjson"
+	phase1AssignmentsFile    = "phase1_assignments.ndjson"
+	testClustersFilename     = "test_clusters.ndjson"
+	globalClustersFilename   = "global_clusters.ndjson"
+	reviewQueueFilename      = "review_queue.ndjson"
+	checkpointsFilename      = "checkpoints.ndjson"
+	deadLettersFilename      = "dead_letters.ndjson"
+	phase3Directory          = "phase3"
+	phase3IssuesFilename     = "issues.ndjson"
+	phase3LinksFilename      = "links.ndjson"
+	phase3EventsFilename     = "events.ndjson"
 )
 
 type Store struct {
@@ -1667,10 +1666,6 @@ func (s *Store) UpsertGlobalClusters(ctx context.Context, rows []semanticcontrac
 	return s.upsertGlobalClustersPath(ctx, s.globalClustersPath(), rows)
 }
 
-func (s *Store) UpsertPhase3GlobalClusters(ctx context.Context, rows []semanticcontracts.GlobalClusterRecord) error {
-	return s.upsertGlobalClustersPath(ctx, s.phase3GlobalClustersPath(), rows)
-}
-
 func (s *Store) upsertGlobalClustersPath(
 	ctx context.Context,
 	path string,
@@ -1741,10 +1736,6 @@ func (s *Store) upsertGlobalClustersPath(
 
 func (s *Store) ListGlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error) {
 	return s.listGlobalClustersPath(ctx, s.globalClustersPath())
-}
-
-func (s *Store) ListPhase3GlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error) {
-	return s.listGlobalClustersPath(ctx, s.phase3GlobalClustersPath())
 }
 
 func (s *Store) listGlobalClustersPath(
@@ -2222,10 +2213,6 @@ func (s *Store) testClustersPath() string {
 
 func (s *Store) globalClustersPath() string {
 	return filepath.Join(s.semanticBasePath(), globalClustersFilename)
-}
-
-func (s *Store) phase3GlobalClustersPath() string {
-	return filepath.Join(s.semanticBasePath(), phase3GlobalClustersFilename)
 }
 
 func (s *Store) reviewQueuePath() string {

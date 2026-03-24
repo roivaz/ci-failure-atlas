@@ -34,7 +34,7 @@ const (
 	weeklyTestsBelowTargetTopLimit   = 5
 	weeklySignatureLoadedRowsLimit   = 50
 	weeklySignatureVisibleRows       = 10
-	weeklySignatureMinSharePct       = 1.0
+	weeklySignatureMinImpactPct      = 1.0
 	weeklySippyDefaultPeriod         = "default"
 	weeklyTestSuccessTarget          = 95.0
 	weeklyTestSuccessMinRuns         = 10
@@ -212,7 +212,7 @@ func GenerateWithComparison(
 	if err != nil {
 		return fmt.Errorf("load weekly tests below target: %w", err)
 	}
-	topSignaturesByEnv := rankTopSignaturesByEnvironment(currentSemantic, 0, weeklySignatureMinSharePct)
+	topSignaturesByEnv := rankTopSignaturesByEnvironment(currentSemantic, 0, 0)
 	var previousSemantic semanticSnapshot
 	if previousSemanticStore != nil {
 		previousSemantic, err = loadSemanticSnapshot(ctx, previousSemanticStore)
@@ -989,12 +989,6 @@ func buildHTML(
 		b.WriteString("    </div>\n")
 
 		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(testsPanelID), html.EscapeString(environment)))
-		b.WriteString(fmt.Sprintf("      <p class=\"panel-note\">Source: Sippy test metadata (period: %s, rolling 7-day window). Top %d tests below %.2f%% success; minimum %d runs. This view uses the first metadata datapoint available after the report window end date; if unavailable, it falls back to the latest datapoint before the end date.</p>\n",
-			html.EscapeString(weeklySippyDefaultPeriod),
-			weeklyTestsBelowTargetTopLimit,
-			weeklyTestSuccessTarget,
-			weeklyTestSuccessMinRuns,
-		))
 		tests := testsBelowTargetByEnv[environment]
 		if len(tests) == 0 {
 			b.WriteString(fmt.Sprintf("      <p class=\"panel-empty\">No tests below %.2f%% in this window with at least %d runs.</p>\n", weeklyTestSuccessTarget, weeklyTestSuccessMinRuns))
@@ -1022,9 +1016,9 @@ func buildHTML(
 
 		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(signaturesPanelID), html.EscapeString(environment)))
 		b.WriteString(fmt.Sprintf(
-			"      <p class=\"panel-note\">Up to %d semantic signatures are loaded in this window (minimum %.2f%% share), with %d shown by default. Default sorting is impact desc, jobs affected desc, flake score desc; click headers to re-sort.</p>\n",
+			"      <p class=\"panel-note\">Up to %d failures are loaded in this window (minimum %.2f%% impact), with %d shown by default. Default sorting is impact desc, jobs affected desc, flake score desc; click headers to re-sort.</p>\n",
 			weeklySignatureLoadedRowsLimit,
-			weeklySignatureMinSharePct,
+			weeklySignatureMinImpactPct,
 			weeklySignatureVisibleRows,
 		))
 		if triageReportHref := globalTriageEnvironmentHref(globalTriageBaseHref, environment); triageReportHref != "" {
@@ -1039,6 +1033,9 @@ func buildHTML(
 		} else {
 			triageRows := make([]triagehtml.SignatureRow, 0, len(signatures))
 			for _, item := range signatures {
+				if weeklyTopSignatureImpactPercent(item, report.Totals.RunCount) < weeklySignatureMinImpactPct {
+					continue
+				}
 				triageRow := topSignatureToTriageRow(item)
 				if historyResolver != nil {
 					presence := semhistory.SignaturePresence{}
@@ -1069,14 +1066,18 @@ func buildHTML(
 				}
 				triageRows = append(triageRows, triageRow)
 			}
-			b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
-				IncludeTrend:       true,
-				GitHubRepoOwner:    triagehtml.DefaultGitHubRepoOwner,
-				GitHubRepoName:     triagehtml.DefaultGitHubRepoName,
-				ImpactTotalJobs:    report.Totals.RunCount,
-				LoadedRowsLimit:    weeklySignatureLoadedRowsLimit,
-				InitialVisibleRows: weeklySignatureVisibleRows,
-			}))
+			if len(triageRows) == 0 {
+				b.WriteString(fmt.Sprintf("      <p class=\"panel-empty\">No failures meet the minimum %.2f%% impact threshold in this environment.</p>\n", weeklySignatureMinImpactPct))
+			} else {
+				b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
+					IncludeTrend:       true,
+					GitHubRepoOwner:    triagehtml.DefaultGitHubRepoOwner,
+					GitHubRepoName:     triagehtml.DefaultGitHubRepoName,
+					ImpactTotalJobs:    report.Totals.RunCount,
+					LoadedRowsLimit:    weeklySignatureLoadedRowsLimit,
+					InitialVisibleRows: weeklySignatureVisibleRows,
+				}))
+			}
 		}
 		b.WriteString("    </div>\n")
 		b.WriteString("  </section>\n")
@@ -1377,6 +1378,31 @@ func preferBelowTargetTest(candidate belowTargetTest, existing belowTargetTest) 
 		return candidate.TestSuite < existing.TestSuite
 	}
 	return candidate.TestName < existing.TestName
+}
+
+func weeklyTopSignatureImpactPercent(item topSignature, overallJobs int) float64 {
+	if overallJobs <= 0 {
+		return 0
+	}
+	jobsAffected := weeklyTopSignatureJobsAffected(item)
+	if jobsAffected <= 0 {
+		return 0
+	}
+	return (float64(jobsAffected) * 100.0) / float64(overallJobs)
+}
+
+func weeklyTopSignatureJobsAffected(item topSignature) int {
+	if len(item.LinkedChildren) == 0 {
+		return len(triagehtml.OrderedUniqueReferences(item.References))
+	}
+	total := 0
+	for _, child := range item.LinkedChildren {
+		total += len(triagehtml.OrderedUniqueReferences(child.References))
+	}
+	if total > 0 {
+		return total
+	}
+	return len(triagehtml.OrderedUniqueReferences(item.References))
 }
 
 func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {

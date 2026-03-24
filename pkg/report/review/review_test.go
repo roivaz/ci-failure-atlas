@@ -95,6 +95,8 @@ func TestHandlerRendersWeekAndPhase3Issue(t *testing.T) {
 		"ISSUE-42",
 		"Linked signatures (1)",
 		"name=\"cluster_id\"",
+		"Disband cluster",
+		"name=\"unlink_child\"",
 		"Refresh",
 		"id=\"theme-toggle\"",
 		"ci-failure-report-theme-mode",
@@ -619,6 +621,338 @@ func TestHandlerLinkActionFailsOnMixedPhase3Clusters(t *testing.T) {
 	}
 }
 
+func TestHandlerUnlinkActionCanTargetSingleLinkedChild(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	store, err := ndjson.NewWithOptions(dataDir, ndjson.Options{
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	ctx := context.Background()
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase2-dev-a",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            1,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{
+					Lane:         "e2e",
+					JobName:      "job-a",
+					TestName:     "test-a",
+					SupportCount: 1,
+				},
+			},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RowID:       "row-a",
+					RunURL:      "https://prow.example/run/a",
+					OccurredAt:  "2026-03-15T10:00:00Z",
+					SignatureID: "sig-a",
+				},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase2-dev-b",
+			CanonicalEvidencePhrase: "api timeout",
+			SearchQueryPhrase:       "api timeout",
+			SupportCount:            1,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{
+					Lane:         "e2e",
+					JobName:      "job-b",
+					TestName:     "test-b",
+					SupportCount: 1,
+				},
+			},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RowID:       "row-b",
+					RunURL:      "https://prow.example/run/b",
+					OccurredAt:  "2026-03-15T11:00:00Z",
+					SignatureID: "sig-b",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("upsert global clusters: %v", err)
+	}
+	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-shared",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/a",
+			RowID:         "row-a",
+			UpdatedAt:     "2026-03-16T10:00:00Z",
+		},
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-shared",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/b",
+			RowID:         "row-b",
+			UpdatedAt:     "2026-03-16T10:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("upsert phase3 links: %v", err)
+	}
+
+	handler, err := NewHandler(HandlerOptions{
+		DataDirectory:        dataDir,
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	formBody := strings.NewReader("week=2026-03-15&unlink_child=dev|phase2-dev-a")
+	req := httptest.NewRequest(http.MethodPost, "/actions/links", formBody)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	verifyStore, err := ndjson.NewWithOptions(dataDir, ndjson.Options{
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new verification store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = verifyStore.Close()
+	})
+	links, err := verifyStore.ListPhase3Links(context.Background())
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("expected only one link to remain after targeted unlink, got=%+v", links)
+	}
+	if strings.TrimSpace(links[0].RowID) != "row-b" || strings.TrimSpace(links[0].IssueID) != "p3c-shared" {
+		t.Fatalf("expected row-b link to remain, got=%+v", links)
+	}
+}
+
+func TestHandlerDisbandActionUnlinksWholeAggregatedCluster(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	store, err := ndjson.NewWithOptions(dataDir, ndjson.Options{
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	ctx := context.Background()
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase2-dev-a",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            1,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{Lane: "e2e", JobName: "job-a", TestName: "test-a", SupportCount: 1},
+			},
+			References: []semanticcontracts.ReferenceRecord{
+				{RowID: "row-a", RunURL: "https://prow.example/run/a", OccurredAt: "2026-03-15T10:00:00Z", SignatureID: "sig-a"},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase2-dev-b",
+			CanonicalEvidencePhrase: "api timeout",
+			SearchQueryPhrase:       "api timeout",
+			SupportCount:            1,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{Lane: "e2e", JobName: "job-b", TestName: "test-b", SupportCount: 1},
+			},
+			References: []semanticcontracts.ReferenceRecord{
+				{RowID: "row-b", RunURL: "https://prow.example/run/b", OccurredAt: "2026-03-15T11:00:00Z", SignatureID: "sig-b"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("upsert global clusters: %v", err)
+	}
+	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-shared",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/a",
+			RowID:         "row-a",
+			UpdatedAt:     "2026-03-16T10:00:00Z",
+		},
+		{
+			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			IssueID:       "p3c-shared",
+			Environment:   "dev",
+			RunURL:        "https://prow.example/run/b",
+			RowID:         "row-b",
+			UpdatedAt:     "2026-03-16T10:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("upsert phase3 links: %v", err)
+	}
+
+	handler, err := NewHandler(HandlerOptions{
+		DataDirectory:        dataDir,
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	formBody := strings.NewReader("week=2026-03-15&action=disband&cluster_id=dev|p3c-shared")
+	req := httptest.NewRequest(http.MethodPost, "/actions/links", formBody)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	verifyStore, err := ndjson.NewWithOptions(dataDir, ndjson.Options{
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new verification store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = verifyStore.Close()
+	})
+	links, err := verifyStore.ListPhase3Links(context.Background())
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("expected disband to remove all links in selected aggregated cluster, got=%+v", links)
+	}
+}
+
+func TestHandlerLinkActionFailsOnMixedLanes(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	store, err := ndjson.NewWithOptions(dataDir, ndjson.Options{
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	ctx := context.Background()
+	if err := store.UpsertGlobalClusters(ctx, []semanticcontracts.GlobalClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase2-dev-e2e",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            2,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{
+					Lane:         "e2e",
+					JobName:      "job-e2e",
+					TestName:     "test-e2e",
+					SupportCount: 2,
+				},
+			},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RowID:       "row-e2e",
+					RunURL:      "https://prow.example/run/e2e",
+					OccurredAt:  "2026-03-15T10:00:00Z",
+					SignatureID: "sig-e2e",
+				},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase2ClusterID:         "phase2-dev-provision",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            2,
+			ContributingTests: []semanticcontracts.ContributingTestRecord{
+				{
+					Lane:         "provision",
+					JobName:      "job-provision",
+					TestName:     "test-provision",
+					SupportCount: 2,
+				},
+			},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RowID:       "row-provision",
+					RunURL:      "https://prow.example/run/provision",
+					OccurredAt:  "2026-03-15T11:00:00Z",
+					SignatureID: "sig-provision",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("upsert global clusters: %v", err)
+	}
+
+	handler, err := NewHandler(HandlerOptions{
+		DataDirectory:        dataDir,
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	formBody := strings.NewReader("week=2026-03-15&action=link&cluster_id=phase2-dev-e2e&cluster_id=phase2-dev-provision")
+	req := httptest.NewRequest(http.MethodPost, "/actions/links", formBody)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("Location"), "multiple+lanes") {
+		t.Fatalf("expected mixed-lane hard-failure notice, got location=%q", rec.Header().Get("Location"))
+	}
+
+	verifyStore, err := ndjson.NewWithOptions(dataDir, ndjson.Options{
+		SemanticSubdirectory: "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("new verification store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = verifyStore.Close()
+	})
+	links, err := verifyStore.ListPhase3Links(context.Background())
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("expected no links to be written on mixed-lane hard-failure, got=%+v", links)
+	}
+}
+
 func TestHandlerLinkActionPropagatesAcrossReconcileWindow(t *testing.T) {
 	t.Parallel()
 
@@ -679,6 +1013,62 @@ func TestHandlerLinkActionPropagatesAcrossReconcileWindow(t *testing.T) {
 		if rowsByID[rowID] != issueID {
 			t.Fatalf("expected row %q to be linked to %q, got=%q", rowID, issueID, rowsByID[rowID])
 		}
+	}
+}
+
+func TestHandlerLinkActionPropagationStaysWithinLane(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	phrase := "context deadline exceeded"
+
+	seedGlobalClusterForWeekWithLane(t, dataDir, "2026-03-08", "dev", "phase2-dev-loaded", "e2e", phrase, "row-loaded")
+	seedGlobalClusterForWeekWithLane(t, dataDir, "2026-03-15", "dev", "phase2-dev-e2e", "e2e", phrase, "row-e2e")
+	seedGlobalClusterForWeekWithLane(t, dataDir, "2026-03-22", "dev", "phase2-dev-provision", "provision", phrase, "row-provision")
+
+	handler, err := NewHandler(HandlerOptions{
+		DataDirectory:        dataDir,
+		SemanticSubdirectory: "2026-03-08",
+		HistoryHorizonWeeks:  4,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	formBody := strings.NewReader("week=2026-03-08&action=link&cluster_id=phase2-dev-loaded")
+	req := httptest.NewRequest(http.MethodPost, "/actions/links", formBody)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	verifyStore, err := ndjson.NewWithOptions(dataDir, ndjson.Options{
+		SemanticSubdirectory: "2026-03-22",
+	})
+	if err != nil {
+		t.Fatalf("new verification store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = verifyStore.Close()
+	})
+	links, err := verifyStore.ListPhase3Links(context.Background())
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	rowsByID := map[string]string{}
+	for _, row := range links {
+		rowsByID[strings.TrimSpace(row.RowID)] = strings.TrimSpace(row.IssueID)
+	}
+	if _, exists := rowsByID["row-provision"]; exists {
+		t.Fatalf("expected different lane row to remain unlinked, got links=%+v", links)
+	}
+	if strings.TrimSpace(rowsByID["row-loaded"]) == "" || strings.TrimSpace(rowsByID["row-e2e"]) == "" {
+		t.Fatalf("expected same lane rows to be linked, got links=%+v", links)
+	}
+	if rowsByID["row-loaded"] != rowsByID["row-e2e"] {
+		t.Fatalf("expected same lane rows to share phase3 cluster, got loaded=%q e2e=%q", rowsByID["row-loaded"], rowsByID["row-e2e"])
 	}
 }
 
@@ -838,6 +1228,19 @@ func seedGlobalClusterForWeek(
 	phrase string,
 	rowID string,
 ) {
+	seedGlobalClusterForWeekWithLane(t, dataDir, week, environment, clusterID, "", phrase, rowID)
+}
+
+func seedGlobalClusterForWeekWithLane(
+	t *testing.T,
+	dataDir string,
+	week string,
+	environment string,
+	clusterID string,
+	lane string,
+	phrase string,
+	rowID string,
+) {
 	t.Helper()
 	store, err := ndjson.NewWithOptions(dataDir, ndjson.Options{
 		SemanticSubdirectory: week,
@@ -851,6 +1254,17 @@ func seedGlobalClusterForWeek(
 	referenceRunURL := fmt.Sprintf("https://prow.example/%s/%s", week, rowID)
 	referenceSignatureID := fmt.Sprintf("sig-%s", rowID)
 	referenceOccurredAt := "2026-03-15T10:00:00Z"
+	contributingTests := []semanticcontracts.ContributingTestRecord(nil)
+	if strings.TrimSpace(lane) != "" {
+		contributingTests = []semanticcontracts.ContributingTestRecord{
+			{
+				Lane:         strings.TrimSpace(lane),
+				JobName:      "job-" + strings.TrimSpace(lane),
+				TestName:     "test-" + strings.TrimSpace(lane),
+				SupportCount: 1,
+			},
+		}
+	}
 	if err := store.UpsertGlobalClusters(context.Background(), []semanticcontracts.GlobalClusterRecord{
 		{
 			SchemaVersion:           semanticcontracts.SchemaVersionV1,
@@ -859,6 +1273,7 @@ func seedGlobalClusterForWeek(
 			CanonicalEvidencePhrase: phrase,
 			SearchQueryPhrase:       phrase,
 			SupportCount:            1,
+			ContributingTests:       contributingTests,
 			References: []semanticcontracts.ReferenceRecord{
 				{
 					RowID:       rowID,

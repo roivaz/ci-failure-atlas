@@ -484,6 +484,7 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 		"data-sort-key=\"jobs_affected\"",
 		"data-sort-key=\"impact\"",
 		"data-sort-key=\"flake_score\"",
+		"<th>Lane</th>",
 		"<th>Seen in",
 		"title=\"Unique job runs affected by this signature in the selected window.\"",
 		"title=\"Relative impact = jobs affected / overall job count from metrics.\"",
@@ -516,16 +517,17 @@ func TestGenerateWritesHTMLGlobalTriageReport(t *testing.T) {
 	}
 	headerRow := report[headerStart:headerEnd]
 	signatureHeader := strings.Index(headerRow, "<th>Signature</th>")
+	laneHeader := strings.Index(headerRow, "<th>Lane</th>")
 	jobsAffectedHeader := strings.Index(headerRow, "data-sort-key=\"jobs_affected\"")
 	impactHeader := strings.Index(headerRow, "data-sort-key=\"impact\"")
 	flakeScoreHeader := strings.Index(headerRow, "data-sort-key=\"flake_score\"")
 	trendHeader := strings.Index(headerRow, "<th>Trend</th>")
 	seenInHeader := strings.Index(headerRow, "<th>Seen in")
-	if signatureHeader < 0 || jobsAffectedHeader < 0 || impactHeader < 0 || flakeScoreHeader < 0 || trendHeader < 0 || seenInHeader < 0 {
+	if signatureHeader < 0 || laneHeader < 0 || jobsAffectedHeader < 0 || impactHeader < 0 || flakeScoreHeader < 0 || trendHeader < 0 || seenInHeader < 0 {
 		t.Fatalf("expected global triage headers to be present for order verification")
 	}
-	if !(signatureHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < flakeScoreHeader && flakeScoreHeader < trendHeader && trendHeader < seenInHeader) {
-		t.Fatalf("expected global triage column order Signature, Jobs affected, Impact, Flake score, Trend, Seen in")
+	if !(signatureHeader < laneHeader && laneHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < flakeScoreHeader && flakeScoreHeader < trendHeader && trendHeader < seenInHeader) {
+		t.Fatalf("expected global triage column order Signature, Lane, Jobs affected, Impact, Flake score, Trend, Seen in")
 	}
 	if strings.Contains(report, "data-sort-key=\"count\"") || strings.Contains(report, "data-sort-key=\"after_last_push\"") || strings.Contains(report, "data-sort-key=\"share\"") {
 		t.Fatalf("expected count/after-last-push/share columns to be hidden by default")

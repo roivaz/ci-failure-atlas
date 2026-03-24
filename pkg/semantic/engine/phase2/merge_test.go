@@ -131,6 +131,55 @@ func TestMergeSplitsGenericCanonicalByProvider(t *testing.T) {
 	}
 }
 
+func TestMergeDoesNotMergeAcrossLanes(t *testing.T) {
+	t.Parallel()
+
+	testClusters := []semanticcontracts.TestClusterRecord{
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase1ClusterID:         "phase1-e2e",
+			Lane:                    "e2e",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            1,
+			MemberSignatureIDs:      []string{"sig-e2e"},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      "https://prow.example/run/e2e",
+					OccurredAt:  "2026-03-05T10:00:00Z",
+					SignatureID: "sig-e2e",
+				},
+			},
+		},
+		{
+			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			Environment:             "dev",
+			Phase1ClusterID:         "phase1-provision",
+			Lane:                    "provision",
+			CanonicalEvidencePhrase: "context deadline exceeded",
+			SearchQueryPhrase:       "context deadline exceeded",
+			SupportCount:            1,
+			MemberSignatureIDs:      []string{"sig-provision"},
+			References: []semanticcontracts.ReferenceRecord{
+				{
+					RunURL:      "https://prow.example/run/provision",
+					OccurredAt:  "2026-03-05T11:00:00Z",
+					SignatureID: "sig-provision",
+				},
+			},
+		},
+	}
+
+	globalClusters, _, err := Merge(testClusters, nil)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(globalClusters) != 2 {
+		t.Fatalf("expected lane split into 2 global clusters, got=%d", len(globalClusters))
+	}
+}
+
 func TestMergeFallsBackSearchPhraseWhenSourceInvalid(t *testing.T) {
 	t.Parallel()
 

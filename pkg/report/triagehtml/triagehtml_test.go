@@ -268,6 +268,7 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 	}, TableOptions{IncludeTrend: true})
 
 	required := []string{
+		"<th>Lane</th>",
 		"data-sort-key=\"jobs_affected\"",
 		"data-sort-key=\"impact\"",
 		"data-sort-key=\"flake_score\"",
@@ -291,12 +292,13 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 	}
 	headerRow := html[headerStart:headerEnd]
 	signatureHeader := strings.Index(headerRow, "<th>Signature</th>")
+	laneHeader := strings.Index(headerRow, "<th>Lane</th>")
 	jobsAffectedHeader := strings.Index(headerRow, "data-sort-key=\"jobs_affected\"")
 	impactHeader := strings.Index(headerRow, "data-sort-key=\"impact\"")
 	flakeScoreHeader := strings.Index(headerRow, "data-sort-key=\"flake_score\"")
 	trendHeader := strings.Index(headerRow, "<th>Trend</th>")
 	seenInHeader := strings.Index(headerRow, "<th>Seen in")
-	if !(signatureHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < flakeScoreHeader && flakeScoreHeader < trendHeader && trendHeader < seenInHeader) {
+	if !(signatureHeader < laneHeader && laneHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < flakeScoreHeader && flakeScoreHeader < trendHeader && trendHeader < seenInHeader) {
 		t.Fatalf("unexpected shared header order in rendered table")
 	}
 	if strings.Contains(html, "data-sort-key=\"count\"") || strings.Contains(html, "data-sort-key=\"after_last_push\"") || strings.Contains(html, "data-sort-key=\"share\"") {
@@ -543,6 +545,7 @@ func TestRenderTableLinkedRowsRenderChildExpandersInDetailRow(t *testing.T) {
 					Environment:       "dev",
 					Phrase:            "child phrase one",
 					ClusterID:         "phase2-dev-1",
+					SelectionValue:    "dev|phase2-dev-1",
 					SearchQuery:       "child one query",
 					SupportCount:      4,
 					SupportShare:      44.44,
@@ -569,15 +572,17 @@ func TestRenderTableLinkedRowsRenderChildExpandersInDetailRow(t *testing.T) {
 			},
 		},
 	}, TableOptions{
-		ShowQualityScore: true,
-		ShowQualityFlags: true,
-		ShowReviewFlags:  true,
+		ShowQualityScore:      true,
+		ShowQualityFlags:      true,
+		ShowReviewFlags:       true,
+		ShowLinkedChildRemove: true,
 	})
 
 	for _, snippet := range []string{
 		"Linked signatures (2)",
 		"child phrase one",
 		"child phrase two",
+		"name=\"unlink_child\" value=\"dev|phase2-dev-1\"",
 		"jobs affected: 1",
 		"bad PR score:",
 		"flake score:",
@@ -640,5 +645,52 @@ func TestRenderTableHidesCountAfterShareByDefaultAndShowsImpact(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "Impact from jobs affected / overall job count from metrics") {
 		t.Fatalf("expected impact cell tooltip in rendered table: %q", rendered)
+	}
+}
+
+func TestRenderTableDerivesLaneFilterFromContributingTests(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]SignatureRow{
+		{
+			Environment:   "dev",
+			Phrase:        "deadline exceeded",
+			ClusterID:     "cluster-1",
+			SupportCount:  1,
+			SupportShare:  100,
+			PostGoodCount: 0,
+			ContributingTests: []ContributingTest{
+				{Lane: "e2e", JobName: "job-1", TestName: "test-1", SupportCount: 1},
+			},
+			References: []RunReference{
+				{RunURL: "https://prow.example/run/1", OccurredAt: "2026-03-15T10:00:00Z"},
+			},
+		},
+	}, TableOptions{})
+
+	if !strings.Contains(rendered, `data-filter-lane="e2e"`) {
+		t.Fatalf("expected lane filter to be derived from contributing tests, got %q", rendered)
+	}
+}
+
+func TestRenderTableUsesUnknownLaneWhenLaneDataMissing(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]SignatureRow{
+		{
+			Environment:   "dev",
+			Phrase:        "api timeout",
+			ClusterID:     "cluster-2",
+			SupportCount:  1,
+			SupportShare:  100,
+			PostGoodCount: 0,
+			References: []RunReference{
+				{RunURL: "https://prow.example/run/2", OccurredAt: "2026-03-15T11:00:00Z"},
+			},
+		},
+	}, TableOptions{})
+
+	if !strings.Contains(rendered, `data-filter-lane="unknown"`) {
+		t.Fatalf("expected lane filter fallback to unknown, got %q", rendered)
 	}
 }

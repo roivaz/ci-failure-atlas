@@ -85,6 +85,7 @@ type TableOptions struct {
 	ImpactTotalJobs          int
 	ShowLinkedChildQuality   bool
 	ShowLinkedChildReview    bool
+	ShowLinkedChildRemove    bool
 	ShowCount                bool
 	ShowAfterLastPush        bool
 	ShowShare                bool
@@ -168,6 +169,8 @@ func StylesCSS() string {
 		"    .triage-errors-row details.linked-signatures-toggle[open] > summary, .triage-errors-row details.linked-child-toggle[open] > summary { background: #bfdbfe; border-color: #60a5fa; color: #1e40af; }",
 		"    .triage-linked-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }",
 		"    .triage-linked-item { border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; padding: 6px 8px; }",
+		"    .triage-linked-item-remove { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-right: 6px; border: 1px solid #93c5fd; border-radius: 999px; background: #fff; color: #1e40af; font-size: 12px; font-weight: 700; line-height: 1; cursor: pointer; }",
+		"    .triage-linked-item-remove:hover { background: #dbeafe; }",
 		"    .triage-linked-item-summary { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }",
 		"    .triage-linked-item-meta { color: #4b5563; font-size: 11px; }",
 		"    .triage-linked-item-flags { margin: 6px 0 6px; }",
@@ -208,6 +211,8 @@ func ThemeCSS() string {
 		"    :root[data-theme=\"dark\"] .triage-errors-row details.linked-signatures-toggle > summary, :root[data-theme=\"dark\"] .triage-errors-row details.linked-child-toggle > summary { color: #e2e8f0; background: #1f2937; border-color: #334155; }",
 		"    :root[data-theme=\"dark\"] .triage-errors-row details.linked-signatures-toggle[open] > summary, :root[data-theme=\"dark\"] .triage-errors-row details.linked-child-toggle[open] > summary { color: #e2e8f0; background: #2563eb; border-color: #2563eb; }",
 		"    :root[data-theme=\"dark\"] .triage-linked-item { background: #0f172a; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .triage-linked-item-remove { background: #111827; border-color: #334155; color: #93c5fd; }",
+		"    :root[data-theme=\"dark\"] .triage-linked-item-remove:hover { background: #1f2937; }",
 		"    :root[data-theme=\"dark\"] .triage-linked-item-meta { color: #94a3b8; }",
 		"    :root[data-theme=\"dark\"] pre { background: #020617; color: #e2e8f0; border: 1px solid #334155; }",
 		"    :root[data-theme=\"dark\"] .triage-header-help { border-color: #334155; color: #93c5fd; background: #1e293b; }",
@@ -474,6 +479,7 @@ func RenderTable(rows []SignatureRow, options TableOptions) string {
 		headers = append(headers, "<th class=\"triage-select-col\">Select</th>")
 	}
 	headers = append(headers, "<th>Signature</th>")
+	headers = append(headers, "<th>Lane</th>")
 	headers = append(headers,
 		renderSortableHeaderCell("Jobs affected", sortKeyJobsAffected, "Unique job runs affected by this signature in the selected window.", initialSortKey, initialSortDirection),
 		renderSortableHeaderCell("Impact", sortKeyImpact, "Relative impact = jobs affected / overall job count from metrics.", initialSortKey, initialSortDirection),
@@ -1470,6 +1476,7 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	if phrase == "" {
 		phrase = "(unknown evidence)"
 	}
+	laneValue := rowLaneForDisplay(row)
 	otherEnvironments := "none"
 	if len(row.AlsoSeenIn) > 0 {
 		otherEnvironments = strings.Join(row.AlsoSeenIn, ", ")
@@ -1552,7 +1559,7 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 		html.EscapeString(strings.TrimSpace(row.ClusterID)),
 		html.EscapeString(strings.ToLower(manualSortValue)),
 		html.EscapeString(strings.ToLower(strings.TrimSpace(row.Environment))),
-		html.EscapeString(strings.TrimSpace(row.Lane)),
+		html.EscapeString(strings.ToLower(laneValue)),
 		html.EscapeString(strings.ToLower(filterSearchValue)),
 		isFlagged,
 		hasReviewFlags,
@@ -1583,6 +1590,7 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(flakeDetails)))
 	signatureDetails.WriteString("</details></td>")
 	b.WriteString(signatureDetails.String())
+	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(laneValue)))
 	b.WriteString(fmt.Sprintf("<td>%d</td>", jobsAffected))
 	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"impact-score %s\">%s</span></td>", html.EscapeString(impactTitle), impactScoreClass(impactPercent), html.EscapeString(impactLabel)))
 	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"flake-score %s\">%d</span></td>", html.EscapeString(flakeCellTitle), flakeClass, flakeScore))
@@ -1622,9 +1630,10 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 }
 
 func defaultSearchIndex(row SignatureRow) string {
+	laneValue := rowLaneForDisplay(row)
 	parts := []string{
 		strings.TrimSpace(row.Environment),
-		strings.TrimSpace(row.Lane),
+		laneValue,
 		strings.TrimSpace(row.JobName),
 		strings.TrimSpace(row.TestName),
 		strings.TrimSpace(row.TestSuite),
@@ -1643,6 +1652,33 @@ func defaultSearchIndex(row SignatureRow) string {
 		filtered = append(filtered, trimmed)
 	}
 	return strings.Join(filtered, " ")
+}
+
+func rowLaneForDisplay(row SignatureRow) string {
+	lane := strings.TrimSpace(row.Lane)
+	if lane != "" {
+		return lane
+	}
+	ordered := OrderedContributingTests(row.ContributingTests)
+	uniqueLanes := map[string]struct{}{}
+	for _, contributing := range ordered {
+		trimmedLane := strings.TrimSpace(contributing.Lane)
+		if trimmedLane == "" {
+			continue
+		}
+		uniqueLanes[trimmedLane] = struct{}{}
+	}
+	switch len(uniqueLanes) {
+	case 0:
+		return "unknown"
+	case 1:
+		for laneValue := range uniqueLanes {
+			return laneValue
+		}
+		return "unknown"
+	default:
+		return "mixed"
+	}
 }
 
 func successDetailsFromSearchQuery(value string) string {
@@ -1830,12 +1866,26 @@ func renderLinkedChildrenDetails(children []SignatureRow, opts TableOptions) str
 			flakeDetails = fmt.Sprintf("%s (%s)", flakeDetails, strings.Join(flakeReasons, "; "))
 		}
 		b.WriteString("<details class=\"linked-child-toggle triage-linked-item\">")
+		b.WriteString("<summary>")
+		if opts.ShowLinkedChildRemove {
+			selectionValue := strings.TrimSpace(child.SelectionValue)
+			if selectionValue == "" {
+				selectionValue = strings.TrimSpace(child.ClusterID)
+			}
+			if selectionValue != "" {
+				b.WriteString(fmt.Sprintf(
+					"<button class=\"triage-linked-item-remove\" type=\"submit\" name=\"unlink_child\" value=\"%s\" title=\"Remove this signature from the linked cluster\" aria-label=\"Remove this signature from the linked cluster\" onclick=\"event.stopPropagation();\">-</button>",
+					html.EscapeString(selectionValue),
+				))
+			}
+		}
 		b.WriteString(fmt.Sprintf(
-			"<summary><span class=\"triage-linked-item-summary\"><strong>%d.</strong> %s</span><span class=\"triage-linked-item-meta\">jobs affected: %d</span></summary>",
+			"<span class=\"triage-linked-item-summary\"><strong>%d.</strong> %s</span><span class=\"triage-linked-item-meta\">jobs affected: %d</span>",
 			index+1,
 			html.EscapeString(cleanInline(phrase, 220)),
 			jobsAffected,
 		))
+		b.WriteString("</summary>")
 		b.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(badPRDetails)))
 		b.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(flakeDetails)))
 		if opts.ShowLinkedChildQuality || opts.ShowLinkedChildReview {

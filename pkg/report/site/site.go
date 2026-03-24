@@ -16,11 +16,11 @@ import (
 	reportsummary "ci-failure-atlas/pkg/report/summary"
 	"ci-failure-atlas/pkg/report/triagehtml"
 	reportweekly "ci-failure-atlas/pkg/report/weekly"
+	phase2engine "ci-failure-atlas/pkg/semantic/engine/phase2"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/store/ndjson"
 	workflowphase1 "ci-failure-atlas/pkg/workflow/phase1"
-	workflowphase2 "ci-failure-atlas/pkg/workflow/phase2"
 )
 
 const (
@@ -119,13 +119,14 @@ func Build(ctx context.Context, opts BuildOptions) (BuildResult, error) {
 	if len(weeks) > 0 {
 		latestWeek = weeks[0].Name
 	}
+	defaultRootWeek := latestCompleteWeekForRootRedirect(weeks, time.Now().UTC())
 	if err := writeLatestDirectory(resolved.SiteRoot, weeks); err != nil {
 		return BuildResult{}, err
 	}
 	if err := writeArchiveIndex(resolved.SiteRoot, weeks, latestWeek); err != nil {
 		return BuildResult{}, err
 	}
-	if err := writeRootIndex(resolved.SiteRoot, latestWeek); err != nil {
+	if err := writeRootIndex(resolved.SiteRoot, defaultRootWeek); err != nil {
 		return BuildResult{}, err
 	}
 
@@ -406,23 +407,28 @@ func runSemanticWorkflowForWeek(
 	if err != nil {
 		return fmt.Errorf("complete workflow phase1 options for week %q: %w", semanticSubdirectory, err)
 	}
-	if err := phase1Completed.Run(ctx); err != nil {
-		return fmt.Errorf("run workflow phase1 for week %q: %w", semanticSubdirectory, err)
+	defer phase1Completed.Cleanup()
+
+	pipeline, err := phase1Completed.RunPipeline(ctx)
+	if err != nil {
+		return fmt.Errorf("run workflow phase1 pipeline for week %q: %w", semanticSubdirectory, err)
+	}
+	globalClusters, mergedReviewQueue, err := phase2engine.Merge(pipeline.TestClusters, pipeline.ReviewItems)
+	if err != nil {
+		return fmt.Errorf("run workflow phase2 merge for week %q: %w", semanticSubdirectory, err)
 	}
 
-	phase2Raw := workflowphase2.DefaultOptions()
-	phase2Raw.NDJSONOptions.DataDirectory = dataDirectory
-	phase2Raw.NDJSONOptions.SemanticSubdirectory = semanticSubdirectory
-	phase2Validated, err := phase2Raw.Validate()
-	if err != nil {
-		return fmt.Errorf("validate workflow phase2 options for week %q: %w", semanticSubdirectory, err)
+	if err := phase1Completed.Store.UpsertPhase1Workset(ctx, pipeline.Workset); err != nil {
+		return fmt.Errorf("persist workflow phase1 workset for week %q: %w", semanticSubdirectory, err)
 	}
-	phase2Completed, err := phase2Validated.Complete(ctx)
-	if err != nil {
-		return fmt.Errorf("complete workflow phase2 options for week %q: %w", semanticSubdirectory, err)
+	if err := phase1Completed.Store.UpsertTestClusters(ctx, pipeline.TestClusters); err != nil {
+		return fmt.Errorf("persist workflow test clusters for week %q: %w", semanticSubdirectory, err)
 	}
-	if err := phase2Completed.Run(ctx); err != nil {
-		return fmt.Errorf("run workflow phase2 for week %q: %w", semanticSubdirectory, err)
+	if err := phase1Completed.Store.UpsertReviewQueue(ctx, mergedReviewQueue); err != nil {
+		return fmt.Errorf("persist workflow review queue for week %q: %w", semanticSubdirectory, err)
+	}
+	if err := phase1Completed.Store.UpsertGlobalClusters(ctx, globalClusters); err != nil {
+		return fmt.Errorf("persist workflow global clusters for week %q: %w", semanticSubdirectory, err)
 	}
 
 	if err := semhistory.WriteWindowMetadata(dataDirectory, semanticSubdirectory, windowStart.UTC(), windowEndExclusive.UTC()); err != nil {
@@ -668,6 +674,23 @@ func writeArchiveIndex(siteRoot string, weeks []WeekDirectory, latestWeek string
 	return nil
 }
 
+func latestCompleteWeekForRootRedirect(weeks []WeekDirectory, now time.Time) string {
+	if len(weeks) == 0 {
+		return ""
+	}
+	currentWeekStart := latestSundayUTC(now.UTC())
+	for _, week := range weeks {
+		weekStart, ok := parseWeekDirectoryDate(strings.TrimSpace(week.Name))
+		if !ok {
+			continue
+		}
+		if weekStart.Before(currentWeekStart) {
+			return strings.TrimSpace(week.Name)
+		}
+	}
+	return strings.TrimSpace(weeks[0].Name)
+}
+
 func renderRootIndexHTML(latestWeek string, generatedAt time.Time) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n")
@@ -680,13 +703,13 @@ func renderRootIndexHTML(latestWeek string, generatedAt time.Time) string {
 	b.WriteString("<body>\n")
 	b.WriteString("  <h1>CI Reports</h1>\n")
 	if strings.TrimSpace(latestWeek) != "" {
-		redirectTarget := "latest/" + weeklyReportFile
+		redirectTarget := filepath.ToSlash(filepath.Join(strings.TrimSpace(latestWeek), weeklyReportFile))
 		b.WriteString(fmt.Sprintf("  <meta http-equiv=\"refresh\" content=\"0; url=%s\" />\n", html.EscapeString(redirectTarget)))
 		b.WriteString("  <script>\n")
 		b.WriteString(fmt.Sprintf("    window.location.replace(%q);\n", redirectTarget))
 		b.WriteString("  </script>\n")
 		b.WriteString(fmt.Sprintf(
-			"  <p>Redirecting to the latest weekly report (<strong>%s</strong>). If this does not happen automatically, <a href=\"%s\">open the latest weekly report</a>.</p>\n",
+			"  <p>Redirecting to the default weekly report (<strong>%s</strong>). If this does not happen automatically, <a href=\"%s\">open the default weekly report</a>.</p>\n",
 			html.EscapeString(latestWeek),
 			html.EscapeString(redirectTarget),
 		))

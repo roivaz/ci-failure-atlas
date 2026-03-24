@@ -13,11 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"ci-failure-atlas/pkg/ndjsonoptions"
 	reportreview "ci-failure-atlas/pkg/report/review"
 	reportsite "ci-failure-atlas/pkg/report/site"
-	reporttestsummary "ci-failure-atlas/pkg/report/testsummary"
-	"ci-failure-atlas/pkg/store/ndjson"
 )
 
 func NewReportCommand() (*cobra.Command, error) {
@@ -27,68 +24,6 @@ func NewReportCommand() (*cobra.Command, error) {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	reportsSubdirectory := ""
-	cmd.PersistentFlags().StringVar(
-		&reportsSubdirectory,
-		"reports.subdir",
-		reportsSubdirectory,
-		"Optional subdirectory under reports/ for generated report files. Defaults to --storage.ndjson.semantic-subdir when unset.",
-	)
-
-	qualityOpts := reporttestsummary.DefaultOptions()
-	qualityOpts.OutputPath = "data/reports/semantic-quality.html"
-	qualityOpts.Format = "html"
-	qualityNDJSONOpts := ndjsonoptions.DefaultOptions()
-	qualityCmd := &cobra.Command{
-		Use:   "quality",
-		Short: "Generate semantic quality HTML report.",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			validated, err := qualityNDJSONOpts.Validate()
-			if err != nil {
-				return err
-			}
-			completed, err := validated.Complete(cmd.Context())
-			if err != nil {
-				return err
-			}
-			store, err := ndjson.NewWithOptions(completed.DataDirectory, ndjson.Options{
-				SemanticSubdirectory: completed.SemanticSubdirectory,
-			})
-			if err != nil {
-				return fmt.Errorf("create NDJSON store: %w", err)
-			}
-			defer func() {
-				_ = store.Close()
-			}()
-
-			resolvedOutputPath, err := resolveReportOutputPath(
-				completed.DataDirectory,
-				completed.SemanticSubdirectory,
-				reportsSubdirectory,
-				qualityOpts.OutputPath,
-				cmd.Flags().Changed("output"),
-			)
-			if err != nil {
-				return err
-			}
-			runOpts := qualityOpts
-			runOpts.OutputPath = resolvedOutputPath
-			runOpts.Format = "html"
-			return reporttestsummary.Generate(cmd.Context(), store, runOpts)
-		},
-	}
-	if err := ndjsonoptions.BindNDJSONOptions(qualityNDJSONOpts, qualityCmd); err != nil {
-		return nil, fmt.Errorf("bind NDJSON options for report quality: %w", err)
-	}
-	qualityCmd.Flags().StringVar(&qualityOpts.OutputPath, "output", qualityOpts.OutputPath, "path to output quality HTML report")
-	qualityCmd.Flags().StringVar(&qualityOpts.QualityExportPath, "quality-export", qualityOpts.QualityExportPath, "optional path to write flagged semantic signatures as NDJSON")
-	qualityCmd.Flags().StringVar(&qualityOpts.WindowStart, "workflow.window.start", qualityOpts.WindowStart, "inclusive start of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
-	qualityCmd.Flags().StringVar(&qualityOpts.WindowEnd, "workflow.window.end", qualityOpts.WindowEnd, "exclusive end of report window (RFC3339 or YYYY-MM-DD at 00:00:00Z)")
-	qualityCmd.Flags().IntVar(&qualityOpts.TopTests, "top", qualityOpts.TopTests, "max number of tests to render (0 = all)")
-	qualityCmd.Flags().IntVar(&qualityOpts.RecentRuns, "recent", qualityOpts.RecentRuns, "recent failing runs to render per signature")
-	qualityCmd.Flags().IntVar(&qualityOpts.MinRuns, "min-runs", qualityOpts.MinRuns, "minimum runs threshold for including a test")
-	qualityCmd.Flags().StringSliceVar(&qualityOpts.Environments, "source.envs", qualityOpts.Environments, "environments to include (e.g. dev,int,stg,prod)")
-	qualityCmd.Flags().BoolVar(&qualityOpts.SplitByEnvironment, "split-by-env", qualityOpts.SplitByEnvironment, "write one output file per environment using <output>.<env>.<ext>")
 
 	siteBuildDataDirectory := "data"
 	siteBuildRoot := "site"
@@ -281,70 +216,11 @@ func NewReportCommand() (*cobra.Command, error) {
 	reviewCmd.Flags().IntVar(&reviewHistoryWeeks, "history.weeks", reviewHistoryWeeks, "number of most recent semantic weeks used for report history and cross-week phase3 propagation")
 
 	cmd.AddCommand(
-		qualityCmd,
 		reviewCmd,
 		siteCmd,
 	)
 
 	return cmd, nil
-}
-
-func resolveReportOutputPath(
-	dataDirectory string,
-	semanticSubdirectory string,
-	reportSubdirectory string,
-	outputPath string,
-	outputFlagChanged bool,
-) (string, error) {
-	trimmedOutputPath := strings.TrimSpace(outputPath)
-	if trimmedOutputPath == "" {
-		return "", fmt.Errorf("report output path must not be empty")
-	}
-	if outputFlagChanged {
-		return trimmedOutputPath, nil
-	}
-
-	effectiveSubdirectory := strings.TrimSpace(reportSubdirectory)
-	if effectiveSubdirectory == "" {
-		effectiveSubdirectory = strings.TrimSpace(semanticSubdirectory)
-	}
-	normalizedSubdirectory, err := normalizeReportSubdirectory(effectiveSubdirectory)
-	if err != nil {
-		return "", fmt.Errorf("invalid --reports.subdir: %w", err)
-	}
-
-	baseName := strings.TrimSpace(filepath.Base(trimmedOutputPath))
-	if baseName == "" || baseName == "." {
-		return "", fmt.Errorf("invalid report output file name %q", trimmedOutputPath)
-	}
-	if normalizedSubdirectory == "" {
-		return filepath.Join(dataDirectory, "reports", baseName), nil
-	}
-	return filepath.Join(dataDirectory, "reports", normalizedSubdirectory, baseName), nil
-}
-
-func normalizeReportSubdirectory(value string) (string, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "", nil
-	}
-	cleaned := filepath.Clean(trimmed)
-	if cleaned == "." {
-		return "", nil
-	}
-	if filepath.IsAbs(cleaned) {
-		return "", fmt.Errorf("must be a relative path")
-	}
-	parts := strings.Split(cleaned, string(filepath.Separator))
-	for _, part := range parts {
-		switch part {
-		case "", ".":
-			continue
-		case "..":
-			return "", fmt.Errorf("must not contain '..'")
-		}
-	}
-	return cleaned, nil
 }
 
 func siteRunURLFromListenAddress(listenAddress string) string {

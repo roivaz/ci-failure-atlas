@@ -26,10 +26,13 @@ const (
 	defaultDataDirectory    = "data"
 	defaultHistoryWeeks     = 4
 	selectionInputName      = "cluster_id"
+	unlinkChildInputName    = "unlink_child"
 	metricRunCount          = "run_count"
 	reviewTrendWindowDays   = 7
 	phase3ActionLink        = "link"
+	phase3ActionDisband     = "disband"
 	phase3ActionUnlink      = "unlink"
+	phase3ActionUnlinkChild = "unlink_child"
 	phase3InformationalCode = "phase1_cluster_id_collision"
 	phase3ClusterIDPrefix   = "p3c-"
 )
@@ -70,6 +73,8 @@ type weekSnapshot struct {
 	Rows                 []triagehtml.SignatureRow
 	OverallJobsByEnv     map[string]int
 	AnchorsByClusterID   map[string][]phase3Anchor
+	LaneKeysByClusterID  map[string][]string
+	AggregatedSelection  map[string]struct{}
 	UnassignedCount      int
 	MissingAnchorCount   int
 	TotalClusters        int
@@ -150,14 +155,19 @@ func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 	}
 	action := strings.ToLower(strings.TrimSpace(r.FormValue("action")))
 	selectedClusterIDs := normalizeStringSlice(r.Form[selectionInputName])
-	if len(selectedClusterIDs) == 0 {
-		h.redirectWithNotice(w, r, snapshot.Week, "select at least one cluster")
-		return
+	if childSelection := strings.TrimSpace(r.FormValue(unlinkChildInputName)); childSelection != "" {
+		action = phase3ActionUnlinkChild
+		selectedClusterIDs = []string{childSelection}
 	}
-
-	anchors := selectedAnchors(snapshot.AnchorsByClusterID, selectedClusterIDs)
-	if len(anchors) == 0 {
-		h.redirectWithNotice(w, r, snapshot.Week, "selected clusters do not have row_id anchors yet; rerun semantic workflow and refresh")
+	if len(selectedClusterIDs) == 0 {
+		switch action {
+		case phase3ActionDisband:
+			h.redirectWithNotice(w, r, snapshot.Week, "select at least one aggregated phase3 cluster to disband")
+		case phase3ActionUnlinkChild:
+			h.redirectWithNotice(w, r, snapshot.Week, "select a linked signature to remove from the cluster")
+		default:
+			h.redirectWithNotice(w, r, snapshot.Week, "select at least one cluster")
+		}
 		return
 	}
 
@@ -174,6 +184,24 @@ func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case phase3ActionLink:
+		anchors := selectedAnchors(snapshot.AnchorsByClusterID, selectedClusterIDs)
+		if len(anchors) == 0 {
+			h.redirectWithNotice(w, r, snapshot.Week, "selected clusters do not have row_id anchors yet; rerun semantic workflow and refresh")
+			return
+		}
+		selectedLanes := selectedLaneKeys(snapshot.LaneKeysByClusterID, selectedClusterIDs)
+		if len(selectedLanes) > 1 {
+			h.redirectWithNotice(
+				w,
+				r,
+				snapshot.Week,
+				fmt.Sprintf(
+					"selected clusters span multiple lanes (%s); linking across lanes is not allowed",
+					strings.Join(selectedLanes, ", "),
+				),
+			)
+			return
+		}
 		matchKeys := signatureMatchKeysForSelectedClusters(snapshot.Rows, selectedClusterIDs)
 		windowWeeks := resolveReconcileWindowWeeks(snapshot.Weeks, h.historyHorizonWeeks)
 		windowAnchors, err := collectAnchorsForSignatureMatchKeys(r.Context(), h.dataDirectory, windowWeeks, matchKeys)
@@ -224,9 +252,40 @@ func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 			),
 		)
 		return
-	case phase3ActionUnlink:
+	case phase3ActionDisband:
+		aggregatedSelections := filterAggregatedSelectionIDs(snapshot.AggregatedSelection, selectedClusterIDs)
+		if len(aggregatedSelections) == 0 {
+			h.redirectWithNotice(w, r, snapshot.Week, "disband cluster only works on aggregated phase3 rows")
+			return
+		}
+		anchors := selectedAnchors(snapshot.AnchorsByClusterID, aggregatedSelections)
+		if len(anchors) == 0 {
+			h.redirectWithNotice(w, r, snapshot.Week, "selected aggregated clusters do not have row_id anchors yet; rerun semantic workflow and refresh")
+			return
+		}
+		if err := unlinkAnchors(r.Context(), store, anchors); err != nil {
+			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("disband cluster: %v", err))
+			return
+		}
+		h.redirectWithNotice(
+			w,
+			r,
+			snapshot.Week,
+			fmt.Sprintf("disbanded %d aggregated cluster(s) and unlinked %d anchors", len(aggregatedSelections), len(anchors)),
+		)
+		return
+	case phase3ActionUnlinkChild, phase3ActionUnlink:
+		anchors := selectedAnchors(snapshot.AnchorsByClusterID, selectedClusterIDs)
+		if len(anchors) == 0 {
+			h.redirectWithNotice(w, r, snapshot.Week, "selected signatures do not have row_id anchors yet; rerun semantic workflow and refresh")
+			return
+		}
 		if err := unlinkAnchors(r.Context(), store, anchors); err != nil {
 			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("unlink selected: %v", err))
+			return
+		}
+		if action == phase3ActionUnlinkChild {
+			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("removed linked signature and unlinked %d anchors", len(anchors)))
 			return
 		}
 		h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("unlinked %d anchors", len(anchors)))
@@ -335,6 +394,24 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 	if err != nil {
 		return weekSnapshot{}, fmt.Errorf("list phase3 links: %w", err)
 	}
+	childAnchorsByClusterID := map[string][]phase3Anchor{}
+	childLaneKeysByClusterID := map[string][]string{}
+	for _, cluster := range clusters {
+		environment := normalizeEnvironment(cluster.Environment)
+		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
+		if clusterID == "" {
+			continue
+		}
+		selectionID := rowSelectionID(environment, clusterID)
+		anchors := anchorsForCluster(environment, cluster.References)
+		laneKeys := laneKeysForContributingTests(cluster.ContributingTests)
+		if selectionID != "" {
+			childAnchorsByClusterID[selectionID] = dedupeAnchors(append(childAnchorsByClusterID[selectionID], anchors...))
+			childLaneKeysByClusterID[selectionID] = mergeLaneKeys(childLaneKeysByClusterID[selectionID], laneKeys)
+		}
+		childAnchorsByClusterID[clusterID] = dedupeAnchors(append(childAnchorsByClusterID[clusterID], anchors...))
+		childLaneKeysByClusterID[clusterID] = mergeLaneKeys(childLaneKeysByClusterID[clusterID], laneKeys)
+	}
 	linkedChildrenBySelectionID, err := linkedChildrenByMergedSelectionID(clusters, links)
 	if err != nil {
 		return weekSnapshot{}, fmt.Errorf("build linked child clusters: %w", err)
@@ -415,6 +492,14 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 
 	rows := make([]triagehtml.SignatureRow, 0, len(clusters))
 	anchorsByClusterID := map[string][]phase3Anchor{}
+	for key, anchors := range childAnchorsByClusterID {
+		anchorsByClusterID[key] = append([]phase3Anchor(nil), anchors...)
+	}
+	laneKeysByClusterID := map[string][]string{}
+	for key, laneKeys := range childLaneKeysByClusterID {
+		laneKeysByClusterID[key] = append([]string(nil), laneKeys...)
+	}
+	aggregatedSelections := map[string]struct{}{}
 	unassignedCount := 0
 	missingAnchorCount := 0
 	anchoredClusterCount := 0
@@ -430,13 +515,16 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 			anchoredClusterCount++
 		}
 		if selectionID != "" {
-			anchorsByClusterID[selectionID] = anchors
+			anchorsByClusterID[selectionID] = dedupeAnchors(append(anchorsByClusterID[selectionID], anchors...))
+		}
+		laneKeys := laneKeysForContributingTests(cluster.ContributingTests)
+		if selectionID != "" {
+			laneKeysByClusterID[selectionID] = mergeLaneKeys(laneKeysByClusterID[selectionID], laneKeys)
 		}
 		// Backward compatibility for callers still posting raw cluster IDs.
 		if clusterID != "" {
-			if _, exists := anchorsByClusterID[clusterID]; !exists {
-				anchorsByClusterID[clusterID] = anchors
-			}
+			anchorsByClusterID[clusterID] = dedupeAnchors(append(anchorsByClusterID[clusterID], anchors...))
+			laneKeysByClusterID[clusterID] = mergeLaneKeys(laneKeysByClusterID[clusterID], laneKeys)
 		}
 		phase3ClusterIDs := phase3ClusterIDsForAnchors(anchors, phase3ClusterByAnchor)
 		manualIssueID := ""
@@ -477,6 +565,14 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 			rawTextIndex,
 		)
 		isAggregatedRow := strings.TrimSpace(manualIssueID) != "" && len(linkedChildren) > 0
+		if isAggregatedRow {
+			if selectionID != "" {
+				aggregatedSelections[selectionID] = struct{}{}
+			}
+			if clusterID != "" {
+				aggregatedSelections[clusterID] = struct{}{}
+			}
+		}
 		displayReferences := toRunReferences(cluster.References, 0)
 		scoreReferences := []triagehtml.RunReference(nil)
 		trendSparkline := ""
@@ -556,6 +652,8 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 		Rows:                 rows,
 		OverallJobsByEnv:     overallJobsByEnv,
 		AnchorsByClusterID:   anchorsByClusterID,
+		LaneKeysByClusterID:  laneKeysByClusterID,
+		AggregatedSelection:  aggregatedSelections,
 		UnassignedCount:      unassignedCount,
 		MissingAnchorCount:   missingAnchorCount,
 		TotalClusters:        len(clusters),
@@ -750,9 +848,19 @@ func signatureMatchKeysForSelectedClusters(
 	keys := map[string]struct{}{}
 	for _, row := range rows {
 		if !rowMatchesSelection(row, selected) {
+			for _, child := range row.LinkedChildren {
+				if !rowMatchesSelection(child, selected) {
+					continue
+				}
+				key := signatureMatchKey(child.Environment, child.Lane, child.Phrase)
+				if key == "" {
+					continue
+				}
+				keys[key] = struct{}{}
+			}
 			continue
 		}
-		key := signatureMatchKey(row.Environment, row.Phrase)
+		key := signatureMatchKey(row.Environment, row.Lane, row.Phrase)
 		if key == "" {
 			continue
 		}
@@ -776,13 +884,14 @@ func rowMatchesSelection(row triagehtml.SignatureRow, selected map[string]struct
 	return include
 }
 
-func signatureMatchKey(environment string, phrase string) string {
+func signatureMatchKey(environment string, lane string, phrase string) string {
 	normalizedEnvironment := normalizeEnvironment(environment)
+	normalizedLane := normalizeLaneKey(lane)
 	normalizedPhrase := normalizePhraseForMatching(phrase)
-	if normalizedEnvironment == "" || normalizedPhrase == "" {
+	if normalizedEnvironment == "" || normalizedLane == "" || normalizedPhrase == "" {
 		return ""
 	}
-	return normalizedEnvironment + "|" + normalizedPhrase
+	return normalizedEnvironment + "|lane:" + normalizedLane + "|phrase:" + normalizedPhrase
 }
 
 func normalizePhraseForMatching(value string) string {
@@ -820,8 +929,16 @@ func collectAnchorsForSignatureMatchKeys(
 		}
 		for _, cluster := range clusters {
 			environment := normalizeEnvironment(cluster.Environment)
-			matchKey := signatureMatchKey(environment, cluster.CanonicalEvidencePhrase)
-			if _, ok := matchKeys[matchKey]; !ok {
+			clusterLaneKeys := laneKeysForContributingTests(cluster.ContributingTests)
+			matched := false
+			for _, laneKey := range clusterLaneKeys {
+				matchKey := signatureMatchKey(environment, laneKey, cluster.CanonicalEvidencePhrase)
+				if _, ok := matchKeys[matchKey]; ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				continue
 			}
 			collected = append(collected, anchorsForCluster(environment, cluster.References)...)
@@ -1120,7 +1237,7 @@ func renderPage(snapshot weekSnapshot, notice string) string {
 	b.WriteString(fmt.Sprintf("      <input type=\"hidden\" name=\"week\" value=\"%s\" />\n", html.EscapeString(snapshot.Week)))
 	b.WriteString("      <div class=\"phase3-controls\">\n")
 	b.WriteString(fmt.Sprintf("        <button class=\"primary\" type=\"submit\" name=\"action\" value=\"%s\">Link selected</button>\n", phase3ActionLink))
-	b.WriteString(fmt.Sprintf("        <button type=\"submit\" name=\"action\" value=\"%s\">Unlink selected</button>\n", phase3ActionUnlink))
+	b.WriteString(fmt.Sprintf("        <button type=\"submit\" name=\"action\" value=\"%s\">Disband cluster</button>\n", phase3ActionDisband))
 	b.WriteString(fmt.Sprintf("        <a href=\"/?week=%s\">Refresh</a>\n", url.QueryEscape(snapshot.Week)))
 	b.WriteString("        <button type=\"button\" id=\"phase3-select-all\">Select all</button>\n")
 	b.WriteString("        <button type=\"button\" id=\"phase3-clear-all\">Clear selection</button>\n")
@@ -1140,6 +1257,7 @@ func renderPage(snapshot weekSnapshot, notice string) string {
 				ShowReviewFlags:        true,
 				ShowLinkedChildQuality: true,
 				ShowLinkedChildReview:  true,
+				ShowLinkedChildRemove:  true,
 				ShowManualIssue:        true,
 				ImpactTotalJobs:        snapshot.OverallJobsByEnv[environment],
 				IncludeSelection:       true,
@@ -1526,6 +1644,7 @@ func buildLinkedChildSignatureRows(
 	out := make([]triagehtml.SignatureRow, 0, len(childClusters))
 	for _, cluster := range childClusters {
 		environment := normalizeEnvironment(cluster.Environment)
+		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
 		qualityCodes := triagehtml.QualityIssueCodes(cluster.CanonicalEvidencePhrase)
 		qualityLabels := make([]string, 0, len(qualityCodes))
 		for _, code := range qualityCodes {
@@ -1541,7 +1660,7 @@ func buildLinkedChildSignatureRows(
 			JobName:             strings.TrimSpace(primary.JobName),
 			TestName:            strings.TrimSpace(primary.TestName),
 			Phrase:              strings.TrimSpace(cluster.CanonicalEvidencePhrase),
-			ClusterID:           strings.TrimSpace(cluster.Phase2ClusterID),
+			ClusterID:           clusterID,
 			SearchQuery:         strings.TrimSpace(cluster.SearchQueryPhrase),
 			SupportCount:        cluster.SupportCount,
 			SupportShare:        supportShare(cluster.SupportCount, totalSupportByEnvironment),
@@ -1554,6 +1673,7 @@ func buildLinkedChildSignatureRows(
 			References:          toRunReferences(cluster.References, 0),
 			ManualIssueID:       strings.TrimSpace(manualIssueID),
 			ManualIssueConflict: false,
+			SelectionValue:      rowSelectionID(environment, clusterID),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1578,6 +1698,89 @@ func rowSelectionID(environment string, clusterID string) string {
 		return trimmedClusterID
 	}
 	return normalizedEnvironment + "|" + trimmedClusterID
+}
+
+func filterAggregatedSelectionIDs(aggregated map[string]struct{}, selectedClusterIDs []string) []string {
+	if len(selectedClusterIDs) == 0 || len(aggregated) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(selectedClusterIDs))
+	seen := map[string]struct{}{}
+	for _, clusterID := range selectedClusterIDs {
+		trimmed := strings.TrimSpace(clusterID)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := aggregated[trimmed]; !ok {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func selectedLaneKeys(laneKeysByClusterID map[string][]string, selectedClusterIDs []string) []string {
+	set := map[string]struct{}{}
+	for _, clusterID := range selectedClusterIDs {
+		trimmedClusterID := strings.TrimSpace(clusterID)
+		if trimmedClusterID == "" {
+			continue
+		}
+		laneKeys := laneKeysByClusterID[trimmedClusterID]
+		if len(laneKeys) == 0 {
+			set[normalizeLaneKey("")] = struct{}{}
+			continue
+		}
+		for _, laneKey := range laneKeys {
+			set[normalizeLaneKey(laneKey)] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for laneKey := range set {
+		out = append(out, laneKey)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mergeLaneKeys(existing []string, incoming []string) []string {
+	set := map[string]struct{}{}
+	for _, laneKey := range existing {
+		set[normalizeLaneKey(laneKey)] = struct{}{}
+	}
+	for _, laneKey := range incoming {
+		set[normalizeLaneKey(laneKey)] = struct{}{}
+	}
+	if len(set) == 0 {
+		set[normalizeLaneKey("")] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for laneKey := range set {
+		out = append(out, laneKey)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func laneKeysForContributingTests(rows []semanticcontracts.ContributingTestRecord) []string {
+	set := map[string]struct{}{}
+	for _, row := range rows {
+		set[normalizeLaneKey(row.Lane)] = struct{}{}
+	}
+	if len(set) == 0 {
+		set[normalizeLaneKey("")] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for laneKey := range set {
+		out = append(out, laneKey)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func selectedAnchors(anchorsByClusterID map[string][]phase3Anchor, selectedClusterIDs []string) []phase3Anchor {
@@ -1654,6 +1857,14 @@ func supportShare(value int, total int) float64 {
 
 func normalizeEnvironment(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeLaneKey(value string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return "unknown"
+	}
+	return trimmed
 }
 
 func normalizeStringSlice(values []string) []string {

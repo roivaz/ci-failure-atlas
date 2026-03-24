@@ -1,235 +1,71 @@
 # CI Failure Atlas Design
 
-Status: Draft (accepted baseline)  
-Last updated: 2026-03-06
+Status: current architecture snapshot  
+Last updated: 2026-03-16
 
-## 1) Context
+## Purpose
 
-`CI Failure Atlas` extracts CI metadata and artifacts to produce:
+CI Failure Atlas ingests CI run/failure data, builds semantic failure clusters, and serves two operator-facing outputs:
 
-1. Reporting outputs for Tiger Team triage and stability improvements.
-2. Metrics outputs that gain value as historical trends accumulate.
+- a static triage site (weekly + global triage reports), and
+- a local review app for human Phase3 linking.
 
-The project delivered early value through workflow-driven, script-assisted iteration.  
-As logic evolved, semantic behavior became duplicated across:
+The current implementation is optimized for local operation and fast iteration while preserving deterministic outputs and a clean path to a database-backed architecture.
 
-- Go pipeline and guardrails,
-- Python assets,
-- and tests.
+## Semantic Phase Definitions
 
-This duplication increases implementation and maintenance cost per improvement cycle.
+The semantic pipeline is split into three phases:
 
-## 2) Design Goals
+1. **Phase1 (normalize + test-scoped clustering)**
+   - Builds enriched failure evidence from ingested facts.
+   - Normalizes failure text and classifies failures into deterministic test-scoped clusters.
+   - Produces semantic artifacts centered on `phase1_workset`, `test_clusters`, and `review_queue`.
 
-1. Keep reporting value high and iteration fast.
-2. Build a durable data plane for freshness and trend metrics.
-3. Remove semantic logic duplication and converge on a single production semantic core.
-4. Mirror `release-dashboard/backend` CLI + controller shape to minimize future migration friction.
-5. Keep storage abstracted while using NDJSON as the first concrete storage adapter.
-6. Keep packages reusable by others (no `internal/` package boundary).
+2. **Phase2 (global merge)**
+   - Merges phase1 test-scoped clusters into global failure signatures.
+   - Produces `global_clusters` as the main static triage input.
 
-## 3) Explicit Decisions
+3. **Phase3 (human linking and reconciliation)**
+   - Human-in-the-loop linking of semantically equivalent phase2 signatures.
+   - Uses stable row-level anchors (`environment + run_url + row_id`) and durable link state.
+   - Applied as a materialized view in the review app and during site build.
 
-1. **No `internal/` usage** in the new architecture. Public package layout only.
-2. **Controller and CLI shape mirrors** `/home/rvazquez/projects/sdp-pipelines/release-dashboard/backend`.
-3. **No legacy command wrapper requirement** (clean command surface is acceptable).
-4. **Pass1 remains conceptually the data-fetch and raw-fact build phase** in the new shape.
-5. **NDJSON remains the primary storage backend for now**, behind storage interfaces.
-6. **Facts and metrics records are environment-scoped** (`environment` is required).
+## Current Architecture Snapshot
 
-## 4) Architecture Overview
+The system has three active planes:
 
-The system is split into three planes:
+1. **Controllers (ingestion + derived facts)**
+   - `source.sippy.runs`
+   - `source.sippy.tests-daily`
+   - `source.github.pull-requests`
+   - `source.prow.failures`
+   - `facts.runs`
+   - `facts.raw-failures`
+   - `metrics.rollup.daily`
+   - Runtime entrypoint: `cfa run`
 
-1. **Data Plane (continuous freshness)**
-   - Controller-driven acquisition and normalization.
-   - Incremental updates with checkpoints.
+2. **Semantic materialization**
+   - Triggered by `cfa report site build` (or reused via `--from-existing`)
+   - Phase1 and phase2 execute in memory during site build for performance
+   - Core semantic artifacts persisted by default:
+     - `phase1_workset.ndjson`
+     - `test_clusters.ndjson`
+     - `review_queue.ndjson`
+     - `global_clusters.ndjson`
+     - `window_metadata.json`
 
-2. **Semantic Plane (deterministic enrichment + clustering)**
-   - Shared production semantic core in Go.
-   - Rule-driven behavior with explicit validation and canary gates.
-   - Workflow-assisted improvement cycles remain supported.
+3. **Product surfaces**
+   - Static site:
+     - Weekly report (`weekly-metrics.html`)
+     - Global signature triage (`global-signature-triage.html`)
+   - Dynamic review app:
+     - `cfa report review` for Phase3 manual linking and cross-week propagation
 
-3. **Product Plane**
-   - Reports and metrics materializations from the same curated facts.
+## Storage Model (Current)
 
-High-level flow:
+Storage is file-based NDJSON behind interfaces in `pkg/store/contracts` and implemented in `pkg/store/ndjson`.
 
-`sources (Sippy/Prow)` -> `raw facts (pass1 boundary)` -> `semantic outputs` -> `reports + metrics`
-
-## 5) CLI Shape (Cobra)
-
-The root CLI shape mirrors `release-dashboard`:
-
-- Root command with contextual logger in `PersistentPreRun`.
-- Global `--verbosity/-v`.
-- Subcommand factories in `cmd/`.
-- Option lifecycle pattern: `Raw -> Validate -> Complete -> Run`.
-
-### 5.1 Controller Runtime Commands
-
-- `cfa run`
-  - Start all enabled controllers in long-running mode.
-- `cfa run-once --controllers.name <name> --controllers.key <key>`
-  - Run one controller reconcile for one key.
-- `cfa sync-once --controllers.name <name>`
-  - Run one full keyspace sync for one controller.
-
-Shared source-selection flag:
-
-- `--source.envs` (multi-value, allowed: `dev,int,stg,prod`)
-
-### 5.2 Product and Workflow Commands
-
-- `cfa report summary`
-- `cfa report test-summary`
-- `cfa workflow phase1`
-- `cfa workflow phase2`
-- `cfa workflow validate`
-- `cfa workflow canary`
-- `cfa workflow promote-rules`
-- `cfa metrics rollup-daily --date <YYYY-MM-DD>`
-- `cfa metrics trend --window <7d|30d|90d>`
-
-## 6) Controller Runtime Pattern
-
-Controllers implement:
-
-```go
-type Controller interface {
-    Run(ctx context.Context, threadiness int)
-    RunOnce(ctx context.Context, key string) error
-    SyncOnce(ctx context.Context) error
-}
-```
-
-Runtime semantics mirror `release-dashboard`:
-
-- typed workqueue
-- rate-limited retries
-- periodic enqueue with jitter
-- worker goroutines (`wait.UntilWithContext`)
-- graceful shutdown via context cancellation
-- crash protection (`utilruntime.HandleCrash`)
-
-### 6.1 Reconcile Policy Classes
-
-To avoid stale/partial facts, controllers follow one of three reconcile classes:
-
-1. **source-immutable**
-   - Use `key existence + active window` short-circuiting.
-   - Assumption: once a key is written, source data for that key is complete and immutable.
-   - Current controllers: `source.sippy.runs`, `source.sippy.tests-daily`, `source.prow.failures`.
-
-2. **source-mutable**
-   - Do incremental reconciliation from source-side update markers/checkpoints.
-   - Do **not** treat key existence as final.
-   - Current controller: `source.github.pull-requests` (PR state can change after first ingest).
-
-3. **derived**
-   - Reconcile as `stored state == expected state` within active window.
-   - Only write when computed expected rows differ from current stored rows.
-   - Current controllers: `facts.runs`, `facts.raw-failures`, `metrics.rollup.daily`.
-
-Controller ownership note:
-
-- Source controllers own externally sourced fields only.
-- Derived controllers own computed/enriched fields and must remain correct under out-of-order controller execution.
-
-## 7) V1 Controller Registry
-
-1. `source.sippy.runs`
-   - key: `environment|run_url`
-   - responsibility: discover runs from Sippy, filter to the environment's canonical job name, and persist run metadata.
-
-2. `source.prow.failures`
-   - key: `environment|run_url`
-   - responsibility: fetch deterministic JUnit artifacts from environment-scoped known paths (no directory crawling) and extract failure rows.
-
-3. `facts.raw-failures`
-   - key: `environment|run_url`
-   - responsibility: normalize/fingerprint/enrich rows into canonical raw failure facts.
-   - this is the controllerized **pass1 boundary**.
-
-4. `metrics.rollup.daily`
-   - key: `YYYY-MM-DD`
-   - responsibility: compute daily aggregate metrics.
-
-## 8) Pass1 in New Shape
-
-Pass1 remains a first-class boundary.  
-It still means:
-
-- source metadata and artifact ingestion,
-- deterministic normalization,
-- signature/fingerprint creation,
-- enriched raw failure facts for downstream semantic and reporting/metrics layers.
-
-Current scope note:
-
-- Raw failure facts are built from extracted test failure rows only (deterministic junit artifacts).
-- Runs without usable test-failure artifacts are not expanded into separate infra-failure facts in v1.
-
-The difference is execution style:
-
-- old shape: one batch command,
-- new shape: controllerized data plane with one-shot (`sync-once`) and continuous (`run`) modes.
-
-## 9) Package Layout (No internal)
-
-```text
-cmd/
-  main.go
-  run.go
-  report.go
-  workflow.go
-  metrics.go
-
-pkg/
-  controllers/
-    interface.go
-    source_sippy_runs_controller.go
-    source_prow_failures_controller.go
-    facts_raw_failures_controller.go
-    metrics_rollup_daily_controller.go
-  run/
-    options.go
-  run_once/
-    options.go
-  sync_once/
-    options.go
-  source/
-    sippy/
-    prowartifacts/
-  facts/
-    model/
-    normalize/
-    pipeline/
-  semantic/
-    contracts/
-    rules/
-    engine/
-    validate/
-    canary/
-  report/
-    summary/
-    testsummary/
-  metrics/
-    rollup/
-    trend/
-  store/
-    contracts/
-    ndjson/
-```
-
-## 10) Storage Model
-
-Storage remains abstracted with NDJSON as first adapter:
-
-- interfaces in `pkg/store/contracts`
-- implementation in `pkg/store/ndjson`
-
-Initial NDJSON layout:
+Primary layout:
 
 ```text
 data/
@@ -238,99 +74,80 @@ data/
     artifact_failures.ndjson
     raw_failures.ndjson
     metrics_daily.ndjson
-  semantic/
-    test_clusters.ndjson
-    global_clusters.ndjson
-    review_queue.ndjson
+    test_metadata_daily.ndjson
+    pull_requests.ndjson
+  semantic/<week>/
     phase1_workset.ndjson
+    test_clusters.ndjson
+    review_queue.ndjson
+    global_clusters.ndjson
+    window_metadata.json
   state/
     checkpoints.ndjson
     dead_letters.ndjson
-  reports/
-    triage-summary.md
-    test-failure-summary.md
+    phase3/
+      links.ndjson
+      issues.ndjson
+      events.ndjson
 ```
 
-NDJSON adapter requirements:
+## Current Command Surface
 
-- deterministic ordering for reviewability and reproducibility
-- idempotent upsert semantics for fact records
-- safe writer locking for concurrent controller updates
-- compaction support for append-heavy streams
+- `cfa run`  
+  Runs all controllers continuously.
 
-Artifact identity note:
+- `cfa report site build`  
+  Builds semantic outputs (unless `--from-existing`) and generates weekly/global site pages.
 
-- `artifact_row_id` is the occurrence identity for one testcase failure row.
-- `signature_id` is the grouping fingerprint (`sha256(normalized failure text)`), so multiple artifact rows may intentionally share the same signature.
-- In `facts.raw-failures`, `row_id` is sourced from `artifact_row_id`, `test_name`/`test_suite` are carried forward from `artifact_failures`, and `occurred_at` is sourced from the matching `runs` metadata when available.
+- `cfa report site run`  
+  Serves generated static site locally.
 
-## 11) Semantic Core Migration Strategy
+- `cfa report site push`  
+  Uploads site content to Azure static website storage.
 
-### Stage A: Contract Freeze
+- `cfa report review`  
+  Runs the local Phase3 review application.
 
-- Define canonical schemas in `pkg/semantic/contracts`.
-- Ensure all workflow and report commands consume these contracts only.
+## Key Decisions (Current)
 
-### Stage B: Shared Production Engine
+1. **Core product scope is intentionally narrow**: controllers + site weekly/global triage + review app.
+2. **Single history knob**: `history.weeks` is used consistently across ingestion/report history semantics.
+3. **Phase3 source of truth is durable links** (`state/phase3/links.ndjson`), not pre-collapsed weekly assets.
+4. **Row-level anchors are mandatory** for Phase3 durability (`environment + run_url + row_id`).
+5. **Phase3 aggregation is a materialized view**:
+   - at runtime in review app,
+   - at build-time when generating site reports.
+6. **Performance-first pipeline**:
+   - in-memory phase1->phase2 in site build,
+   - bulk reads and in-memory indexing in hot report paths,
+   - reduced default semantic artifact persistence.
+7. **Storage remains abstracted by contracts**, preserving portability to future backends.
 
-- Move evidence extraction, provider anchoring, clustering, search phrase resolution, and review reasoning into `pkg/semantic/engine`.
-- Make this the sole production semantic implementation.
+## Future Architecture: Go Web App + PostgreSQL
 
-### Stage C: Rules Lifecycle
+### Target State
 
-- Introduce rule bundles with versioning (`rules_version`).
-- Gate promotions with:
-  - validation invariants,
-  - canary scoring,
-  - corpus replay delta checks.
+- A single Go web application serving both:
+  - review workflows (human-in-the-loop linking and curation),
+  - triage/report views.
+- PostgreSQL as primary store for facts, semantic data, and Phase3 state.
+- NDJSON retained only as optional import/export or migration tooling.
 
-### Stage D: Workflow Integration
+### Steps Already Taken Toward This Direction
 
-- Workflow commands run the shared engine.
-- Python assets remain available for experimentation, but promoted behavior must land as rule updates and/or Go semantic core changes.
+1. **Store abstraction is in place** (`pkg/store/contracts`) and already exercised by controllers/reports.
+2. **Hot-path performance work is backend-agnostic**:
+   - N+1 reads removed in semantic/report paths,
+   - bulk preload/index patterns used in reports,
+   - in-memory semantic phase transitions in site build.
+3. **Semantic and Phase3 contracts are explicit and durable**, reducing coupling to NDJSON file mechanics.
+4. **Command surface trimmed to core operations**, reducing migration scope and maintenance load.
 
-## 12) Metrics End-State
+### Next Steps (Concise)
 
-Target metric families:
-
-1. **Spread / concentration**
-   - top-N share, entropy/HHI, affected tests per cluster.
-2. **Novelty**
-   - newly seen signatures/canonical phrases/tests per window.
-3. **Regression risk**
-   - post-good-commit rates and trend.
-4. **Churn / stability**
-   - split-merge churn by period and by rule version.
-5. **Review burden**
-   - low-confidence and ambiguous-provider queue trends.
-
-These are generated from fresh facts + semantic outputs, not from ad-hoc snapshots.
-
-Current v1 daily rollup metrics:
-
-- `run_count`, `failure_count`, `success_rate` (from `runs`)
-- failed-run lane breakdowns (`failed_ci_infra_run_count`, `failed_provision_run_count`, `failed_e2e_run_count`)
-
-## 13) Initial Implementation Slices
-
-1. CLI and options scaffolding
-   - `cmd/*`, `pkg/run*`, `pkg/controllers/interface.go`.
-2. Storage contracts + NDJSON adapter
-   - facts/checkpoints/deadletters stores.
-3. Controllerize pass1 boundary
-   - `source.sippy.runs`, `source.prow.failures`, `facts.raw-failures`.
-4. Keep existing report commands working on unchanged output contracts.
-5. Semantic core extraction into `pkg/semantic`.
-6. Metrics daily rollups and trend commands.
-
-## 14) Non-Goals (V1)
-
-- No immediate requirement to move away from NDJSON.
-- No requirement to preserve old command aliases/wrappers.
-- No mandatory full rewrite of all existing semantic behavior in one step.
-
----
-
-This document captures the accepted baseline design and is the source for implementation planning.
-
-TODO: externalize environment-scoped static maps (Sippy job-name map and deterministic JUnit artifact-path map) to CLI/config file inputs.
+1. **Implement PostgreSQL store adapter** matching `pkg/store/contracts`.
+2. **Define relational schema + migrations** for facts, semantic artifacts, and Phase3 state.
+3. **Add parity tests** (NDJSON vs PostgreSQL) on key read/write/report paths.
+4. **Introduce service-layer APIs** for review and triage data access.
+5. **Move review UI to the Go web app runtime** and deprecate standalone local-only patterns.
+6. **Move static site generation to DB-backed reads** (or server-rendered equivalent), then phase out NDJSON as primary runtime storage.

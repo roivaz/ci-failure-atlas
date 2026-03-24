@@ -165,9 +165,6 @@ type SemanticStore interface {
 	UpsertGlobalClusters(ctx context.Context, rows []semanticcontracts.GlobalClusterRecord) error
 	ListGlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error)
 
-	UpsertPhase3GlobalClusters(ctx context.Context, rows []semanticcontracts.GlobalClusterRecord) error
-	ListPhase3GlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error)
-
 	UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.ReviewItemRecord) error
 	ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error)
 

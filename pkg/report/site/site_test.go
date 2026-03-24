@@ -66,7 +66,7 @@ func TestBuildGeneratesIndexesAndSelectsLatestWeek(t *testing.T) {
 	rootIndex := string(rootIndexBytes)
 	for _, expected := range []string{
 		"http-equiv=\"refresh\"",
-		"latest/weekly-metrics.html",
+		"2026-03-08/weekly-metrics.html",
 		"archive/",
 		"2026-03-08",
 	} {
@@ -384,6 +384,35 @@ func TestWeekStartsToGenerateReturnsOldestToNewest(t *testing.T) {
 		if got[i].Format("2006-01-02") != expected {
 			t.Fatalf("unexpected week at index %d: got %s want %s", i, got[i].Format("2006-01-02"), expected)
 		}
+	}
+}
+
+func TestLatestCompleteWeekForRootRedirectSelectsNewestCompleteWeek(t *testing.T) {
+	t.Parallel()
+
+	weeks := []WeekDirectory{
+		{Name: "2026-03-15"},
+		{Name: "2026-03-08"},
+		{Name: "2026-03-01"},
+	}
+	now := time.Date(2026, 3, 17, 10, 0, 0, 0, time.UTC)
+	got := latestCompleteWeekForRootRedirect(weeks, now)
+	if got != "2026-03-08" {
+		t.Fatalf("unexpected latest complete week: got %q want %q", got, "2026-03-08")
+	}
+}
+
+func TestLatestCompleteWeekForRootRedirectFallsBackToLatestWhenNoCompleteWeekExists(t *testing.T) {
+	t.Parallel()
+
+	weeks := []WeekDirectory{
+		{Name: "2026-03-15"},
+		{Name: "2026-03-22"},
+	}
+	now := time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC)
+	got := latestCompleteWeekForRootRedirect(weeks, now)
+	if got != "2026-03-15" {
+		t.Fatalf("unexpected fallback week: got %q want %q", got, "2026-03-15")
 	}
 }
 

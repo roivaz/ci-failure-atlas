@@ -247,6 +247,7 @@ func hasValidSearchSource(phrase, runURL, signatureID string, references []seman
 func buildPhase2AmbiguousProviderReviewItems(testClusters []semanticcontracts.TestClusterRecord) []semanticcontracts.ReviewItemRecord {
 	baseToMembers := map[string][]semanticcontracts.TestClusterRecord{}
 	baseToProviders := map[string]map[string]struct{}{}
+	baseCanonicalByKey := map[string]string{}
 
 	for _, cluster := range testClusters {
 		normalized := normalizeTestCluster(cluster)
@@ -254,8 +255,10 @@ func buildPhase2AmbiguousProviderReviewItems(testClusters []semanticcontracts.Te
 		if base == "" {
 			continue
 		}
-		baseKey := normalized.Environment + "|" + base
+		laneKey := phase2LaneKey(normalized.Lane)
+		baseKey := normalized.Environment + "|lane:" + laneKey + "|phrase:" + base
 		baseToMembers[baseKey] = append(baseToMembers[baseKey], normalized)
+		baseCanonicalByKey[baseKey] = base
 
 		provider := providerAnchorFromCluster(normalized)
 		if _, ok := baseToProviders[baseKey]; !ok {
@@ -280,9 +283,9 @@ func buildPhase2AmbiguousProviderReviewItems(testClusters []semanticcontracts.Te
 			return strings.TrimSpace(members[i].Phase1ClusterID) < strings.TrimSpace(members[j].Phase1ClusterID)
 		})
 		environment := strings.TrimSpace(members[0].Environment)
-		canonical := baseKey
-		if idx := strings.Index(baseKey, "|"); idx >= 0 && idx+1 < len(baseKey) {
-			canonical = baseKey[idx+1:]
+		canonical := strings.TrimSpace(baseCanonicalByKey[baseKey])
+		if canonical == "" {
+			canonical = strings.ToLower(collapseWS(strings.TrimSpace(members[0].CanonicalEvidencePhrase)))
 		}
 
 		sourcePhase1IDsSet := map[string]struct{}{}
@@ -341,9 +344,10 @@ func phase2Key(cluster semanticcontracts.TestClusterRecord) string {
 	canonical := strings.ToLower(collapseWS(cluster.CanonicalEvidencePhrase))
 	canonical = rePlaceholderToken.ReplaceAllString(canonical, "")
 	canonical = collapseWS(canonical)
+	laneKey := phase2LaneKey(cluster.Lane)
 
 	if !isGenericCanonical(canonical) {
-		return canonical
+		return "lane:" + laneKey + "|phrase:" + canonical
 	}
 
 	anchor := ""
@@ -351,7 +355,11 @@ func phase2Key(cluster semanticcontracts.TestClusterRecord) string {
 	if anchor == "" {
 		anchor = "<none>"
 	}
-	return canonical + "|provider:" + anchor
+	return "lane:" + laneKey + "|phrase:" + canonical + "|provider:" + anchor
+}
+
+func phase2LaneKey(lane string) string {
+	return strings.ToLower(defaultKeyPart(strings.TrimSpace(lane), "unknown"))
 }
 
 func fallbackSearchPhraseForCluster(cluster semanticcontracts.TestClusterRecord) string {

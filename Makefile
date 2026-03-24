@@ -10,10 +10,6 @@ COVER_PROFILE ?= .work/coverage.out
 
 # Latest Sunday at or before today.
 START_DATE ?= $(shell dow=$$(date +%u); date -d "$$(date +%F) -$$((dow % 7)) days" +%F)
-END_DATE ?= $(shell date -d "$(START_DATE) +7 days" +%F)
-SUBDIR ?= $(START_DATE)
-
-REPORTS_DIR ?= data/reports/$(SUBDIR)
 SITE_ROOT ?= site
 HISTORY_WEEKS ?= 4
 AZ_STORAGE_ACCOUNT ?= cihealthreports
@@ -26,7 +22,7 @@ AZ_STATIC_WEBSITE_ENABLED ?= true
 AZ_STATIC_INDEX_DOCUMENT ?= index.html
 AZ_STATIC_ERROR_DOCUMENT ?= 404.html
 
-.PHONY: help fmt fmt-check vet test test-race test-cover build run tidy check clean report-context semantic-workflow quality-report site-build site-build-from-existing site-push site-update-latest site-update-all deploy-static-website-storage
+.PHONY: help fmt fmt-check vet test test-race test-cover build run tidy check clean report-context site-build site-build-from-existing site-push deploy-static-website-storage
 
 help:
 	@echo "Go targets:"
@@ -43,13 +39,9 @@ help:
 	@echo "  make clean"
 	@echo ""
 	@echo "Report targets:"
-	@echo "  make semantic-workflow"
-	@echo "  make quality-report"
 	@echo "  make site-build"
 	@echo "  make site-build-from-existing"
 	@echo "  make site-push"
-	@echo "  make site-update-latest"
-	@echo "  make site-update-all"
 	@echo "  make deploy-static-website-storage"
 	@echo ""
 	@echo "Variables (override as needed):"
@@ -59,8 +51,6 @@ help:
 	@echo "  BINARY=$(BINARY)"
 	@echo "  COVER_PROFILE=$(COVER_PROFILE)"
 	@echo "  START_DATE=$(START_DATE)"
-	@echo "  END_DATE=$(END_DATE)"
-	@echo "  SUBDIR=$(SUBDIR)"
 	@echo "  SITE_ROOT=$(SITE_ROOT)"
 	@echo "  HISTORY_WEEKS=$(HISTORY_WEEKS)"
 	@echo "  SOURCE_ENVS=$(SOURCE_ENVS)"
@@ -75,10 +65,8 @@ help:
 	@echo "  AZ_STATIC_ERROR_DOCUMENT=$(AZ_STATIC_ERROR_DOCUMENT)"
 	@echo ""
 	@echo "Example:"
-	@echo "  make quality-report START_DATE=2026-03-01"
 	@echo "  make site-build START_DATE=2026-03-08 HISTORY_WEEKS=4"
-	@echo "  make site-update-latest START_DATE=2026-03-08"
-	@echo "  make run RUN_ARGS='report quality --storage.ndjson.semantic-subdir 2026-03-08 --workflow.window.start 2026-03-08 --workflow.window.end 2026-03-15'"
+	@echo "  make run RUN_ARGS='report review --storage.ndjson.semantic-subdir 2026-03-08'"
 	@echo "  make deploy-static-website-storage AZ_RESOURCE_GROUP=my-rg AZ_STORAGE_ACCOUNT=myreportstorage"
 
 fmt:
@@ -134,30 +122,7 @@ clean:
 
 report-context:
 	@echo "START_DATE=$(START_DATE)"
-	@echo "END_DATE=$(END_DATE)"
-	@echo "SUBDIR=$(SUBDIR)"
 	@echo "SOURCE_ENVS=$(SOURCE_ENVS)"
-
-semantic-workflow: report-context
-	$(CFA) workflow build \
-		--source.envs "$(SOURCE_ENVS)" \
-		--storage.ndjson.semantic-subdir "$(SUBDIR)" \
-		--workflow.window.start "$(START_DATE)" \
-		--workflow.window.end "$(END_DATE)"
-
-quality-report: report-context
-	@mkdir -p "$(REPORTS_DIR)"
-	$(CFA) report quality \
-		--storage.ndjson.semantic-subdir "$(SUBDIR)" \
-		--reports.subdir "$(SUBDIR)" \
-		--workflow.window.start "$(START_DATE)" \
-		--workflow.window.end "$(END_DATE)" \
-		--output "$(REPORTS_DIR)/semantic-quality.html" \
-		--quality-export "$(REPORTS_DIR)/semantic-quality-flagged.ndjson" \
-		--source.envs "$(SOURCE_ENVS)" \
-		--top 0 \
-		--recent 4 \
-		--min-runs 10
 
 site-build: report-context
 	$(CFA) report site build \
