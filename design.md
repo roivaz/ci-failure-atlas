@@ -142,12 +142,70 @@ data/
    - in-memory semantic phase transitions in site build.
 3. **Semantic and Phase3 contracts are explicit and durable**, reducing coupling to NDJSON file mechanics.
 4. **Command surface trimmed to core operations**, reducing migration scope and maintenance load.
+5. **PostgreSQL Step 1 is implemented**:
+   - mixed-schema migrations (normalized facts/state + typed-key JSONB semantic/Phase3 tables),
+   - implemented currently used store methods,
+   - NDJSON/PostgreSQL parity tests for implemented store methods,
+   - command-path smoke tests for postgres-enabled `run`, `run-once`, `sync-once`, `workflow phase1`, and `workflow phase2`.
+
+### Step 2 Refactor Design (Remove Phase1/Test-Cluster Persistence Dependency)
+
+Goal: make `phase1_workset` and `test_clusters` purely internal pipeline data, not required persisted assets.
+
+1. **Runtime data flow**
+   - Keep phase1 outputs (`workset`, `normalized`, `assignments`, `test_clusters`) in memory for phase transitions.
+   - Persist only user-facing semantic outputs required by current product surfaces:
+     - `global_clusters`
+     - `review_queue`
+     - `window_metadata` (or equivalent metadata row)
+     - Phase3 state (`issues`, `links`, `events`).
+
+2. **Execution-path changes**
+   - `workflow phase1` becomes an internal computation stage in build/review-oriented flows.
+   - `workflow phase2` consumes in-memory phase1 outputs where possible (instead of re-reading `test_clusters` from store).
+   - Report and review generation read global-level semantic data + Phase3 links as the source of truth.
+
+3. **Debuggability without default persistence**
+   - Keep optional debug persistence for phase1 internals behind an explicit opt-in flag.
+   - Default mode remains minimal persistence to reduce IO/storage churn and simplify backend migration.
+
+4. **Acceptance criteria**
+   - Site build and review app behavior remain unchanged for operators.
+   - No required reads of `phase1_workset`/`test_clusters` in normal runtime paths.
+   - Parity tests continue to pass for persisted datasets.
+
+### Step 2 Contract + Schema Trim Plan (Minimal Semantic Persistence)
+
+1. **Contract trim (target)**
+   - Keep facts/state methods unchanged.
+   - Keep semantic/Phase3 methods needed by product surfaces:
+     - `Upsert/ListGlobalClusters`
+     - `Upsert/ListReviewQueue`
+     - `Upsert/ListPhase3Issues`
+     - `Upsert/ListPhase3Links`
+     - `DeletePhase3Links`
+     - `Append/ListPhase3Events`
+   - De-scope phase1 persistence methods from primary contract surface (or move to debug-only extension interface).
+
+2. **Schema trim (target)**
+   - Keep:
+     - `cfa_sem_global_clusters`
+     - `cfa_sem_review_queue`
+     - `cfa_phase3_issues`
+     - `cfa_phase3_links`
+     - `cfa_phase3_events`
+   - Transition phase1-oriented semantic tables (`cfa_sem_phase1_workset`, `cfa_sem_test_clusters`) to optional/debug lifecycle, then remove after migration window.
+
+3. **Migration sequence**
+   - Introduce code paths that no longer depend on phase1 persisted tables.
+   - Mark phase1 persistence methods as deprecated in contracts.
+   - Remove writes first, then remove reads, then apply schema-drop migration for deprecated tables.
+   - Keep explicit rollback window with compatibility checks before irreversible drops.
 
 ### Next Steps (Concise)
 
-1. **Implement PostgreSQL store adapter** matching `pkg/store/contracts`.
-2. **Define relational schema + migrations** for facts, semantic artifacts, and Phase3 state.
-3. **Add parity tests** (NDJSON vs PostgreSQL) on key read/write/report paths.
-4. **Introduce service-layer APIs** for review and triage data access.
-5. **Move review UI to the Go web app runtime** and deprecate standalone local-only patterns.
-6. **Move static site generation to DB-backed reads** (or server-rendered equivalent), then phase out NDJSON as primary runtime storage.
+1. **Execute Step 2 refactor**: remove hard dependency on persisted `phase1_workset`/`test_clusters`.
+2. **Trim store contracts + schema** to minimal persisted semantic model.
+3. **Introduce service-layer APIs** for review and triage data access.
+4. **Move review UI to the Go web app runtime** and deprecate standalone local-only patterns.
+5. **Move static site generation to DB-backed reads** (or server-rendered equivalent), then phase out NDJSON as primary runtime storage.

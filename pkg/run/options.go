@@ -13,12 +13,15 @@ import (
 	"ci-failure-atlas/pkg/sourceoptions"
 	"ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/store/ndjson"
+	postgresstore "ci-failure-atlas/pkg/store/postgres"
+	postgresoptions "ci-failure-atlas/pkg/store/postgres/options"
 )
 
 func DefaultOptions() *RawOptions {
 	return &RawOptions{
-		SourceOptions: sourceoptions.DefaultOptions(),
-		NDJSONOptions: ndjsonoptions.DefaultOptions(),
+		SourceOptions:   sourceoptions.DefaultOptions(),
+		NDJSONOptions:   ndjsonoptions.DefaultOptions(),
+		PostgresOptions: postgresoptions.DefaultOptions(),
 
 		SourceSippyRunsControllerThreads:       1,
 		SourceSippyTestsDailyControllerThreads: 1,
@@ -31,10 +34,22 @@ func DefaultOptions() *RawOptions {
 }
 
 func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
+	if opts.SourceOptions == nil {
+		opts.SourceOptions = sourceoptions.DefaultOptions()
+	}
+	if opts.NDJSONOptions == nil {
+		opts.NDJSONOptions = ndjsonoptions.DefaultOptions()
+	}
+	if opts.PostgresOptions == nil {
+		opts.PostgresOptions = postgresoptions.DefaultOptions()
+	}
 	if err := sourceoptions.BindSourceOptions(opts.SourceOptions, cmd); err != nil {
 		return err
 	}
 	if err := ndjsonoptions.BindNDJSONOptions(opts.NDJSONOptions, cmd); err != nil {
+		return err
+	}
+	if err := postgresoptions.BindOptions(opts.PostgresOptions, cmd); err != nil {
 		return err
 	}
 
@@ -49,8 +64,9 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 }
 
 type RawOptions struct {
-	SourceOptions *sourceoptions.RawOptions
-	NDJSONOptions *ndjsonoptions.RawOptions
+	SourceOptions   *sourceoptions.RawOptions
+	NDJSONOptions   *ndjsonoptions.RawOptions
+	PostgresOptions *postgresoptions.RawOptions
 
 	SourceSippyRunsControllerThreads       int
 	SourceSippyTestsDailyControllerThreads int
@@ -63,8 +79,9 @@ type RawOptions struct {
 
 type validatedOptions struct {
 	*RawOptions
-	SourceValidated *sourceoptions.ValidatedOptions
-	NDJSONValidated *ndjsonoptions.ValidatedOptions
+	SourceValidated   *sourceoptions.ValidatedOptions
+	NDJSONValidated   *ndjsonoptions.ValidatedOptions
+	PostgresValidated *postgresoptions.ValidatedOptions
 
 	SourceSippyRunsControllerThreads       int
 	SourceSippyTestsDailyControllerThreads int
@@ -80,8 +97,9 @@ type ValidatedOptions struct {
 }
 
 type completedOptions struct {
-	Source *sourceoptions.Options
-	NDJSON *ndjsonoptions.Options
+	Source   *sourceoptions.Options
+	NDJSON   *ndjsonoptions.Options
+	Postgres *postgresoptions.Options
 
 	Store contracts.Store
 
@@ -99,13 +117,31 @@ type Options struct {
 }
 
 func (o *RawOptions) Validate() (*ValidatedOptions, error) {
+	if o.SourceOptions == nil {
+		o.SourceOptions = sourceoptions.DefaultOptions()
+	}
 	sourceValidated, err := o.SourceOptions.Validate()
 	if err != nil {
 		return nil, err
 	}
-	ndjsonValidated, err := o.NDJSONOptions.Validate()
+
+	if o.PostgresOptions == nil {
+		o.PostgresOptions = postgresoptions.DefaultOptions()
+	}
+	postgresValidated, err := o.PostgresOptions.Validate()
 	if err != nil {
 		return nil, err
+	}
+
+	var ndjsonValidated *ndjsonoptions.ValidatedOptions
+	if !postgresValidated.Enabled {
+		if o.NDJSONOptions == nil {
+			o.NDJSONOptions = ndjsonoptions.DefaultOptions()
+		}
+		ndjsonValidated, err = o.NDJSONOptions.Validate()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if o.SourceSippyRunsControllerThreads <= 0 {
@@ -135,6 +171,7 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 			RawOptions:                             o,
 			SourceValidated:                        sourceValidated,
 			NDJSONValidated:                        ndjsonValidated,
+			PostgresValidated:                      postgresValidated,
 			SourceSippyRunsControllerThreads:       o.SourceSippyRunsControllerThreads,
 			SourceSippyTestsDailyControllerThreads: o.SourceSippyTestsDailyControllerThreads,
 			SourceGitHubPullRequestsThreads:        o.SourceGitHubPullRequestsThreads,
@@ -151,22 +188,42 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 	if err != nil {
 		return nil, err
 	}
-	ndjsonCompleted, err := o.NDJSONValidated.Complete(ctx)
-	if err != nil {
-		return nil, err
-	}
 
-	store, err := ndjson.NewWithOptions(ndjsonCompleted.DataDirectory, ndjson.Options{
-		SemanticSubdirectory: ndjsonCompleted.SemanticSubdirectory,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create NDJSON store: %w", err)
+	var (
+		ndjsonCompleted   *ndjsonoptions.Options
+		postgresCompleted *postgresoptions.Options
+		store             contracts.Store
+	)
+	if o.PostgresValidated != nil && o.PostgresValidated.Enabled {
+		postgresCompleted, err = o.PostgresValidated.Complete(ctx)
+		if err != nil {
+			return nil, err
+		}
+		store, err = postgresstore.New(postgresCompleted.Connection, postgresstore.Options{
+			SemanticSubdirectory: postgresCompleted.SemanticSubdirectory,
+		})
+		if err != nil {
+			postgresCompleted.Cleanup()
+			return nil, fmt.Errorf("create postgres store: %w", err)
+		}
+	} else {
+		ndjsonCompleted, err = o.NDJSONValidated.Complete(ctx)
+		if err != nil {
+			return nil, err
+		}
+		store, err = ndjson.NewWithOptions(ndjsonCompleted.DataDirectory, ndjson.Options{
+			SemanticSubdirectory: ndjsonCompleted.SemanticSubdirectory,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create NDJSON store: %w", err)
+		}
 	}
 
 	return &Options{
 		completedOptions: &completedOptions{
 			Source:                                 sourceCompleted,
 			NDJSON:                                 ndjsonCompleted,
+			Postgres:                               postgresCompleted,
 			Store:                                  store,
 			SourceSippyRunsControllerThreads:       o.SourceSippyRunsControllerThreads,
 			SourceSippyTestsDailyControllerThreads: o.SourceSippyTestsDailyControllerThreads,
@@ -180,6 +237,10 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 }
 
 func (opts *Options) Cleanup() {
+	if opts.Postgres != nil {
+		opts.Postgres.Cleanup()
+		return
+	}
 	if opts.Store != nil {
 		_ = opts.Store.Close()
 	}
