@@ -26,13 +26,15 @@ func NewReportCommand() (*cobra.Command, error) {
 		SilenceErrors: true,
 	}
 
-	siteBuildDataDirectory := "data"
 	siteBuildRoot := "site"
 	siteBuildSourceEnvs := []string{"dev", "int", "stg", "prod"}
 	siteBuildHistoryWeeks := 4
 	siteBuildStartDate := ""
 	siteBuildFromExisting := false
 	siteBuildPostgres := postgresoptions.DefaultOptions()
+	siteBuildPostgres.Enabled = true
+	siteBuildPostgres.Embedded = true
+	siteBuildPostgres.Initialize = true
 	siteBuildCmd := &cobra.Command{
 		Use:   "build",
 		Short: "Build management site (semantic + reports + indexes).",
@@ -48,13 +50,11 @@ func NewReportCommand() (*cobra.Command, error) {
 			defer postgresCompleted.Cleanup()
 
 			result, err := reportsite.Build(cmd.Context(), reportsite.BuildOptions{
-				DataDirectory:      siteBuildDataDirectory,
 				SiteRoot:           siteBuildRoot,
 				SourceEnvironments: siteBuildSourceEnvs,
 				CurrentWeekStart:   siteBuildStartDate,
 				HistoryWeeks:       siteBuildHistoryWeeks,
 				FromExisting:       siteBuildFromExisting,
-				UsePostgres:        postgresCompleted.Enabled,
 				PostgresPool:       postgresCompleted.Connection,
 			})
 			if err != nil {
@@ -69,12 +69,11 @@ func NewReportCommand() (*cobra.Command, error) {
 			return nil
 		},
 	}
-	siteBuildCmd.Flags().StringVar(&siteBuildDataDirectory, "storage.ndjson.data-dir", siteBuildDataDirectory, "root directory for NDJSON facts/state/semantic data")
 	siteBuildCmd.Flags().StringVar(&siteBuildRoot, "site.root", siteBuildRoot, "root directory for generated site HTML")
 	siteBuildCmd.Flags().StringSliceVar(&siteBuildSourceEnvs, "source.envs", siteBuildSourceEnvs, "environments to include (e.g. dev,int,stg,prod)")
 	siteBuildCmd.Flags().IntVar(&siteBuildHistoryWeeks, "history.weeks", siteBuildHistoryWeeks, "number of weekly 7-day windows to build and use as scoring/history horizon")
 	siteBuildCmd.Flags().StringVar(&siteBuildStartDate, "start-date", siteBuildStartDate, "current week start date (YYYY-MM-DD). Defaults to latest Sunday.")
-	siteBuildCmd.Flags().BoolVar(&siteBuildFromExisting, "from-existing", siteBuildFromExisting, "rebuild reports and indexes from existing semantic snapshots in data/semantic (skips data ingestion workflow)")
+	siteBuildCmd.Flags().BoolVar(&siteBuildFromExisting, "from-existing", siteBuildFromExisting, "rebuild reports and indexes from existing semantic snapshots in PostgreSQL (skips data ingestion workflow)")
 	if err := postgresoptions.BindOptions(siteBuildPostgres, siteBuildCmd); err != nil {
 		return nil, err
 	}
@@ -83,8 +82,10 @@ func NewReportCommand() (*cobra.Command, error) {
 	sitePushStorageAccount := ""
 	sitePushAuthMode := "login"
 	sitePushContainerName := "$web"
-	sitePushDataDirectory := "data"
 	sitePushPostgres := postgresoptions.DefaultOptions()
+	sitePushPostgres.Enabled = true
+	sitePushPostgres.Embedded = true
+	sitePushPostgres.Initialize = true
 	sitePushCmd := &cobra.Command{
 		Use:   "push",
 		Short: "Push report site files to an Azure Storage static website container.",
@@ -101,11 +102,9 @@ func NewReportCommand() (*cobra.Command, error) {
 
 			result, err := reportsite.Push(cmd.Context(), reportsite.PushOptions{
 				SiteRoot:       sitePushRoot,
-				DataDirectory:  sitePushDataDirectory,
 				StorageAccount: sitePushStorageAccount,
 				AuthMode:       sitePushAuthMode,
 				ContainerName:  sitePushContainerName,
-				UsePostgres:    postgresCompleted.Enabled,
 				PostgresPool:   postgresCompleted.Connection,
 			})
 			if err != nil {
@@ -122,7 +121,6 @@ func NewReportCommand() (*cobra.Command, error) {
 		},
 	}
 	sitePushCmd.Flags().StringVar(&sitePushRoot, "site.root", sitePushRoot, "root directory for generated site HTML")
-	sitePushCmd.Flags().StringVar(&sitePushDataDirectory, "storage.ndjson.data-dir", sitePushDataDirectory, "root directory for NDJSON facts/state/semantic data")
 	sitePushCmd.Flags().StringVar(&sitePushStorageAccount, "site.storage-account", sitePushStorageAccount, "Azure Storage account name for static website uploads")
 	sitePushCmd.Flags().StringVar(&sitePushAuthMode, "site.auth-mode", sitePushAuthMode, "Azure Storage auth mode for uploads (for example: login|key)")
 	sitePushCmd.Flags().StringVar(&sitePushContainerName, "site.container", sitePushContainerName, "target blob container name (default: $web)")
@@ -200,11 +198,13 @@ func NewReportCommand() (*cobra.Command, error) {
 	}
 	siteCmd.AddCommand(siteBuildCmd, sitePushCmd, siteRunCmd)
 
-	reviewDataDirectory := "data"
 	reviewSemanticSubdirectory := ""
 	reviewListen := "127.0.0.1:8081"
 	reviewHistoryWeeks := 4
 	reviewPostgres := postgresoptions.DefaultOptions()
+	reviewPostgres.Enabled = true
+	reviewPostgres.Embedded = true
+	reviewPostgres.Initialize = true
 	reviewCmd := &cobra.Command{
 		Use:   "review",
 		Short: "Run a local dynamic semantic review app with manual Phase3 linking.",
@@ -220,10 +220,8 @@ func NewReportCommand() (*cobra.Command, error) {
 			defer postgresCompleted.Cleanup()
 
 			handler, err := reportreview.NewHandler(reportreview.HandlerOptions{
-				DataDirectory:        reviewDataDirectory,
 				SemanticSubdirectory: reviewSemanticSubdirectory,
 				HistoryHorizonWeeks:  reviewHistoryWeeks,
-				UsePostgres:          postgresCompleted.Enabled,
 				PostgresPool:         postgresCompleted.Connection,
 			})
 			if err != nil {
@@ -259,8 +257,7 @@ func NewReportCommand() (*cobra.Command, error) {
 			return nil
 		},
 	}
-	reviewCmd.Flags().StringVar(&reviewDataDirectory, "storage.ndjson.data-dir", reviewDataDirectory, "root directory for NDJSON facts/state/semantic data")
-	reviewCmd.Flags().StringVar(&reviewSemanticSubdirectory, "storage.ndjson.semantic-subdir", reviewSemanticSubdirectory, "default semantic snapshot subdirectory (for example: 2026-03-15)")
+	reviewCmd.Flags().StringVar(&reviewSemanticSubdirectory, "storage.semantic-subdir", reviewSemanticSubdirectory, "default semantic snapshot subdirectory (for example: 2026-03-15)")
 	reviewCmd.Flags().StringVar(&reviewListen, "site.listen", reviewListen, "listen address for local semantic review app (host:port)")
 	reviewCmd.Flags().IntVar(&reviewHistoryWeeks, "history.weeks", reviewHistoryWeeks, "number of most recent semantic weeks used for report history and cross-week phase3 propagation")
 	if err := postgresoptions.BindOptions(reviewPostgres, reviewCmd); err != nil {

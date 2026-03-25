@@ -11,34 +11,30 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	"ci-failure-atlas/pkg/ndjsonoptions"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	phase1engine "ci-failure-atlas/pkg/semantic/engine/phase1"
 	semanticinput "ci-failure-atlas/pkg/semantic/input"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
-	"ci-failure-atlas/pkg/store/ndjson"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 	postgresoptions "ci-failure-atlas/pkg/store/postgres/options"
 )
 
 func DefaultOptions() *RawOptions {
+	postgresRaw := postgresoptions.DefaultOptions()
+	postgresRaw.Enabled = true
+	postgresRaw.Embedded = true
+	postgresRaw.Initialize = true
 	return &RawOptions{
-		NDJSONOptions:   ndjsonoptions.DefaultOptions(),
-		PostgresOptions: postgresoptions.DefaultOptions(),
+		PostgresOptions: postgresRaw,
 		Environments:    []string{"dev"},
 	}
 }
 
 func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
-	if opts.NDJSONOptions == nil {
-		opts.NDJSONOptions = ndjsonoptions.DefaultOptions()
-	}
 	if opts.PostgresOptions == nil {
 		opts.PostgresOptions = postgresoptions.DefaultOptions()
 	}
-	if err := ndjsonoptions.BindNDJSONOptions(opts.NDJSONOptions, cmd); err != nil {
-		return err
-	}
+	opts.PostgresOptions.Enabled = true
 	if err := postgresoptions.BindOptions(opts.PostgresOptions, cmd); err != nil {
 		return err
 	}
@@ -49,7 +45,6 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 }
 
 type RawOptions struct {
-	NDJSONOptions   *ndjsonoptions.RawOptions
 	PostgresOptions *postgresoptions.RawOptions
 	Environments    []string
 	WindowStart     string
@@ -58,7 +53,6 @@ type RawOptions struct {
 
 type validatedOptions struct {
 	*RawOptions
-	NDJSONValidated   *ndjsonoptions.ValidatedOptions
 	PostgresValidated *postgresoptions.ValidatedOptions
 	Environments      []string
 	EnvironmentSet    map[string]struct{}
@@ -71,7 +65,6 @@ type ValidatedOptions struct {
 }
 
 type completedOptions struct {
-	NDJSON         *ndjsonoptions.Options
 	Postgres       *postgresoptions.Options
 	Store          storecontracts.Store
 	Environments   []string
@@ -108,20 +101,13 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 	if o.PostgresOptions == nil {
 		o.PostgresOptions = postgresoptions.DefaultOptions()
 	}
+	o.PostgresOptions.Enabled = true
 	postgresValidated, err := o.PostgresOptions.Validate()
 	if err != nil {
 		return nil, err
 	}
-
-	var ndjsonValidated *ndjsonoptions.ValidatedOptions
 	if !postgresValidated.Enabled {
-		if o.NDJSONOptions == nil {
-			o.NDJSONOptions = ndjsonoptions.DefaultOptions()
-		}
-		ndjsonValidated, err = o.NDJSONOptions.Validate()
-		if err != nil {
-			return nil, err
-		}
+		return nil, fmt.Errorf("postgres storage is required")
 	}
 	environments, environmentSet, err := normalizeWorkflowEnvironments(o.Environments)
 	if err != nil {
@@ -134,7 +120,6 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 	return &ValidatedOptions{
 		validatedOptions: &validatedOptions{
 			RawOptions:        o,
-			NDJSONValidated:   ndjsonValidated,
 			PostgresValidated: postgresValidated,
 			Environments:      environments,
 			EnvironmentSet:    environmentSet,
@@ -146,38 +131,23 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 
 func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 	var (
-		ndjsonCompleted   *ndjsonoptions.Options
 		postgresCompleted *postgresoptions.Options
 		store             storecontracts.Store
 		err               error
 	)
-	if o.PostgresValidated != nil && o.PostgresValidated.Enabled {
-		postgresCompleted, err = o.PostgresValidated.Complete(ctx)
-		if err != nil {
-			return nil, err
-		}
-		store, err = postgresstore.New(postgresCompleted.Connection, postgresstore.Options{
-			SemanticSubdirectory: postgresCompleted.SemanticSubdirectory,
-		})
-		if err != nil {
-			postgresCompleted.Cleanup()
-			return nil, fmt.Errorf("create postgres store: %w", err)
-		}
-	} else {
-		ndjsonCompleted, err = o.NDJSONValidated.Complete(ctx)
-		if err != nil {
-			return nil, err
-		}
-		store, err = ndjson.NewWithOptions(ndjsonCompleted.DataDirectory, ndjson.Options{
-			SemanticSubdirectory: ndjsonCompleted.SemanticSubdirectory,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create NDJSON store: %w", err)
-		}
+	postgresCompleted, err = o.PostgresValidated.Complete(ctx)
+	if err != nil {
+		return nil, err
+	}
+	store, err = postgresstore.New(postgresCompleted.Connection, postgresstore.Options{
+		SemanticSubdirectory: postgresCompleted.SemanticSubdirectory,
+	})
+	if err != nil {
+		postgresCompleted.Cleanup()
+		return nil, fmt.Errorf("create postgres store: %w", err)
 	}
 	return &Options{
 		completedOptions: &completedOptions{
-			NDJSON:         ndjsonCompleted,
 			Postgres:       postgresCompleted,
 			Store:          store,
 			Environments:   append([]string(nil), o.Environments...),
@@ -189,12 +159,11 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 }
 
 func (o *Options) Cleanup() {
-	if o.Postgres != nil {
-		o.Postgres.Cleanup()
-		return
-	}
 	if o.Store != nil {
 		_ = o.Store.Close()
+	}
+	if o.Postgres != nil {
+		o.Postgres.Cleanup()
 	}
 }
 
@@ -254,7 +223,6 @@ func (o *Options) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create logger: %w", err)
 	}
-	defer o.Cleanup()
 
 	pipeline, err := o.RunPipeline(ctx)
 	if err != nil {
@@ -263,12 +231,6 @@ func (o *Options) Run(ctx context.Context) error {
 
 	if err := o.Store.UpsertPhase1Workset(ctx, pipeline.Workset); err != nil {
 		return fmt.Errorf("upsert phase1 workset: %w", err)
-	}
-	if err := o.Store.UpsertPhase1Normalized(ctx, pipeline.Normalized); err != nil {
-		return fmt.Errorf("upsert phase1 normalized rows: %w", err)
-	}
-	if err := o.Store.UpsertPhase1Assignments(ctx, pipeline.Assignments); err != nil {
-		return fmt.Errorf("upsert phase1 assignments: %w", err)
 	}
 	if err := o.Store.UpsertTestClusters(ctx, pipeline.TestClusters); err != nil {
 		return fmt.Errorf("upsert test clusters: %w", err)

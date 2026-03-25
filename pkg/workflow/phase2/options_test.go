@@ -7,13 +7,33 @@ import (
 	"github.com/go-logr/logr"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	"ci-failure-atlas/pkg/testsupport/pgtest"
 )
+
+func configurePostgresForPhase2Test(t *testing.T, opts *RawOptions) {
+	t.Helper()
+	server, err := pgtest.StartEmbedded(t.TempDir())
+	if err != nil {
+		t.Fatalf("start embedded postgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = server.Stop()
+	})
+	opts.PostgresOptions.Enabled = true
+	opts.PostgresOptions.Embedded = false
+	opts.PostgresOptions.Initialize = true
+	opts.PostgresOptions.Hostname = server.Host
+	opts.PostgresOptions.Port = server.Port
+	opts.PostgresOptions.User = server.User
+	opts.PostgresOptions.Password = server.Password
+	opts.PostgresOptions.Database = server.Database
+}
 
 func TestRunWorkflowPhase2WritesGlobalClustersAndMergedReview(t *testing.T) {
 	t.Parallel()
 
 	opts := DefaultOptions()
-	opts.NDJSONOptions.DataDirectory = t.TempDir()
+	configurePostgresForPhase2Test(t, opts)
 
 	validated, err := opts.Validate()
 	if err != nil {

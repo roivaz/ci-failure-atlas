@@ -9,13 +9,33 @@ import (
 	"github.com/go-logr/logr"
 
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
+	"ci-failure-atlas/pkg/testsupport/pgtest"
 )
+
+func configurePostgresForPhase1Test(t *testing.T, opts *RawOptions) {
+	t.Helper()
+	server, err := pgtest.StartEmbedded(t.TempDir())
+	if err != nil {
+		t.Fatalf("start embedded postgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = server.Stop()
+	})
+	opts.PostgresOptions.Enabled = true
+	opts.PostgresOptions.Embedded = false
+	opts.PostgresOptions.Initialize = true
+	opts.PostgresOptions.Hostname = server.Host
+	opts.PostgresOptions.Port = server.Port
+	opts.PostgresOptions.User = server.User
+	opts.PostgresOptions.Password = server.Password
+	opts.PostgresOptions.Database = server.Database
+}
 
 func TestRunWorkflowPhase1WritesSemanticArtifacts(t *testing.T) {
 	t.Parallel()
 
 	opts := DefaultOptions()
-	opts.NDJSONOptions.DataDirectory = t.TempDir()
+	configurePostgresForPhase1Test(t, opts)
 
 	validated, err := opts.Validate()
 	if err != nil {
@@ -109,7 +129,7 @@ func TestRunWorkflowPhase1FiltersByEnvironment(t *testing.T) {
 	t.Parallel()
 
 	opts := DefaultOptions()
-	opts.NDJSONOptions.DataDirectory = t.TempDir()
+	configurePostgresForPhase1Test(t, opts)
 	opts.Environments = []string{"dev"}
 
 	validated, err := opts.Validate()
@@ -187,7 +207,7 @@ func TestRunWorkflowPhase1FiltersByTimeWindow(t *testing.T) {
 	t.Parallel()
 
 	opts := DefaultOptions()
-	opts.NDJSONOptions.DataDirectory = t.TempDir()
+	configurePostgresForPhase1Test(t, opts)
 	opts.Environments = []string{"dev"}
 	opts.WindowStart = "2026-03-06T10:00:00Z"
 	opts.WindowEnd = "2026-03-06T11:00:00Z"
@@ -261,7 +281,7 @@ func TestValidateWorkflowPhase1RequiresBothWindowBoundaries(t *testing.T) {
 	t.Parallel()
 
 	opts := DefaultOptions()
-	opts.NDJSONOptions.DataDirectory = t.TempDir()
+	configurePostgresForPhase1Test(t, opts)
 	opts.WindowStart = "2026-03-06"
 
 	if _, err := opts.Validate(); err == nil {
@@ -273,7 +293,7 @@ func TestValidateWorkflowPhase1ParsesDateWindowAsDayRange(t *testing.T) {
 	t.Parallel()
 
 	opts := DefaultOptions()
-	opts.NDJSONOptions.DataDirectory = t.TempDir()
+	configurePostgresForPhase1Test(t, opts)
 	opts.Environments = []string{"dev", "int"}
 	opts.WindowStart = "2026-03-06"
 	opts.WindowEnd = "2026-03-07"
@@ -301,7 +321,7 @@ func TestRunWorkflowPhase1FailsWhenRunMetadataMissing(t *testing.T) {
 	t.Parallel()
 
 	opts := DefaultOptions()
-	opts.NDJSONOptions.DataDirectory = t.TempDir()
+	configurePostgresForPhase1Test(t, opts)
 	opts.Environments = []string{"dev"}
 
 	validated, err := opts.Validate()

@@ -66,7 +66,7 @@ help:
 	@echo ""
 	@echo "Example:"
 	@echo "  make site-build START_DATE=2026-03-08 HISTORY_WEEKS=4"
-	@echo "  make run RUN_ARGS='report review --storage.ndjson.semantic-subdir 2026-03-08'"
+	@echo "  make run RUN_ARGS='report review --storage.semantic-subdir 2026-03-08'"
 	@echo "  make deploy-static-website-storage AZ_RESOURCE_GROUP=my-rg AZ_STORAGE_ACCOUNT=myreportstorage"
 
 fmt:
@@ -127,7 +127,6 @@ report-context:
 site-build: report-context
 	$(CFA) report site build \
 		--site.root "$(SITE_ROOT)" \
-		--storage.ndjson.data-dir "data" \
 		--source.envs "$(SOURCE_ENVS)" \
 		--history.weeks "$(HISTORY_WEEKS)" \
 		--start-date "$(START_DATE)"
@@ -135,7 +134,6 @@ site-build: report-context
 site-build-from-existing:
 	$(CFA) report site build \
 		--site.root "$(SITE_ROOT)" \
-		--storage.ndjson.data-dir "data" \
 		--from-existing
 
 site-build-only-latest:

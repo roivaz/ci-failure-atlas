@@ -9,8 +9,6 @@ import (
 	"html"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -20,14 +18,12 @@ import (
 	phase3engine "ci-failure-atlas/pkg/semantic/engine/phase3"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
-	"ci-failure-atlas/pkg/store/ndjson"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
-	defaultDataDirectory    = "data"
 	defaultHistoryWeeks     = 4
 	selectionInputName      = "cluster_id"
 	unlinkChildInputName    = "unlink_child"
@@ -50,10 +46,8 @@ type HandlerOptions struct {
 }
 
 type handler struct {
-	dataDirectory       string
 	defaultWeek         string
 	historyHorizonWeeks int
-	usePostgres         bool
 	postgresPool        *pgxpool.Pool
 }
 
@@ -100,36 +94,13 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 		historyHorizonWeeks = defaultHistoryWeeks
 	}
 
-	absoluteDataDirectory := ""
-	if !opts.UsePostgres {
-		dataDirectory := strings.TrimSpace(opts.DataDirectory)
-		if dataDirectory == "" {
-			dataDirectory = defaultDataDirectory
-		}
-		resolved, err := filepath.Abs(filepath.Clean(dataDirectory))
-		if err != nil {
-			return nil, fmt.Errorf("resolve absolute data directory %q: %w", dataDirectory, err)
-		}
-		dataInfo, err := os.Stat(resolved)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, fmt.Errorf("data directory %q does not exist", resolved)
-			}
-			return nil, fmt.Errorf("stat data directory %q: %w", resolved, err)
-		}
-		if !dataInfo.IsDir() {
-			return nil, fmt.Errorf("data directory %q must be a directory", resolved)
-		}
-		absoluteDataDirectory = resolved
-	} else if opts.PostgresPool == nil {
-		return nil, fmt.Errorf("postgres pool is required when postgres backend is enabled")
+	if opts.PostgresPool == nil {
+		return nil, fmt.Errorf("postgres pool is required")
 	}
 
 	h := &handler{
-		dataDirectory:       absoluteDataDirectory,
 		defaultWeek:         strings.TrimSpace(opts.SemanticSubdirectory),
 		historyHorizonWeeks: historyHorizonWeeks,
-		usePostgres:         opts.UsePostgres,
 		postgresPool:        opts.PostgresPool,
 	}
 	mux := http.NewServeMux()
@@ -145,20 +116,11 @@ func (h *handler) openStoreForWeek(semanticSubdirectory string) (storecontracts.
 	if week == "" {
 		return nil, fmt.Errorf("semantic subdirectory is required")
 	}
-	if h.usePostgres {
-		store, err := postgresstore.New(h.postgresPool, postgresstore.Options{
-			SemanticSubdirectory: week,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("open postgres store for semantic week %q: %w", week, err)
-		}
-		return store, nil
-	}
-	store, err := ndjson.NewWithOptions(h.dataDirectory, ndjson.Options{
+	store, err := postgresstore.New(h.postgresPool, postgresstore.Options{
 		SemanticSubdirectory: week,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open ndjson store for semantic week %q: %w", week, err)
+		return nil, fmt.Errorf("open postgres store for semantic week %q: %w", week, err)
 	}
 	return store, nil
 }
@@ -695,46 +657,12 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 }
 
 func (h *handler) discoverSemanticWeeks(ctx context.Context) ([]string, error) {
-	if h.usePostgres {
-		weeks, err := postgresstore.ListSemanticSubdirectories(ctx, h.postgresPool)
-		if err != nil {
-			return nil, fmt.Errorf("list semantic snapshots from postgres: %w", err)
-		}
-		if len(weeks) == 0 {
-			return nil, fmt.Errorf("no semantic snapshots found in postgres store")
-		}
-		return weeks, nil
-	}
-
-	semanticRoot := filepath.Join(h.dataDirectory, "semantic")
-	rootInfo, err := os.Stat(semanticRoot)
+	weeks, err := postgresstore.ListSemanticSubdirectories(ctx, h.postgresPool)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("semantic directory %q does not exist", semanticRoot)
-		}
-		return nil, fmt.Errorf("stat semantic directory %q: %w", semanticRoot, err)
+		return nil, fmt.Errorf("list semantic snapshots from postgres: %w", err)
 	}
-	if !rootInfo.IsDir() {
-		return nil, fmt.Errorf("semantic path %q must be a directory", semanticRoot)
-	}
-	entries, err := os.ReadDir(semanticRoot)
-	if err != nil {
-		return nil, fmt.Errorf("read semantic directory %q: %w", semanticRoot, err)
-	}
-	weeks := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := strings.TrimSpace(entry.Name())
-		if name == "" || strings.HasPrefix(name, ".") {
-			continue
-		}
-		weeks = append(weeks, name)
-	}
-	sort.Strings(weeks)
 	if len(weeks) == 0 {
-		return nil, fmt.Errorf("no semantic snapshots found under %q", semanticRoot)
+		return nil, fmt.Errorf("no semantic snapshots found in postgres store")
 	}
 	return weeks, nil
 }
@@ -744,15 +672,11 @@ func (h *handler) buildHistoryResolver(ctx context.Context, week string) (semhis
 		CurrentSemanticSubdir:        strings.TrimSpace(week),
 		GlobalSignatureLookbackWeeks: h.historyHorizonWeeks,
 	}
-	if h.usePostgres {
-		buildOptions.ListSemanticWeeks = func(ctx context.Context) ([]string, error) {
-			return postgresstore.ListSemanticSubdirectories(ctx, h.postgresPool)
-		}
-		buildOptions.OpenStore = func(_ context.Context, semanticSubdir string) (storecontracts.Store, error) {
-			return h.openStoreForWeek(semanticSubdir)
-		}
-	} else {
-		buildOptions.DataDirectory = h.dataDirectory
+	buildOptions.ListSemanticWeeks = func(ctx context.Context) ([]string, error) {
+		return postgresstore.ListSemanticSubdirectories(ctx, h.postgresPool)
+	}
+	buildOptions.OpenStore = func(_ context.Context, semanticSubdir string) (storecontracts.Store, error) {
+		return h.openStoreForWeek(semanticSubdir)
 	}
 	return semhistory.BuildGlobalSignatureResolver(ctx, buildOptions)
 }

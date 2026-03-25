@@ -13,7 +13,7 @@ The project combines ingestion, semantic processing, and reporting into one oper
 
 ### 1) Ingestion via controllers
 
-Controllers continuously ingest and derive facts into `data/facts` and `data/state`:
+Controllers continuously ingest and derive facts into PostgreSQL facts/state tables:
 
 - source ingestion (Sippy, Prow, GitHub),
 - run/raw-failure fact materialization,
@@ -56,7 +56,7 @@ go run cmd/main.go run \
 
 Common options:
 
-- `--storage.ndjson.data-dir` (default: `data`)
+- `--storage.postgres.embedded.data-dir` (default: `data/postgres`)
 - `--source.envs` (default: `dev`)
 - `--history.weeks` (default: `4`)
 
@@ -66,7 +66,6 @@ Builds semantic outputs (if needed) and generates static weekly/global triage pa
 
 ```bash
 go run cmd/main.go report site build \
-  --storage.ndjson.data-dir data \
   --site.root site \
   --source.envs dev,int,stg,prod \
   --history.weeks 4 \
@@ -77,7 +76,6 @@ Use existing semantic snapshots without rerunning semantic build:
 
 ```bash
 go run cmd/main.go report site build \
-  --storage.ndjson.data-dir data \
   --site.root site \
   --from-existing
 ```
@@ -111,15 +109,14 @@ Starts the local Phase3 linking UI:
 
 ```bash
 go run cmd/main.go report review \
-  --storage.ndjson.data-dir data \
-  --storage.ndjson.semantic-subdir 2026-03-15 \
+  --storage.semantic-subdir 2026-03-15 \
   --history.weeks 4 \
   --site.listen 127.0.0.1:8081
 ```
 
 ## Typical Workflow
 
-1. Run controllers (`cfa run`) to refresh `data/facts`.
+1. Run controllers (`cfa run`) to refresh facts/state in PostgreSQL.
 2. Build site (`cfa report site build`) to generate semantic snapshots and static reports.
 3. Open review app (`cfa report review`) to link signatures (Phase3).
 4. Rebuild site (usually `--from-existing`) to reflect latest Phase3 links in static reports.

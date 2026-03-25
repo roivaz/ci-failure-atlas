@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ci-failure-atlas/pkg/ndjsonoptions"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
@@ -19,7 +18,7 @@ import (
 )
 
 func NewMigrateCommand() (*cobra.Command, error) {
-	ndjsonRaw := ndjsonoptions.DefaultOptions()
+	dataDirectory := "data"
 	postgresRaw := postgresoptions.DefaultOptions()
 	postgresRaw.Enabled = true
 	postgresRaw.Initialize = true
@@ -28,15 +27,6 @@ func NewMigrateCommand() (*cobra.Command, error) {
 		Use:   "ndjson-to-postgres",
 		Short: "Import facts/state data from NDJSON into PostgreSQL.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ndjsonValidated, err := ndjsonRaw.Validate()
-			if err != nil {
-				return err
-			}
-			ndjsonCompleted, err := ndjsonValidated.Complete(cmd.Context())
-			if err != nil {
-				return err
-			}
-
 			postgresValidated, err := postgresRaw.Validate()
 			if err != nil {
 				return err
@@ -58,7 +48,7 @@ func NewMigrateCommand() (*cobra.Command, error) {
 				_ = store.Close()
 			}()
 
-			counts, err := importNDJSONFactsAndState(cmd.Context(), ndjsonCompleted.DataDirectory, store)
+			counts, err := importNDJSONFactsAndState(cmd.Context(), dataDirectory, store)
 			if err != nil {
 				return err
 			}
@@ -77,8 +67,7 @@ func NewMigrateCommand() (*cobra.Command, error) {
 			return nil
 		},
 	}
-	importCmd.Flags().StringVar(&ndjsonRaw.SemanticSubdirectory, "storage.ndjson.semantic-subdir", ndjsonRaw.SemanticSubdirectory, "unused by this importer; kept for consistency with storage flags")
-	importCmd.Flags().StringVar(&ndjsonRaw.DataDirectory, "storage.ndjson.data-dir", ndjsonRaw.DataDirectory, "root directory for NDJSON facts/state data to import")
+	importCmd.Flags().StringVar(&dataDirectory, "ndjson.data-dir", dataDirectory, "root directory for NDJSON facts/state data to import")
 	if err := postgresoptions.BindOptions(postgresRaw, importCmd); err != nil {
 		return nil, err
 	}

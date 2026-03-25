@@ -3,15 +3,12 @@ package history
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
-	"ci-failure-atlas/pkg/store/ndjson"
 )
 
 const defaultLookbackWeeks = 4
@@ -77,7 +74,6 @@ func (r *globalSignatureResolver) PresenceForPhase3Cluster(environment string, p
 }
 
 func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (GlobalSignatureResolver, error) {
-	dataDirectory := strings.TrimSpace(opts.DataDirectory)
 	currentSubdir := strings.TrimSpace(opts.CurrentSemanticSubdir)
 	if currentSubdir == "" {
 		return &globalSignatureResolver{
@@ -95,11 +91,6 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 	}
 
 	windowMetadataReader := opts.ReadWindowMetadata
-	if windowMetadataReader == nil && dataDirectory != "" {
-		windowMetadataReader = func(semanticSubdir string) (WindowMetadata, bool, error) {
-			return ReadWindowMetadata(dataDirectory, semanticSubdir)
-		}
-	}
 	if windowMetadataReader != nil {
 		if metadata, exists, err := windowMetadataReader(currentSubdir); err != nil {
 			return nil, fmt.Errorf("read current semantic window metadata: %w", err)
@@ -119,12 +110,10 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 
 	semanticWeeksLister := opts.ListSemanticWeeks
 	if semanticWeeksLister == nil {
-		semanticWeeksLister = func(_ context.Context) ([]string, error) {
-			if dataDirectory == "" {
-				return nil, nil
-			}
-			return discoverSemanticWeekNamesFromFS(dataDirectory)
-		}
+		return &globalSignatureResolver{
+			byKey:              map[string]SignaturePresence{},
+			byPhase3ClusterKey: map[string]SignaturePresence{},
+		}, nil
 	}
 	weekNames, err := semanticWeeksLister(ctx)
 	if err != nil {
@@ -133,14 +122,10 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 
 	storeOpener := opts.OpenStore
 	if storeOpener == nil {
-		storeOpener = func(_ context.Context, semanticSubdir string) (storecontracts.Store, error) {
-			if dataDirectory == "" {
-				return nil, fmt.Errorf("data directory is required for default ndjson store opener")
-			}
-			return ndjson.NewWithOptions(dataDirectory, ndjson.Options{
-				SemanticSubdirectory: semanticSubdir,
-			})
-		}
+		return &globalSignatureResolver{
+			byKey:              map[string]SignaturePresence{},
+			byPhase3ClusterKey: map[string]SignaturePresence{},
+		}, nil
 	}
 
 	signatureAggregates := map[string]*signaturePresenceAggregate{}
@@ -222,30 +207,6 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 		byKey:              byKey,
 		byPhase3ClusterKey: byPhase3ClusterKey,
 	}, nil
-}
-
-func discoverSemanticWeekNamesFromFS(dataDirectory string) ([]string, error) {
-	semanticRoot := filepath.Join(dataDirectory, "semantic")
-	entries, err := os.ReadDir(semanticRoot)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read semantic root directory %q: %w", semanticRoot, err)
-	}
-	out := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := strings.TrimSpace(entry.Name())
-		if name == "" {
-			continue
-		}
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out, nil
 }
 
 func collectGlobalSignaturePresence(rows []semanticcontracts.GlobalClusterRecord, weekName string, aggregates map[string]*signaturePresenceAggregate) {

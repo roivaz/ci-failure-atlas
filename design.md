@@ -47,12 +47,11 @@ The system has three active planes:
 2. **Semantic materialization**
    - Triggered by `cfa report site build` (or reused via `--from-existing`)
    - Phase1 and phase2 execute in memory during site build for performance
-   - Core semantic artifacts persisted by default:
-     - `phase1_workset.ndjson`
-     - `test_clusters.ndjson`
-     - `review_queue.ndjson`
-     - `global_clusters.ndjson`
-     - `window_metadata.json`
+   - Core semantic datasets persisted by default in PostgreSQL semantic namespaces:
+     - `phase1_workset`
+     - `test_clusters`
+     - `review_queue`
+     - `global_clusters`
 
 3. **Product surfaces**
    - Static site:
@@ -63,33 +62,15 @@ The system has three active planes:
 
 ## Storage Model (Current)
 
-Storage is file-based NDJSON behind interfaces in `pkg/store/contracts` and implemented in `pkg/store/ndjson`.
+Storage is PostgreSQL-only behind interfaces in `pkg/store/contracts` and implemented in `pkg/store/postgres`.
 
-Primary layout:
+Current runtime uses:
 
-```text
-data/
-  facts/
-    runs.ndjson
-    artifact_failures.ndjson
-    raw_failures.ndjson
-    metrics_daily.ndjson
-    test_metadata_daily.ndjson
-    pull_requests.ndjson
-  semantic/<week>/
-    phase1_workset.ndjson
-    test_clusters.ndjson
-    review_queue.ndjson
-    global_clusters.ndjson
-    window_metadata.json
-  state/
-    checkpoints.ndjson
-    dead_letters.ndjson
-    phase3/
-      links.ndjson
-      issues.ndjson
-      events.ndjson
-```
+- normalized facts/state tables (`cfa_runs`, `cfa_raw_failures`, `cfa_metrics_daily`, ...)
+- semantic/Phase3 tables with typed keys + JSONB payload
+- semantic namespace isolation via `semantic_subdir` (week-scoped partitions)
+
+NDJSON is no longer a runtime store and is kept only as an import format for migration tooling.
 
 ## Current Command Surface
 
@@ -112,7 +93,7 @@ data/
 
 1. **Core product scope is intentionally narrow**: controllers + site weekly/global triage + review app.
 2. **Single history knob**: `history.weeks` is used consistently across ingestion/report history semantics.
-3. **Phase3 source of truth is durable links** (`state/phase3/links.ndjson`), not pre-collapsed weekly assets.
+3. **Phase3 source of truth is durable links** (`cfa_phase3_links`), not pre-collapsed weekly assets.
 4. **Row-level anchors are mandatory** for Phase3 durability (`environment + run_url + row_id`).
 5. **Phase3 aggregation is a materialized view**:
    - at runtime in review app,

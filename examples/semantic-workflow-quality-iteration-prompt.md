@@ -90,14 +90,14 @@ go test ./...
 ```bash
 go run cmd/main.go workflow build \
   --source.envs dev,int,stg,prod \
-  --storage.ndjson.semantic-subdir "${WORK_SEMANTIC_SUBDIR}" \
+  --storage.postgres.semantic-subdir "${WORK_SEMANTIC_SUBDIR}" \
   --workflow.window.start "${START_DATE}" \
   --workflow.window.end "${END_DATE}"
 ```
 
 ```bash
 go run cmd/main.go report test-summary \
-  --storage.ndjson.semantic-subdir "${WORK_SEMANTIC_SUBDIR}" \
+  --storage.postgres.semantic-subdir "${WORK_SEMANTIC_SUBDIR}" \
   --format html \
   --output "data/reports/${WORK_REPORTS_SUBDIR}/semantic-quality.html" \
   --quality-export "data/reports/${WORK_REPORTS_SUBDIR}/semantic-quality-flagged.ndjson" \

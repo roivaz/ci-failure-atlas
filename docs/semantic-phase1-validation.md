@@ -5,18 +5,17 @@
 - Command: `go test ./...`
 - Result: pass.
 
-- Command: `go run cmd/main.go report site build --storage.ndjson.data-dir data --history.weeks 1`
+- Command: `go run cmd/main.go report site build --history.weeks 1`
 - Result: pass.
 
-## Default Semantic Artifacts Produced
+## Default Semantic Datasets Produced
 
-The site build path writes deterministic semantic outputs under `data/semantic/<week>/`:
+The site build path writes deterministic semantic outputs into PostgreSQL semantic partitions (`semantic_subdir`), including:
 
-- `phase1_workset.ndjson`
-- `test_clusters.ndjson`
-- `review_queue.ndjson`
-- `global_clusters.ndjson`
-- `window_metadata.json`
+- `phase1_workset`
+- `test_clusters`
+- `review_queue`
+- `global_clusters`
 
 ## Notes
 

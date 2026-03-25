@@ -8,19 +8,20 @@ import (
 	"github.com/spf13/cobra"
 
 	"ci-failure-atlas/pkg/controllers"
-	"ci-failure-atlas/pkg/ndjsonoptions"
 	"ci-failure-atlas/pkg/sourceoptions"
 	"ci-failure-atlas/pkg/store/contracts"
-	"ci-failure-atlas/pkg/store/ndjson"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 	postgresoptions "ci-failure-atlas/pkg/store/postgres/options"
 )
 
 func DefaultOptions() *RawOptions {
+	postgresRaw := postgresoptions.DefaultOptions()
+	postgresRaw.Enabled = true
+	postgresRaw.Embedded = true
+	postgresRaw.Initialize = true
 	return &RawOptions{
 		SourceOptions:   sourceoptions.DefaultOptions(),
-		NDJSONOptions:   ndjsonoptions.DefaultOptions(),
-		PostgresOptions: postgresoptions.DefaultOptions(),
+		PostgresOptions: postgresRaw,
 	}
 }
 
@@ -28,16 +29,11 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 	if opts.SourceOptions == nil {
 		opts.SourceOptions = sourceoptions.DefaultOptions()
 	}
-	if opts.NDJSONOptions == nil {
-		opts.NDJSONOptions = ndjsonoptions.DefaultOptions()
-	}
 	if opts.PostgresOptions == nil {
 		opts.PostgresOptions = postgresoptions.DefaultOptions()
 	}
+	opts.PostgresOptions.Enabled = true
 	if err := sourceoptions.BindSourceOptions(opts.SourceOptions, cmd); err != nil {
-		return err
-	}
-	if err := ndjsonoptions.BindNDJSONOptions(opts.NDJSONOptions, cmd); err != nil {
 		return err
 	}
 	if err := postgresoptions.BindOptions(opts.PostgresOptions, cmd); err != nil {
@@ -50,7 +46,6 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 
 type RawOptions struct {
 	SourceOptions   *sourceoptions.RawOptions
-	NDJSONOptions   *ndjsonoptions.RawOptions
 	PostgresOptions *postgresoptions.RawOptions
 
 	ControllerName string
@@ -60,7 +55,6 @@ type RawOptions struct {
 type validatedOptions struct {
 	*RawOptions
 	SourceValidated   *sourceoptions.ValidatedOptions
-	NDJSONValidated   *ndjsonoptions.ValidatedOptions
 	PostgresValidated *postgresoptions.ValidatedOptions
 
 	ControllerName string
@@ -73,7 +67,6 @@ type ValidatedOptions struct {
 
 type completedOptions struct {
 	Source   *sourceoptions.Options
-	NDJSON   *ndjsonoptions.Options
 	Postgres *postgresoptions.Options
 	Store    contracts.Store
 
@@ -103,27 +96,19 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 	if o.PostgresOptions == nil {
 		o.PostgresOptions = postgresoptions.DefaultOptions()
 	}
+	o.PostgresOptions.Enabled = true
 	postgresValidated, err := o.PostgresOptions.Validate()
 	if err != nil {
 		return nil, err
 	}
-
-	var ndjsonValidated *ndjsonoptions.ValidatedOptions
 	if !postgresValidated.Enabled {
-		if o.NDJSONOptions == nil {
-			o.NDJSONOptions = ndjsonoptions.DefaultOptions()
-		}
-		ndjsonValidated, err = o.NDJSONOptions.Validate()
-		if err != nil {
-			return nil, err
-		}
+		return nil, fmt.Errorf("postgres storage is required")
 	}
 
 	return &ValidatedOptions{
 		validatedOptions: &validatedOptions{
 			RawOptions:        o,
 			SourceValidated:   sourceValidated,
-			NDJSONValidated:   ndjsonValidated,
 			PostgresValidated: postgresValidated,
 			ControllerName:    o.ControllerName,
 			ControllerKey:     o.ControllerKey,
@@ -137,38 +122,23 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 		return nil, err
 	}
 	var (
-		ndjsonCompleted   *ndjsonoptions.Options
 		postgresCompleted *postgresoptions.Options
 		store             contracts.Store
 	)
-	if o.PostgresValidated != nil && o.PostgresValidated.Enabled {
-		postgresCompleted, err = o.PostgresValidated.Complete(ctx)
-		if err != nil {
-			return nil, err
-		}
-		store, err = postgresstore.New(postgresCompleted.Connection, postgresstore.Options{
-			SemanticSubdirectory: postgresCompleted.SemanticSubdirectory,
-		})
-		if err != nil {
-			postgresCompleted.Cleanup()
-			return nil, fmt.Errorf("create postgres store: %w", err)
-		}
-	} else {
-		ndjsonCompleted, err = o.NDJSONValidated.Complete(ctx)
-		if err != nil {
-			return nil, err
-		}
-		store, err = ndjson.NewWithOptions(ndjsonCompleted.DataDirectory, ndjson.Options{
-			SemanticSubdirectory: ndjsonCompleted.SemanticSubdirectory,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create NDJSON store: %w", err)
-		}
+	postgresCompleted, err = o.PostgresValidated.Complete(ctx)
+	if err != nil {
+		return nil, err
+	}
+	store, err = postgresstore.New(postgresCompleted.Connection, postgresstore.Options{
+		SemanticSubdirectory: postgresCompleted.SemanticSubdirectory,
+	})
+	if err != nil {
+		postgresCompleted.Cleanup()
+		return nil, fmt.Errorf("create postgres store: %w", err)
 	}
 	return &Options{
 		completedOptions: &completedOptions{
 			Source:         sourceCompleted,
-			NDJSON:         ndjsonCompleted,
 			Postgres:       postgresCompleted,
 			Store:          store,
 			ControllerName: o.ControllerName,
@@ -178,12 +148,11 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 }
 
 func (opts *Options) Cleanup() {
-	if opts.Postgres != nil {
-		opts.Postgres.Cleanup()
-		return
-	}
 	if opts.Store != nil {
 		_ = opts.Store.Close()
+	}
+	if opts.Postgres != nil {
+		opts.Postgres.Cleanup()
 	}
 }
 
