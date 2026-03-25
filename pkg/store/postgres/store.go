@@ -38,9 +38,9 @@ func New(pool *pgxpool.Pool, opts Options) (*Store, error) {
 }
 
 func (s *Store) Close() error {
-	if s.pool != nil {
-		s.pool.Close()
-	}
+	// The pool lifecycle is owned by postgres options/setup callers.
+	// A Store is a lightweight scoped view (semantic namespace) over that
+	// shared pool, so closing a store must not close the shared pool.
 	return nil
 }
 
