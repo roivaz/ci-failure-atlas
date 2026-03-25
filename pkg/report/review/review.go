@@ -19,7 +19,11 @@ import (
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	phase3engine "ci-failure-atlas/pkg/semantic/engine/phase3"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
+	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/store/ndjson"
+	postgresstore "ci-failure-atlas/pkg/store/postgres"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -41,12 +45,16 @@ type HandlerOptions struct {
 	DataDirectory        string
 	SemanticSubdirectory string
 	HistoryHorizonWeeks  int
+	UsePostgres          bool
+	PostgresPool         *pgxpool.Pool
 }
 
 type handler struct {
 	dataDirectory       string
 	defaultWeek         string
 	historyHorizonWeeks int
+	usePostgres         bool
+	postgresPool        *pgxpool.Pool
 }
 
 type phase3Anchor struct {
@@ -87,32 +95,42 @@ type reviewSignalIndex struct {
 }
 
 func NewHandler(opts HandlerOptions) (http.Handler, error) {
-	dataDirectory := strings.TrimSpace(opts.DataDirectory)
-	if dataDirectory == "" {
-		dataDirectory = defaultDataDirectory
-	}
 	historyHorizonWeeks := opts.HistoryHorizonWeeks
 	if historyHorizonWeeks <= 0 {
 		historyHorizonWeeks = defaultHistoryWeeks
 	}
-	absoluteDataDirectory, err := filepath.Abs(filepath.Clean(dataDirectory))
-	if err != nil {
-		return nil, fmt.Errorf("resolve absolute data directory %q: %w", dataDirectory, err)
-	}
-	dataInfo, err := os.Stat(absoluteDataDirectory)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("data directory %q does not exist", absoluteDataDirectory)
+
+	absoluteDataDirectory := ""
+	if !opts.UsePostgres {
+		dataDirectory := strings.TrimSpace(opts.DataDirectory)
+		if dataDirectory == "" {
+			dataDirectory = defaultDataDirectory
 		}
-		return nil, fmt.Errorf("stat data directory %q: %w", absoluteDataDirectory, err)
+		resolved, err := filepath.Abs(filepath.Clean(dataDirectory))
+		if err != nil {
+			return nil, fmt.Errorf("resolve absolute data directory %q: %w", dataDirectory, err)
+		}
+		dataInfo, err := os.Stat(resolved)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("data directory %q does not exist", resolved)
+			}
+			return nil, fmt.Errorf("stat data directory %q: %w", resolved, err)
+		}
+		if !dataInfo.IsDir() {
+			return nil, fmt.Errorf("data directory %q must be a directory", resolved)
+		}
+		absoluteDataDirectory = resolved
+	} else if opts.PostgresPool == nil {
+		return nil, fmt.Errorf("postgres pool is required when postgres backend is enabled")
 	}
-	if !dataInfo.IsDir() {
-		return nil, fmt.Errorf("data directory %q must be a directory", absoluteDataDirectory)
-	}
+
 	h := &handler{
 		dataDirectory:       absoluteDataDirectory,
 		defaultWeek:         strings.TrimSpace(opts.SemanticSubdirectory),
 		historyHorizonWeeks: historyHorizonWeeks,
+		usePostgres:         opts.UsePostgres,
+		postgresPool:        opts.PostgresPool,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.handleRoot)
@@ -120,6 +138,29 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	mux.HandleFunc("/api/weeks", h.handleAPIWeeks)
 	mux.HandleFunc("/api/week", h.handleAPIWeek)
 	return mux, nil
+}
+
+func (h *handler) openStoreForWeek(semanticSubdirectory string) (storecontracts.Store, error) {
+	week := strings.TrimSpace(semanticSubdirectory)
+	if week == "" {
+		return nil, fmt.Errorf("semantic subdirectory is required")
+	}
+	if h.usePostgres {
+		store, err := postgresstore.New(h.postgresPool, postgresstore.Options{
+			SemanticSubdirectory: week,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("open postgres store for semantic week %q: %w", week, err)
+		}
+		return store, nil
+	}
+	store, err := ndjson.NewWithOptions(h.dataDirectory, ndjson.Options{
+		SemanticSubdirectory: week,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open ndjson store for semantic week %q: %w", week, err)
+	}
+	return store, nil
 }
 
 func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -171,11 +212,9 @@ func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store, err := ndjson.NewWithOptions(h.dataDirectory, ndjson.Options{
-		SemanticSubdirectory: snapshot.Week,
-	})
+	store, err := h.openStoreForWeek(snapshot.Week)
 	if err != nil {
-		h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("open ndjson store: %v", err))
+		h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("open semantic store: %v", err))
 		return
 	}
 	defer func() {
@@ -204,7 +243,7 @@ func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 		}
 		matchKeys := signatureMatchKeysForSelectedClusters(snapshot.Rows, selectedClusterIDs)
 		windowWeeks := resolveReconcileWindowWeeks(snapshot.Weeks, h.historyHorizonWeeks)
-		windowAnchors, err := collectAnchorsForSignatureMatchKeys(r.Context(), h.dataDirectory, windowWeeks, matchKeys)
+		windowAnchors, err := h.collectAnchorsForSignatureMatchKeys(r.Context(), windowWeeks, matchKeys)
 		if err != nil {
 			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("link selected: %v", err))
 			return
@@ -301,7 +340,7 @@ func (h *handler) handleAPIWeeks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	weeks, err := h.discoverSemanticWeeks()
+	weeks, err := h.discoverSemanticWeeks(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -367,16 +406,14 @@ func (h *handler) redirectWithNotice(w http.ResponseWriter, r *http.Request, wee
 }
 
 func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (weekSnapshot, error) {
-	weeks, err := h.discoverSemanticWeeks()
+	weeks, err := h.discoverSemanticWeeks(ctx)
 	if err != nil {
 		return weekSnapshot{}, err
 	}
 	week, previousWeek, nextWeek, _ := resolveWeekWindow(weeks, requestedWeek, h.defaultWeek)
-	store, err := ndjson.NewWithOptions(h.dataDirectory, ndjson.Options{
-		SemanticSubdirectory: week,
-	})
+	store, err := h.openStoreForWeek(week)
 	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("open ndjson store for semantic week %q: %w", week, err)
+		return weekSnapshot{}, fmt.Errorf("open semantic store for semantic week %q: %w", week, err)
 	}
 	defer func() {
 		_ = store.Close()
@@ -477,11 +514,7 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 	if err != nil {
 		return weekSnapshot{}, fmt.Errorf("load overall metric run counts: %w", err)
 	}
-	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-		DataDirectory:                h.dataDirectory,
-		CurrentSemanticSubdir:        week,
-		GlobalSignatureLookbackWeeks: h.historyHorizonWeeks,
-	})
+	historyResolver, err := h.buildHistoryResolver(ctx, week)
 	if err != nil {
 		return weekSnapshot{}, fmt.Errorf("build global signature history resolver: %w", err)
 	}
@@ -661,7 +694,18 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 	}, nil
 }
 
-func (h *handler) discoverSemanticWeeks() ([]string, error) {
+func (h *handler) discoverSemanticWeeks(ctx context.Context) ([]string, error) {
+	if h.usePostgres {
+		weeks, err := postgresstore.ListSemanticSubdirectories(ctx, h.postgresPool)
+		if err != nil {
+			return nil, fmt.Errorf("list semantic snapshots from postgres: %w", err)
+		}
+		if len(weeks) == 0 {
+			return nil, fmt.Errorf("no semantic snapshots found in postgres store")
+		}
+		return weeks, nil
+	}
+
 	semanticRoot := filepath.Join(h.dataDirectory, "semantic")
 	rootInfo, err := os.Stat(semanticRoot)
 	if err != nil {
@@ -693,6 +737,24 @@ func (h *handler) discoverSemanticWeeks() ([]string, error) {
 		return nil, fmt.Errorf("no semantic snapshots found under %q", semanticRoot)
 	}
 	return weeks, nil
+}
+
+func (h *handler) buildHistoryResolver(ctx context.Context, week string) (semhistory.GlobalSignatureResolver, error) {
+	buildOptions := semhistory.BuildOptions{
+		CurrentSemanticSubdir:        strings.TrimSpace(week),
+		GlobalSignatureLookbackWeeks: h.historyHorizonWeeks,
+	}
+	if h.usePostgres {
+		buildOptions.ListSemanticWeeks = func(ctx context.Context) ([]string, error) {
+			return postgresstore.ListSemanticSubdirectories(ctx, h.postgresPool)
+		}
+		buildOptions.OpenStore = func(_ context.Context, semanticSubdir string) (storecontracts.Store, error) {
+			return h.openStoreForWeek(semanticSubdir)
+		}
+	} else {
+		buildOptions.DataDirectory = h.dataDirectory
+	}
+	return semhistory.BuildGlobalSignatureResolver(ctx, buildOptions)
 }
 
 func resolveWeekWindow(weeks []string, requestedWeek string, defaultWeek string) (string, string, string, int) {
@@ -743,7 +805,7 @@ func sortedEnvironmentKeys(values map[string]int) []string {
 
 func metricRunTotalsByEnvironment(
 	ctx context.Context,
-	store *ndjson.Store,
+	store storecontracts.Store,
 	environments []string,
 	windowStart time.Time,
 	windowEnd time.Time,
@@ -902,9 +964,8 @@ func normalizePhraseForMatching(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(trimmed), " "))
 }
 
-func collectAnchorsForSignatureMatchKeys(
+func (h *handler) collectAnchorsForSignatureMatchKeys(
 	ctx context.Context,
-	dataDirectory string,
 	weeks []string,
 	matchKeys map[string]struct{},
 ) ([]phase3Anchor, error) {
@@ -916,11 +977,9 @@ func collectAnchorsForSignatureMatchKeys(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		store, err := ndjson.NewWithOptions(dataDirectory, ndjson.Options{
-			SemanticSubdirectory: week,
-		})
+		store, err := h.openStoreForWeek(week)
 		if err != nil {
-			return nil, fmt.Errorf("open ndjson store for reconcile week %q: %w", week, err)
+			return nil, fmt.Errorf("open semantic store for reconcile week %q: %w", week, err)
 		}
 		clusters, listErr := store.ListGlobalClusters(ctx)
 		_ = store.Close()
@@ -972,7 +1031,7 @@ func dedupeAnchors(anchors []phase3Anchor) []phase3Anchor {
 	return out
 }
 
-func resolvePhase3ClusterIDForAnchors(ctx context.Context, store *ndjson.Store, anchors []phase3Anchor) (string, bool, error) {
+func resolvePhase3ClusterIDForAnchors(ctx context.Context, store storecontracts.Store, anchors []phase3Anchor) (string, bool, error) {
 	existingLinks, err := store.ListPhase3Links(ctx)
 	if err != nil {
 		return "", false, fmt.Errorf("list phase3 links: %w", err)
@@ -1005,7 +1064,7 @@ func resolvePhase3ClusterIDForAnchors(ctx context.Context, store *ndjson.Store, 
 	}
 }
 
-func linkAnchors(ctx context.Context, store *ndjson.Store, phase3ClusterID string, anchors []phase3Anchor) error {
+func linkAnchors(ctx context.Context, store storecontracts.Store, phase3ClusterID string, anchors []phase3Anchor) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	normalizedClusterID := strings.TrimSpace(phase3ClusterID)
 	if normalizedClusterID == "" {
@@ -1111,7 +1170,7 @@ func linkAnchors(ctx context.Context, store *ndjson.Store, phase3ClusterID strin
 	return nil
 }
 
-func unlinkAnchors(ctx context.Context, store *ndjson.Store, anchors []phase3Anchor) error {
+func unlinkAnchors(ctx context.Context, store storecontracts.Store, anchors []phase3Anchor) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	existingLinks, err := store.ListPhase3Links(ctx)
 	if err != nil {

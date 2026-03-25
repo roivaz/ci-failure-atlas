@@ -16,11 +16,15 @@ import (
 	reportsummary "ci-failure-atlas/pkg/report/summary"
 	"ci-failure-atlas/pkg/report/triagehtml"
 	reportweekly "ci-failure-atlas/pkg/report/weekly"
+	phase1engine "ci-failure-atlas/pkg/semantic/engine/phase1"
 	phase2engine "ci-failure-atlas/pkg/semantic/engine/phase2"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
+	semanticinput "ci-failure-atlas/pkg/semantic/input"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/store/ndjson"
-	workflowphase1 "ci-failure-atlas/pkg/workflow/phase1"
+	postgresstore "ci-failure-atlas/pkg/store/postgres"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -40,6 +44,8 @@ type BuildOptions struct {
 	CurrentWeekStart   string
 	HistoryWeeks       int
 	FromExisting       bool
+	UsePostgres        bool
+	PostgresPool       *pgxpool.Pool
 }
 
 type WeekDirectory struct {
@@ -55,10 +61,13 @@ type BuildResult struct {
 
 type PushOptions struct {
 	SiteRoot       string
+	DataDirectory  string
 	StorageAccount string
 	AuthMode       string
 	ContainerName  string
 	Uploader       BlobUploader
+	UsePostgres    bool
+	PostgresPool   *pgxpool.Pool
 }
 
 type PushResult struct {
@@ -91,7 +100,7 @@ func Build(ctx context.Context, opts BuildOptions) (BuildResult, error) {
 			return BuildResult{}, err
 		}
 	} else {
-		semanticWeekStarts, semanticErr := discoverSemanticWeekStarts(resolved.DataDirectory)
+		semanticWeekStarts, semanticErr := discoverSemanticWeekStarts(ctx, resolved)
 		if semanticErr != nil {
 			return BuildResult{}, semanticErr
 		}
@@ -159,14 +168,13 @@ func generateSiteReportsForWeekStarts(
 		}
 		weekEndExclusive := weekStart.AddDate(0, 0, 7)
 		if runSemanticWorkflow {
-			if err := runSemanticWorkflowForWeek(ctx, resolved.DataDirectory, weekSubdir, resolved.SourceEnvironments, weekStart, weekEndExclusive); err != nil {
+			if err := runSemanticWorkflowForWeek(ctx, resolved, weekSubdir, resolved.SourceEnvironments, weekStart, weekEndExclusive); err != nil {
 				return err
 			}
 		}
 		if err := generateSiteReportsForWeek(
 			ctx,
-			resolved.DataDirectory,
-			resolved.SiteRoot,
+			resolved,
 			weekSubdir,
 			previousWeekSubdirectory,
 			nextWeekSubdirectory,
@@ -188,8 +196,11 @@ func Push(ctx context.Context, opts PushOptions) (PushResult, error) {
 	}
 
 	buildResult, err := Build(ctx, BuildOptions{
-		SiteRoot:     opts.SiteRoot,
-		FromExisting: true,
+		DataDirectory: opts.DataDirectory,
+		SiteRoot:      opts.SiteRoot,
+		FromExisting:  true,
+		UsePostgres:   opts.UsePostgres,
+		PostgresPool:  opts.PostgresPool,
 	})
 	if err != nil {
 		return PushResult{}, err
@@ -232,6 +243,8 @@ type normalizedBuildOptions struct {
 	CurrentWeekStart   time.Time
 	HistoryWeeks       int
 	FromExisting       bool
+	UsePostgres        bool
+	PostgresPool       *pgxpool.Pool
 }
 
 func normalizeBuildOptions(opts BuildOptions) (normalizedBuildOptions, error) {
@@ -252,6 +265,11 @@ func normalizeBuildOptions(opts BuildOptions) (normalizedBuildOptions, error) {
 	if err != nil {
 		return normalizedBuildOptions{}, err
 	}
+	usePostgres := opts.UsePostgres
+	pool := opts.PostgresPool
+	if usePostgres && pool == nil {
+		return normalizedBuildOptions{}, fmt.Errorf("postgres pool is required when postgres backend is enabled")
+	}
 	return normalizedBuildOptions{
 		DataDirectory:      dataDirectory,
 		SiteRoot:           siteRoot,
@@ -259,6 +277,8 @@ func normalizeBuildOptions(opts BuildOptions) (normalizedBuildOptions, error) {
 		CurrentWeekStart:   currentWeekStart,
 		HistoryWeeks:       weeks,
 		FromExisting:       opts.FromExisting,
+		UsePostgres:        usePostgres,
+		PostgresPool:       pool,
 	}, nil
 }
 
@@ -316,22 +336,35 @@ func weekStartsToGenerate(currentWeekStart time.Time, weeks int) []time.Time {
 	return out
 }
 
-func discoverSemanticWeekStarts(dataDirectory string) ([]time.Time, error) {
-	semanticRoot := filepath.Join(strings.TrimSpace(dataDirectory), "semantic")
-	entries, err := os.ReadDir(semanticRoot)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+func discoverSemanticWeekStarts(ctx context.Context, resolved normalizedBuildOptions) ([]time.Time, error) {
+	weekNames := make([]string, 0)
+	if resolved.UsePostgres {
+		weeks, err := postgresstore.ListSemanticSubdirectories(ctx, resolved.PostgresPool)
+		if err != nil {
+			return nil, fmt.Errorf("list semantic weeks from postgres: %w", err)
 		}
-		return nil, fmt.Errorf("read semantic root %q: %w", semanticRoot, err)
+		weekNames = append(weekNames, weeks...)
+	} else {
+		semanticRoot := filepath.Join(strings.TrimSpace(resolved.DataDirectory), "semantic")
+		entries, err := os.ReadDir(semanticRoot)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("read semantic root %q: %w", semanticRoot, err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			weekNames = append(weekNames, strings.TrimSpace(entry.Name()))
+		}
 	}
-	weekStarts := make([]time.Time, 0, len(entries))
+
+	weekStarts := make([]time.Time, 0, len(weekNames))
 	seen := map[string]struct{}{}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		parsed, ok := parseWeekDirectoryDate(entry.Name())
+	for _, weekName := range weekNames {
+		parsed, ok := parseWeekDirectoryDate(weekName)
 		if !ok {
 			continue
 		}
@@ -385,53 +418,92 @@ func resetSiteRootForReportRebuild(siteRoot string) error {
 	return nil
 }
 
+func openSemanticStoreForWeek(resolved normalizedBuildOptions, semanticSubdirectory string) (storecontracts.Store, error) {
+	week := strings.TrimSpace(semanticSubdirectory)
+	if week == "" {
+		return nil, fmt.Errorf("semantic subdirectory is required")
+	}
+	if resolved.UsePostgres {
+		store, err := postgresstore.New(resolved.PostgresPool, postgresstore.Options{
+			SemanticSubdirectory: week,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("open postgres semantic store for week %q: %w", week, err)
+		}
+		return store, nil
+	}
+	store, err := ndjson.NewWithOptions(resolved.DataDirectory, ndjson.Options{
+		SemanticSubdirectory: week,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open ndjson semantic store for week %q: %w", week, err)
+	}
+	return store, nil
+}
+
 func runSemanticWorkflowForWeek(
 	ctx context.Context,
-	dataDirectory string,
+	resolved normalizedBuildOptions,
 	semanticSubdirectory string,
 	sourceEnvironments []string,
 	windowStart time.Time,
 	windowEndExclusive time.Time,
 ) error {
-	phase1Raw := workflowphase1.DefaultOptions()
-	phase1Raw.NDJSONOptions.DataDirectory = dataDirectory
-	phase1Raw.NDJSONOptions.SemanticSubdirectory = semanticSubdirectory
-	phase1Raw.Environments = append([]string(nil), sourceEnvironments...)
-	phase1Raw.WindowStart = windowStart.UTC().Format("2006-01-02")
-	phase1Raw.WindowEnd = windowEndExclusive.UTC().Format("2006-01-02")
-	phase1Validated, err := phase1Raw.Validate()
+	store, err := openSemanticStoreForWeek(resolved, semanticSubdirectory)
 	if err != nil {
-		return fmt.Errorf("validate workflow phase1 options for week %q: %w", semanticSubdirectory, err)
+		return err
 	}
-	phase1Completed, err := phase1Validated.Complete(ctx)
-	if err != nil {
-		return fmt.Errorf("complete workflow phase1 options for week %q: %w", semanticSubdirectory, err)
-	}
-	defer phase1Completed.Cleanup()
+	defer func() {
+		_ = store.Close()
+	}()
 
-	pipeline, err := phase1Completed.RunPipeline(ctx)
-	if err != nil {
-		return fmt.Errorf("run workflow phase1 pipeline for week %q: %w", semanticSubdirectory, err)
+	environmentSet := map[string]struct{}{}
+	for _, environment := range sourceEnvironments {
+		normalized := strings.ToLower(strings.TrimSpace(environment))
+		if normalized == "" {
+			continue
+		}
+		environmentSet[normalized] = struct{}{}
 	}
-	globalClusters, mergedReviewQueue, err := phase2engine.Merge(pipeline.TestClusters, pipeline.ReviewItems)
+	start := windowStart.UTC()
+	end := windowEndExclusive.UTC()
+	enriched, err := semanticinput.BuildEnrichedFailures(ctx, store, semanticinput.BuildOptions{
+		EnvironmentSet: environmentSet,
+		WindowStart:    &start,
+		WindowEnd:      &end,
+	})
+	if err != nil {
+		return fmt.Errorf("build enriched semantic input for week %q: %w", semanticSubdirectory, err)
+	}
+	workset := phase1engine.BuildWorkset(enriched.Rows)
+	normalized := phase1engine.Normalize(workset)
+	assignments := phase1engine.Classify(normalized)
+	testClusters, reviewItems, err := phase1engine.Compile(workset, assignments)
+	if err != nil {
+		return fmt.Errorf("compile phase1 outputs for week %q: %w", semanticSubdirectory, err)
+	}
+	globalClusters, mergedReviewQueue, err := phase2engine.Merge(testClusters, reviewItems)
 	if err != nil {
 		return fmt.Errorf("run workflow phase2 merge for week %q: %w", semanticSubdirectory, err)
 	}
 
-	if err := phase1Completed.Store.UpsertPhase1Workset(ctx, pipeline.Workset); err != nil {
+	if err := store.UpsertPhase1Workset(ctx, workset); err != nil {
 		return fmt.Errorf("persist workflow phase1 workset for week %q: %w", semanticSubdirectory, err)
 	}
-	if err := phase1Completed.Store.UpsertTestClusters(ctx, pipeline.TestClusters); err != nil {
+	if err := store.UpsertTestClusters(ctx, testClusters); err != nil {
 		return fmt.Errorf("persist workflow test clusters for week %q: %w", semanticSubdirectory, err)
 	}
-	if err := phase1Completed.Store.UpsertReviewQueue(ctx, mergedReviewQueue); err != nil {
+	if err := store.UpsertReviewQueue(ctx, mergedReviewQueue); err != nil {
 		return fmt.Errorf("persist workflow review queue for week %q: %w", semanticSubdirectory, err)
 	}
-	if err := phase1Completed.Store.UpsertGlobalClusters(ctx, globalClusters); err != nil {
+	if err := store.UpsertGlobalClusters(ctx, globalClusters); err != nil {
 		return fmt.Errorf("persist workflow global clusters for week %q: %w", semanticSubdirectory, err)
 	}
 
-	if err := semhistory.WriteWindowMetadata(dataDirectory, semanticSubdirectory, windowStart.UTC(), windowEndExclusive.UTC()); err != nil {
+	if resolved.UsePostgres {
+		return nil
+	}
+	if err := semhistory.WriteWindowMetadata(resolved.DataDirectory, semanticSubdirectory, windowStart.UTC(), windowEndExclusive.UTC()); err != nil {
 		return fmt.Errorf("write semantic window metadata for week %q: %w", semanticSubdirectory, err)
 	}
 	return nil
@@ -439,8 +511,7 @@ func runSemanticWorkflowForWeek(
 
 func generateSiteReportsForWeek(
 	ctx context.Context,
-	dataDirectory string,
-	siteRoot string,
+	resolved normalizedBuildOptions,
 	semanticSubdirectory string,
 	previousWeekSubdirectory string,
 	nextWeekSubdirectory string,
@@ -451,9 +522,7 @@ func generateSiteReportsForWeek(
 ) error {
 	logger := loggerFromContext(ctx).WithValues("component", "report.site")
 	totalStart := time.Now()
-	currentStore, err := ndjson.NewWithOptions(dataDirectory, ndjson.Options{
-		SemanticSubdirectory: semanticSubdirectory,
-	})
+	currentStore, err := openSemanticStoreForWeek(resolved, semanticSubdirectory)
 	if err != nil {
 		return fmt.Errorf("open semantic store for week %q: %w", semanticSubdirectory, err)
 	}
@@ -462,15 +531,10 @@ func generateSiteReportsForWeek(
 	}()
 
 	var previousSemanticStore storecontracts.Store
-	previousSemanticSubdirectory := windowStart.AddDate(0, 0, -7).UTC().Format("2006-01-02")
-	if exists, existsErr := semanticSubdirectoryExists(dataDirectory, previousSemanticSubdirectory); existsErr != nil {
-		return existsErr
-	} else if exists {
-		previousStore, previousStoreErr := ndjson.NewWithOptions(dataDirectory, ndjson.Options{
-			SemanticSubdirectory: previousSemanticSubdirectory,
-		})
+	if strings.TrimSpace(previousWeekSubdirectory) != "" {
+		previousStore, previousStoreErr := openSemanticStoreForWeek(resolved, previousWeekSubdirectory)
 		if previousStoreErr != nil {
-			return fmt.Errorf("open previous semantic store for week %q: %w", previousSemanticSubdirectory, previousStoreErr)
+			return fmt.Errorf("open previous semantic store for week %q: %w", previousWeekSubdirectory, previousStoreErr)
 		}
 		previousSemanticStore = previousStore
 		defer func() {
@@ -478,17 +542,27 @@ func generateSiteReportsForWeek(
 		}()
 	}
 
-	siteWeekDirectory := filepath.Join(siteRoot, semanticSubdirectory)
+	siteWeekDirectory := filepath.Join(resolved.SiteRoot, semanticSubdirectory)
 	if err := os.MkdirAll(siteWeekDirectory, 0o755); err != nil {
 		return fmt.Errorf("create site week directory %q: %w", siteWeekDirectory, err)
 	}
 
 	historyStart := time.Now()
-	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-		DataDirectory:                dataDirectory,
+	historyResolverOptions := semhistory.BuildOptions{
 		CurrentSemanticSubdir:        semanticSubdirectory,
 		GlobalSignatureLookbackWeeks: historyWeeks,
-	})
+	}
+	if resolved.UsePostgres {
+		historyResolverOptions.ListSemanticWeeks = func(ctx context.Context) ([]string, error) {
+			return postgresstore.ListSemanticSubdirectories(ctx, resolved.PostgresPool)
+		}
+		historyResolverOptions.OpenStore = func(_ context.Context, semanticSubdir string) (storecontracts.Store, error) {
+			return openSemanticStoreForWeek(resolved, semanticSubdir)
+		}
+	} else {
+		historyResolverOptions.DataDirectory = resolved.DataDirectory
+	}
+	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, historyResolverOptions)
 	if err != nil {
 		return fmt.Errorf("build global signature history resolver for week %q: %w", semanticSubdirectory, err)
 	}
@@ -499,7 +573,7 @@ func generateSiteReportsForWeek(
 	weeklyOpts.OutputPath = filepath.Join(siteWeekDirectory, weeklyReportFile)
 	weeklyOpts.StartDate = windowStart.UTC().Format("2006-01-02")
 	weeklyOpts.TargetRate = defaultWeeklyTargetRate
-	weeklyOpts.DataDirectory = dataDirectory
+	weeklyOpts.DataDirectory = resolved.DataDirectory
 	weeklyOpts.SemanticSubdirectory = semanticSubdirectory
 	weeklyOpts.HistoryHorizonWeeks = historyWeeks
 	weeklyOpts.HistoryResolver = historyResolver
@@ -522,7 +596,7 @@ func generateSiteReportsForWeek(
 	summaryOpts.WindowStart = windowStart.UTC().Format("2006-01-02")
 	summaryOpts.WindowEnd = windowEndExclusive.UTC().Format("2006-01-02")
 	summaryOpts.Environments = append([]string(nil), sourceEnvironments...)
-	summaryOpts.DataDirectory = dataDirectory
+	summaryOpts.DataDirectory = resolved.DataDirectory
 	summaryOpts.SemanticSubdirectory = semanticSubdirectory
 	summaryOpts.HistoryHorizonWeeks = historyWeeks
 	summaryOpts.HistoryResolver = historyResolver

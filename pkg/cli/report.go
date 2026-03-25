@@ -15,6 +15,7 @@ import (
 
 	reportreview "ci-failure-atlas/pkg/report/review"
 	reportsite "ci-failure-atlas/pkg/report/site"
+	postgresoptions "ci-failure-atlas/pkg/store/postgres/options"
 )
 
 func NewReportCommand() (*cobra.Command, error) {
@@ -31,10 +32,21 @@ func NewReportCommand() (*cobra.Command, error) {
 	siteBuildHistoryWeeks := 4
 	siteBuildStartDate := ""
 	siteBuildFromExisting := false
+	siteBuildPostgres := postgresoptions.DefaultOptions()
 	siteBuildCmd := &cobra.Command{
 		Use:   "build",
 		Short: "Build management site (semantic + reports + indexes).",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			postgresValidated, err := siteBuildPostgres.Validate()
+			if err != nil {
+				return err
+			}
+			postgresCompleted, err := postgresValidated.Complete(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer postgresCompleted.Cleanup()
+
 			result, err := reportsite.Build(cmd.Context(), reportsite.BuildOptions{
 				DataDirectory:      siteBuildDataDirectory,
 				SiteRoot:           siteBuildRoot,
@@ -42,6 +54,8 @@ func NewReportCommand() (*cobra.Command, error) {
 				CurrentWeekStart:   siteBuildStartDate,
 				HistoryWeeks:       siteBuildHistoryWeeks,
 				FromExisting:       siteBuildFromExisting,
+				UsePostgres:        postgresCompleted.Enabled,
+				PostgresPool:       postgresCompleted.Connection,
 			})
 			if err != nil {
 				return err
@@ -61,20 +75,38 @@ func NewReportCommand() (*cobra.Command, error) {
 	siteBuildCmd.Flags().IntVar(&siteBuildHistoryWeeks, "history.weeks", siteBuildHistoryWeeks, "number of weekly 7-day windows to build and use as scoring/history horizon")
 	siteBuildCmd.Flags().StringVar(&siteBuildStartDate, "start-date", siteBuildStartDate, "current week start date (YYYY-MM-DD). Defaults to latest Sunday.")
 	siteBuildCmd.Flags().BoolVar(&siteBuildFromExisting, "from-existing", siteBuildFromExisting, "rebuild reports and indexes from existing semantic snapshots in data/semantic (skips data ingestion workflow)")
+	if err := postgresoptions.BindOptions(siteBuildPostgres, siteBuildCmd); err != nil {
+		return nil, err
+	}
 
 	sitePushRoot := "site"
 	sitePushStorageAccount := ""
 	sitePushAuthMode := "login"
 	sitePushContainerName := "$web"
+	sitePushDataDirectory := "data"
+	sitePushPostgres := postgresoptions.DefaultOptions()
 	sitePushCmd := &cobra.Command{
 		Use:   "push",
 		Short: "Push report site files to an Azure Storage static website container.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			postgresValidated, err := sitePushPostgres.Validate()
+			if err != nil {
+				return err
+			}
+			postgresCompleted, err := postgresValidated.Complete(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer postgresCompleted.Cleanup()
+
 			result, err := reportsite.Push(cmd.Context(), reportsite.PushOptions{
 				SiteRoot:       sitePushRoot,
+				DataDirectory:  sitePushDataDirectory,
 				StorageAccount: sitePushStorageAccount,
 				AuthMode:       sitePushAuthMode,
 				ContainerName:  sitePushContainerName,
+				UsePostgres:    postgresCompleted.Enabled,
+				PostgresPool:   postgresCompleted.Connection,
 			})
 			if err != nil {
 				return err
@@ -90,9 +122,13 @@ func NewReportCommand() (*cobra.Command, error) {
 		},
 	}
 	sitePushCmd.Flags().StringVar(&sitePushRoot, "site.root", sitePushRoot, "root directory for generated site HTML")
+	sitePushCmd.Flags().StringVar(&sitePushDataDirectory, "storage.ndjson.data-dir", sitePushDataDirectory, "root directory for NDJSON facts/state/semantic data")
 	sitePushCmd.Flags().StringVar(&sitePushStorageAccount, "site.storage-account", sitePushStorageAccount, "Azure Storage account name for static website uploads")
 	sitePushCmd.Flags().StringVar(&sitePushAuthMode, "site.auth-mode", sitePushAuthMode, "Azure Storage auth mode for uploads (for example: login|key)")
 	sitePushCmd.Flags().StringVar(&sitePushContainerName, "site.container", sitePushContainerName, "target blob container name (default: $web)")
+	if err := postgresoptions.BindOptions(sitePushPostgres, sitePushCmd); err != nil {
+		return nil, err
+	}
 	if err := sitePushCmd.MarkFlagRequired("site.storage-account"); err != nil {
 		return nil, fmt.Errorf("mark --site.storage-account required for report site push: %w", err)
 	}
@@ -168,14 +204,27 @@ func NewReportCommand() (*cobra.Command, error) {
 	reviewSemanticSubdirectory := ""
 	reviewListen := "127.0.0.1:8081"
 	reviewHistoryWeeks := 4
+	reviewPostgres := postgresoptions.DefaultOptions()
 	reviewCmd := &cobra.Command{
 		Use:   "review",
 		Short: "Run a local dynamic semantic review app with manual Phase3 linking.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			postgresValidated, err := reviewPostgres.Validate()
+			if err != nil {
+				return err
+			}
+			postgresCompleted, err := postgresValidated.Complete(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer postgresCompleted.Cleanup()
+
 			handler, err := reportreview.NewHandler(reportreview.HandlerOptions{
 				DataDirectory:        reviewDataDirectory,
 				SemanticSubdirectory: reviewSemanticSubdirectory,
 				HistoryHorizonWeeks:  reviewHistoryWeeks,
+				UsePostgres:          postgresCompleted.Enabled,
+				PostgresPool:         postgresCompleted.Connection,
 			})
 			if err != nil {
 				return err
@@ -214,6 +263,9 @@ func NewReportCommand() (*cobra.Command, error) {
 	reviewCmd.Flags().StringVar(&reviewSemanticSubdirectory, "storage.ndjson.semantic-subdir", reviewSemanticSubdirectory, "default semantic snapshot subdirectory (for example: 2026-03-15)")
 	reviewCmd.Flags().StringVar(&reviewListen, "site.listen", reviewListen, "listen address for local semantic review app (host:port)")
 	reviewCmd.Flags().IntVar(&reviewHistoryWeeks, "history.weeks", reviewHistoryWeeks, "number of most recent semantic weeks used for report history and cross-week phase3 propagation")
+	if err := postgresoptions.BindOptions(reviewPostgres, reviewCmd); err != nil {
+		return nil, err
+	}
 
 	cmd.AddCommand(
 		reviewCmd,

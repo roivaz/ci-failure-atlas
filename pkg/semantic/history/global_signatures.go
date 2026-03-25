@@ -10,6 +10,7 @@ import (
 	"time"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/store/ndjson"
 )
 
@@ -19,6 +20,9 @@ type BuildOptions struct {
 	DataDirectory                string
 	CurrentSemanticSubdir        string
 	GlobalSignatureLookbackWeeks int
+	ListSemanticWeeks            func(context.Context) ([]string, error)
+	OpenStore                    func(context.Context, string) (storecontracts.Store, error)
+	ReadWindowMetadata           func(string) (WindowMetadata, bool, error)
 }
 
 type SignatureKey struct {
@@ -75,7 +79,7 @@ func (r *globalSignatureResolver) PresenceForPhase3Cluster(environment string, p
 func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (GlobalSignatureResolver, error) {
 	dataDirectory := strings.TrimSpace(opts.DataDirectory)
 	currentSubdir := strings.TrimSpace(opts.CurrentSemanticSubdir)
-	if dataDirectory == "" || currentSubdir == "" {
+	if currentSubdir == "" {
 		return &globalSignatureResolver{
 			byKey:              map[string]SignaturePresence{},
 			byPhase3ClusterKey: map[string]SignaturePresence{},
@@ -89,13 +93,22 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 			byPhase3ClusterKey: map[string]SignaturePresence{},
 		}, nil
 	}
-	if metadata, exists, err := ReadWindowMetadata(dataDirectory, currentSubdir); err != nil {
-		return nil, fmt.Errorf("read current semantic window metadata: %w", err)
-	} else if exists && !isCanonicalSevenDayWindow(metadata) {
-		return &globalSignatureResolver{
-			byKey:              map[string]SignaturePresence{},
-			byPhase3ClusterKey: map[string]SignaturePresence{},
-		}, nil
+
+	windowMetadataReader := opts.ReadWindowMetadata
+	if windowMetadataReader == nil && dataDirectory != "" {
+		windowMetadataReader = func(semanticSubdir string) (WindowMetadata, bool, error) {
+			return ReadWindowMetadata(dataDirectory, semanticSubdir)
+		}
+	}
+	if windowMetadataReader != nil {
+		if metadata, exists, err := windowMetadataReader(currentSubdir); err != nil {
+			return nil, fmt.Errorf("read current semantic window metadata: %w", err)
+		} else if exists && !isCanonicalSevenDayWindow(metadata) {
+			return &globalSignatureResolver{
+				byKey:              map[string]SignaturePresence{},
+				byPhase3ClusterKey: map[string]SignaturePresence{},
+			}, nil
+		}
 	}
 
 	lookbackWeeks := opts.GlobalSignatureLookbackWeeks
@@ -104,25 +117,39 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 	}
 	lookbackStart := currentWeek.AddDate(0, 0, -(lookbackWeeks * 7))
 
-	semanticRoot := filepath.Join(dataDirectory, "semantic")
-	entries, err := os.ReadDir(semanticRoot)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &globalSignatureResolver{
-				byKey:              map[string]SignaturePresence{},
-				byPhase3ClusterKey: map[string]SignaturePresence{},
-			}, nil
+	semanticWeeksLister := opts.ListSemanticWeeks
+	if semanticWeeksLister == nil {
+		semanticWeeksLister = func(_ context.Context) ([]string, error) {
+			if dataDirectory == "" {
+				return nil, nil
+			}
+			return discoverSemanticWeekNamesFromFS(dataDirectory)
 		}
-		return nil, fmt.Errorf("read semantic root directory %q: %w", semanticRoot, err)
+	}
+	weekNames, err := semanticWeeksLister(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list semantic weeks: %w", err)
+	}
+
+	storeOpener := opts.OpenStore
+	if storeOpener == nil {
+		storeOpener = func(_ context.Context, semanticSubdir string) (storecontracts.Store, error) {
+			if dataDirectory == "" {
+				return nil, fmt.Errorf("data directory is required for default ndjson store opener")
+			}
+			return ndjson.NewWithOptions(dataDirectory, ndjson.Options{
+				SemanticSubdirectory: semanticSubdir,
+			})
+		}
 	}
 
 	signatureAggregates := map[string]*signaturePresenceAggregate{}
 	phase3ClusterAggregates := map[string]*signaturePresenceAggregate{}
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, rawWeekName := range weekNames {
+		weekName := strings.TrimSpace(rawWeekName)
+		if weekName == "" {
 			continue
 		}
-		weekName := strings.TrimSpace(entry.Name())
 		weekStart, ok := parseWeekStart(weekName)
 		if !ok {
 			continue
@@ -133,17 +160,17 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 		if weekStart.Before(lookbackStart) {
 			continue
 		}
-		metadata, exists, metadataErr := ReadWindowMetadata(dataDirectory, weekName)
-		if metadataErr != nil {
-			return nil, fmt.Errorf("read semantic window metadata for week %q: %w", weekName, metadataErr)
-		}
-		if !exists || !isCanonicalSevenDayWindow(metadata) {
-			continue
+		if windowMetadataReader != nil {
+			metadata, exists, metadataErr := windowMetadataReader(weekName)
+			if metadataErr != nil {
+				return nil, fmt.Errorf("read semantic window metadata for week %q: %w", weekName, metadataErr)
+			}
+			if !exists || !isCanonicalSevenDayWindow(metadata) {
+				continue
+			}
 		}
 
-		weekStore, err := ndjson.NewWithOptions(dataDirectory, ndjson.Options{
-			SemanticSubdirectory: weekName,
-		})
+		weekStore, err := storeOpener(ctx, weekName)
 		if err != nil {
 			return nil, fmt.Errorf("open semantic store for week %q: %w", weekName, err)
 		}
@@ -195,6 +222,30 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 		byKey:              byKey,
 		byPhase3ClusterKey: byPhase3ClusterKey,
 	}, nil
+}
+
+func discoverSemanticWeekNamesFromFS(dataDirectory string) ([]string, error) {
+	semanticRoot := filepath.Join(dataDirectory, "semantic")
+	entries, err := os.ReadDir(semanticRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read semantic root directory %q: %w", semanticRoot, err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if name == "" {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func collectGlobalSignaturePresence(rows []semanticcontracts.GlobalClusterRecord, weekName string, aggregates map[string]*signaturePresenceAggregate) {
