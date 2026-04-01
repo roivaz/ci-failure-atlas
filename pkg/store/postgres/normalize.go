@@ -176,30 +176,6 @@ func normalizeDeadLetterRecord(row storecontracts.DeadLetterRecord) storecontrac
 	}
 }
 
-func normalizePhase1WorksetRecord(row semanticcontracts.Phase1WorksetRecord) semanticcontracts.Phase1WorksetRecord {
-	prNumber := row.PRNumber
-	if prNumber < 0 {
-		prNumber = 0
-	}
-	return semanticcontracts.Phase1WorksetRecord{
-		SchemaVersion:  strings.TrimSpace(row.SchemaVersion),
-		Environment:    normalizeSemanticEnvironment(row.Environment),
-		RowID:          strings.TrimSpace(row.RowID),
-		GroupKey:       strings.TrimSpace(row.GroupKey),
-		Lane:           strings.TrimSpace(row.Lane),
-		JobName:        strings.TrimSpace(row.JobName),
-		TestName:       strings.TrimSpace(row.TestName),
-		TestSuite:      strings.TrimSpace(row.TestSuite),
-		SignatureID:    strings.TrimSpace(row.SignatureID),
-		OccurredAt:     strings.TrimSpace(row.OccurredAt),
-		RunURL:         strings.TrimSpace(row.RunURL),
-		PRNumber:       prNumber,
-		PostGoodCommit: row.PostGoodCommit,
-		RawText:        strings.TrimSpace(row.RawText),
-		NormalizedText: strings.TrimSpace(row.NormalizedText),
-	}
-}
-
 func normalizeReferenceRecord(row semanticcontracts.ReferenceRecord) semanticcontracts.ReferenceRecord {
 	prNumber := row.PRNumber
 	if prNumber < 0 {
@@ -318,35 +294,6 @@ func normalizeContributingTests(rows []semanticcontracts.ContributingTestRecord)
 	return out
 }
 
-func normalizeTestClusterRecord(row semanticcontracts.TestClusterRecord) semanticcontracts.TestClusterRecord {
-	postGoodCommitCount := row.PostGoodCommitCount
-	if postGoodCommitCount < 0 {
-		postGoodCommitCount = 0
-	}
-	supportCount := row.SupportCount
-	if supportCount < 0 {
-		supportCount = 0
-	}
-	return semanticcontracts.TestClusterRecord{
-		SchemaVersion:                strings.TrimSpace(row.SchemaVersion),
-		Environment:                  normalizeSemanticEnvironment(row.Environment),
-		Phase1ClusterID:              strings.TrimSpace(row.Phase1ClusterID),
-		Lane:                         strings.TrimSpace(row.Lane),
-		JobName:                      strings.TrimSpace(row.JobName),
-		TestName:                     strings.TrimSpace(row.TestName),
-		TestSuite:                    strings.TrimSpace(row.TestSuite),
-		CanonicalEvidencePhrase:      strings.TrimSpace(row.CanonicalEvidencePhrase),
-		SearchQueryPhrase:            strings.TrimSpace(row.SearchQueryPhrase),
-		SearchQuerySourceRunURL:      strings.TrimSpace(row.SearchQuerySourceRunURL),
-		SearchQuerySourceSignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
-		SupportCount:                 supportCount,
-		SeenPostGoodCommit:           row.SeenPostGoodCommit,
-		PostGoodCommitCount:          postGoodCommitCount,
-		MemberSignatureIDs:           normalizeStringSlice(row.MemberSignatureIDs),
-		References:                   normalizeReferenceSlice(row.References),
-	}
-}
-
 func normalizeGlobalClusterRecord(row semanticcontracts.GlobalClusterRecord) semanticcontracts.GlobalClusterRecord {
 	supportCount := row.SupportCount
 	if supportCount < 0 {
@@ -462,24 +409,6 @@ func testMetadataDailyKey(row storecontracts.TestMetadataDailyRecord) string {
 	return row.Environment + "|" + row.Date + "|" + row.Period + "|" + row.TestSuite + "|" + row.TestName
 }
 
-func phase1WorksetKey(row semanticcontracts.Phase1WorksetRecord) string {
-	environment := normalizeSemanticEnvironment(row.Environment)
-	rowID := strings.TrimSpace(row.RowID)
-	if environment == "" || rowID == "" {
-		return ""
-	}
-	return environment + "|" + rowID
-}
-
-func phase1ClusterKey(row semanticcontracts.TestClusterRecord) string {
-	environment := normalizeSemanticEnvironment(row.Environment)
-	clusterID := strings.TrimSpace(row.Phase1ClusterID)
-	if environment == "" || clusterID == "" {
-		return ""
-	}
-	return environment + "|" + clusterID
-}
-
 func globalClusterKey(row semanticcontracts.GlobalClusterRecord) string {
 	environment := normalizeSemanticEnvironment(row.Environment)
 	clusterID := strings.TrimSpace(row.Phase2ClusterID)
@@ -524,46 +453,3 @@ func phase3EventKey(row semanticcontracts.Phase3EventRecord) string {
 	return eventID
 }
 
-func phase1WorksetLess(a semanticcontracts.Phase1WorksetRecord, b semanticcontracts.Phase1WorksetRecord) bool {
-	if a.Environment != b.Environment {
-		return a.Environment < b.Environment
-	}
-	if a.Lane != b.Lane {
-		return a.Lane < b.Lane
-	}
-	if a.JobName != b.JobName {
-		return a.JobName < b.JobName
-	}
-	if a.TestName != b.TestName {
-		return a.TestName < b.TestName
-	}
-	if a.OccurredAt != b.OccurredAt {
-		return a.OccurredAt < b.OccurredAt
-	}
-	if a.RunURL != b.RunURL {
-		return a.RunURL < b.RunURL
-	}
-	if a.SignatureID != b.SignatureID {
-		return a.SignatureID < b.SignatureID
-	}
-	return a.RowID < b.RowID
-}
-
-func testClusterLess(a semanticcontracts.TestClusterRecord, b semanticcontracts.TestClusterRecord) bool {
-	if a.Environment != b.Environment {
-		return a.Environment < b.Environment
-	}
-	if a.Lane != b.Lane {
-		return a.Lane < b.Lane
-	}
-	if a.JobName != b.JobName {
-		return a.JobName < b.JobName
-	}
-	if a.TestName != b.TestName {
-		return a.TestName < b.TestName
-	}
-	if a.SupportCount != b.SupportCount {
-		return a.SupportCount > b.SupportCount
-	}
-	return a.Phase1ClusterID < b.Phase1ClusterID
-}

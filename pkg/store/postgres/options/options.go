@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -33,7 +32,6 @@ func DefaultOptions() *RawOptions {
 		MinConnections:        1,
 		ConnectTimeoutSeconds: 15,
 		Initialize:            false,
-		SemanticSubdirectory:  "",
 	}
 }
 
@@ -52,7 +50,6 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 	cmd.Flags().IntVar(&opts.MinConnections, "storage.postgres.min-connections", opts.MinConnections, "Minimum PostgreSQL pooled connections.")
 	cmd.Flags().IntVar(&opts.ConnectTimeoutSeconds, "storage.postgres.connect-timeout-seconds", opts.ConnectTimeoutSeconds, "PostgreSQL connect timeout in seconds.")
 	cmd.Flags().BoolVar(&opts.Initialize, "storage.postgres.initialize", opts.Initialize, "Initialize schema and run embedded SQL migrations on startup.")
-	cmd.Flags().StringVar(&opts.SemanticSubdirectory, "storage.postgres.semantic-subdir", opts.SemanticSubdirectory, "Optional semantic namespace (mirrors NDJSON semantic subdir semantics).")
 	return nil
 }
 
@@ -71,7 +68,6 @@ type RawOptions struct {
 	MinConnections        int
 	ConnectTimeoutSeconds int
 	Initialize            bool
-	SemanticSubdirectory  string
 }
 
 type validatedOptions struct {
@@ -83,7 +79,6 @@ type validatedOptions struct {
 	Password             string
 	Database             string
 	SSLMode              string
-	SemanticSubdirectory string
 }
 
 type ValidatedOptions struct {
@@ -91,12 +86,11 @@ type ValidatedOptions struct {
 }
 
 type completedOptions struct {
-	Enabled              bool
-	Embedded             bool
-	SemanticSubdirectory string
-	ConnectionURL        string
-	Connection           *pgxpool.Pool
-	cleanup              func()
+	Enabled       bool
+	Embedded      bool
+	ConnectionURL string
+	Connection    *pgxpool.Pool
+	cleanup       func()
 }
 
 type Options struct {
@@ -137,11 +131,6 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 		return nil, fmt.Errorf("--storage.postgres.connect-timeout-seconds must be greater than 0")
 	}
 
-	semanticSubdirectory, err := normalizeSemanticSubdirectory(o.SemanticSubdirectory)
-	if err != nil {
-		return nil, fmt.Errorf("invalid --storage.postgres.semantic-subdir: %w", err)
-	}
-
 	if o.Enabled {
 		if o.Embedded {
 			if embeddedDataDir == "" {
@@ -170,7 +159,6 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 			Password:             password,
 			Database:             database,
 			SSLMode:              sslMode,
-			SemanticSubdirectory: semanticSubdirectory,
 		},
 	}, nil
 }
@@ -186,12 +174,11 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 	if !o.Enabled {
 		return &Options{
 			completedOptions: &completedOptions{
-				Enabled:              false,
-				Embedded:             false,
-				SemanticSubdirectory: o.SemanticSubdirectory,
-				ConnectionURL:        "",
-				Connection:           nil,
-				cleanup:              func() {},
+				Enabled:       false,
+				Embedded:      false,
+				ConnectionURL: "",
+				Connection:    nil,
+				cleanup:       func() {},
 			},
 		}, nil
 	}
@@ -260,12 +247,11 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 
 	return &Options{
 		completedOptions: &completedOptions{
-			Enabled:              true,
-			Embedded:             o.Embedded,
-			SemanticSubdirectory: o.SemanticSubdirectory,
-			ConnectionURL:        connectionURL,
-			Connection:           pool,
-			cleanup:              fullCleanup,
+			Enabled:       true,
+			Embedded:      o.Embedded,
+			ConnectionURL: connectionURL,
+			Connection:    pool,
+			cleanup:       fullCleanup,
 		},
 	}, nil
 }
@@ -308,25 +294,3 @@ func buildConnectionURL(user, password, host string, port int, database, sslMode
 	return u.String(), nil
 }
 
-func normalizeSemanticSubdirectory(value string) (string, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "", nil
-	}
-	cleaned := filepath.Clean(trimmed)
-	if cleaned == "." {
-		return "", nil
-	}
-	if filepath.IsAbs(cleaned) {
-		return "", fmt.Errorf("must be a relative path")
-	}
-	for _, part := range strings.Split(cleaned, string(filepath.Separator)) {
-		switch part {
-		case "", ".":
-			continue
-		case "..":
-			return "", fmt.Errorf("must not contain '..'")
-		}
-	}
-	return cleaned, nil
-}

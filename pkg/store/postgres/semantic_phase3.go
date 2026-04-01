@@ -8,236 +8,42 @@ import (
 	"strings"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	storecontracts "ci-failure-atlas/pkg/store/contracts"
 
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) upsertPhase1WorksetImpl(ctx context.Context, rows []semanticcontracts.Phase1WorksetRecord) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	normalizedRows := make([]semanticcontracts.Phase1WorksetRecord, 0, len(rows))
-	targetEnvironments := map[string]struct{}{}
-	for _, row := range rows {
-		normalized := normalizePhase1WorksetRecord(row)
-		if phase1WorksetKey(normalized) == "" {
-			return fmt.Errorf("phase1 workset record missing row_id")
-		}
-		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
-		normalizedRows = append(normalizedRows, normalized)
-	}
-	semanticSubdir := semanticSubdirectoryScope(s.semanticSubdirectory)
-
-	return s.withTx(ctx, func(tx pgx.Tx) error {
-		for environment := range targetEnvironments {
-			_, err := tx.Exec(ctx, `
-DELETE FROM cfa_sem_phase1_workset
-WHERE semantic_subdir = $1 AND environment = $2
-`, semanticSubdir, environment)
-			if err != nil {
-				return fmt.Errorf("delete phase1 workset environment %q: %w", environment, err)
-			}
-		}
-		for _, row := range normalizedRows {
-			payload, err := marshalPayload(row)
-			if err != nil {
-				return err
-			}
-			_, err = tx.Exec(ctx, `
-INSERT INTO cfa_sem_phase1_workset (
-  semantic_subdir, environment, row_id, lane, job_name, test_name, occurred_at, run_url, signature_id, payload
-) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-)
-ON CONFLICT (semantic_subdir, environment, row_id)
-DO UPDATE SET
-  lane = EXCLUDED.lane,
-  job_name = EXCLUDED.job_name,
-  test_name = EXCLUDED.test_name,
-  occurred_at = EXCLUDED.occurred_at,
-  run_url = EXCLUDED.run_url,
-  signature_id = EXCLUDED.signature_id,
-  payload = EXCLUDED.payload
-`, semanticSubdir, row.Environment, row.RowID, row.Lane, row.JobName, row.TestName, row.OccurredAt, row.RunURL, row.SignatureID, payload)
-			if err != nil {
-				return fmt.Errorf("upsert phase1 workset (%s,%s): %w", row.Environment, row.RowID, err)
-			}
-		}
-		return nil
-	})
-}
-
-func (s *Store) listPhase1WorksetImpl(ctx context.Context) ([]semanticcontracts.Phase1WorksetRecord, error) {
-	rows, err := s.pool.Query(ctx, `
-SELECT payload
-FROM cfa_sem_phase1_workset
-WHERE semantic_subdir = $1
-`, semanticSubdirectoryScope(s.semanticSubdirectory))
+func (s *Store) replaceMaterializedWeekImpl(ctx context.Context, week storecontracts.MaterializedWeek) error {
+	globalRows, err := normalizeGlobalClusterRows(week.GlobalClusters)
 	if err != nil {
-		return nil, fmt.Errorf("query phase1 workset: %w", err)
+		return err
 	}
-	defer rows.Close()
-
-	out := make([]semanticcontracts.Phase1WorksetRecord, 0)
-	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			return nil, fmt.Errorf("scan phase1 workset payload: %w", err)
-		}
-		var row semanticcontracts.Phase1WorksetRecord
-		if err := json.Unmarshal(payload, &row); err != nil {
-			return nil, fmt.Errorf("decode phase1 workset payload: %w", err)
-		}
-		normalized := normalizePhase1WorksetRecord(row)
-		if phase1WorksetKey(normalized) == "" {
-			continue
-		}
-		out = append(out, normalized)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate phase1 workset rows: %w", err)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return phase1WorksetLess(out[i], out[j])
-	})
-	return out, nil
-}
-
-func (s *Store) upsertTestClustersImpl(ctx context.Context, rows []semanticcontracts.TestClusterRecord) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	normalizedRows := make([]semanticcontracts.TestClusterRecord, 0, len(rows))
-	targetEnvironments := map[string]struct{}{}
-	for _, row := range rows {
-		normalized := normalizeTestClusterRecord(row)
-		if phase1ClusterKey(normalized) == "" {
-			return fmt.Errorf("test cluster record missing environment and/or phase1_cluster_id")
-		}
-		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
-		normalizedRows = append(normalizedRows, normalized)
-	}
-	semanticSubdir := semanticSubdirectoryScope(s.semanticSubdirectory)
-
-	return s.withTx(ctx, func(tx pgx.Tx) error {
-		for environment := range targetEnvironments {
-			_, err := tx.Exec(ctx, `
-DELETE FROM cfa_sem_test_clusters
-WHERE semantic_subdir = $1 AND environment = $2
-`, semanticSubdir, environment)
-			if err != nil {
-				return fmt.Errorf("delete test clusters environment %q: %w", environment, err)
-			}
-		}
-		for _, row := range normalizedRows {
-			payload, err := marshalPayload(row)
-			if err != nil {
-				return err
-			}
-			_, err = tx.Exec(ctx, `
-INSERT INTO cfa_sem_test_clusters (
-  semantic_subdir, environment, phase1_cluster_id, lane, job_name, test_name, support_count, payload
-) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8
-)
-ON CONFLICT (semantic_subdir, environment, phase1_cluster_id)
-DO UPDATE SET
-  lane = EXCLUDED.lane,
-  job_name = EXCLUDED.job_name,
-  test_name = EXCLUDED.test_name,
-  support_count = EXCLUDED.support_count,
-  payload = EXCLUDED.payload
-`, semanticSubdir, row.Environment, row.Phase1ClusterID, row.Lane, row.JobName, row.TestName, row.SupportCount, payload)
-			if err != nil {
-				return fmt.Errorf("upsert test cluster (%s,%s): %w", row.Environment, row.Phase1ClusterID, err)
-			}
-		}
-		return nil
-	})
-}
-
-func (s *Store) listTestClustersImpl(ctx context.Context) ([]semanticcontracts.TestClusterRecord, error) {
-	rows, err := s.pool.Query(ctx, `
-SELECT payload
-FROM cfa_sem_test_clusters
-WHERE semantic_subdir = $1
-`, semanticSubdirectoryScope(s.semanticSubdirectory))
+	reviewRows, err := normalizeReviewQueueRows(week.ReviewQueue)
 	if err != nil {
-		return nil, fmt.Errorf("query test clusters: %w", err)
+		return err
 	}
-	defer rows.Close()
-
-	out := make([]semanticcontracts.TestClusterRecord, 0)
-	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			return nil, fmt.Errorf("scan test cluster payload: %w", err)
-		}
-		var row semanticcontracts.TestClusterRecord
-		if err := json.Unmarshal(payload, &row); err != nil {
-			return nil, fmt.Errorf("decode test cluster payload: %w", err)
-		}
-		normalized := normalizeTestClusterRecord(row)
-		if phase1ClusterKey(normalized) == "" {
-			continue
-		}
-		out = append(out, normalized)
+	currentWeek := weekScope(s.week)
+	if currentWeek == "" {
+		return fmt.Errorf("week is required to replace materialized week")
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate test clusters: %w", err)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return testClusterLess(out[i], out[j])
-	})
-	return out, nil
-}
-
-func (s *Store) upsertGlobalClustersImpl(ctx context.Context, rows []semanticcontracts.GlobalClusterRecord) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	normalizedRows := make([]semanticcontracts.GlobalClusterRecord, 0, len(rows))
-	targetEnvironments := map[string]struct{}{}
-	for _, row := range rows {
-		normalized := normalizeGlobalClusterRecord(row)
-		if globalClusterKey(normalized) == "" {
-			return fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
-		}
-		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
-		normalizedRows = append(normalizedRows, normalized)
-	}
-	semanticSubdir := semanticSubdirectoryScope(s.semanticSubdirectory)
-
 	return s.withTx(ctx, func(tx pgx.Tx) error {
-		for environment := range targetEnvironments {
-			_, err := tx.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
+DELETE FROM cfa_sem_review_queue
+WHERE semantic_subdir = $1
+`, currentWeek); err != nil {
+			return fmt.Errorf("delete review queue for week %q: %w", currentWeek, err)
+		}
+		if _, err := tx.Exec(ctx, `
 DELETE FROM cfa_sem_global_clusters
-WHERE semantic_subdir = $1 AND environment = $2
-`, semanticSubdir, environment)
-			if err != nil {
-				return fmt.Errorf("delete global clusters environment %q: %w", environment, err)
-			}
+WHERE semantic_subdir = $1
+`, currentWeek); err != nil {
+			return fmt.Errorf("delete global clusters for week %q: %w", currentWeek, err)
 		}
-		for _, row := range normalizedRows {
-			payload, err := marshalPayload(row)
-			if err != nil {
-				return err
-			}
-			_, err = tx.Exec(ctx, `
-INSERT INTO cfa_sem_global_clusters (
-  semantic_subdir, environment, phase2_cluster_id, support_count, contributing_tests_count, payload
-) VALUES (
-  $1, $2, $3, $4, $5, $6
-)
-ON CONFLICT (semantic_subdir, environment, phase2_cluster_id)
-DO UPDATE SET
-  support_count = EXCLUDED.support_count,
-  contributing_tests_count = EXCLUDED.contributing_tests_count,
-  payload = EXCLUDED.payload
-`, semanticSubdir, row.Environment, row.Phase2ClusterID, row.SupportCount, row.ContributingTestsCount, payload)
-			if err != nil {
-				return fmt.Errorf("upsert global cluster (%s,%s): %w", row.Environment, row.Phase2ClusterID, err)
-			}
+		if err := insertGlobalClustersTx(ctx, tx, currentWeek, globalRows); err != nil {
+			return err
+		}
+		if err := insertReviewQueueTx(ctx, tx, currentWeek, reviewRows); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -248,7 +54,7 @@ func (s *Store) listGlobalClustersImpl(ctx context.Context) ([]semanticcontracts
 SELECT payload
 FROM cfa_sem_global_clusters
 WHERE semantic_subdir = $1
-`, semanticSubdirectoryScope(s.semanticSubdirectory))
+`, weekScope(s.week))
 	if err != nil {
 		return nil, fmt.Errorf("query global clusters: %w", err)
 	}
@@ -288,38 +94,62 @@ WHERE semantic_subdir = $1
 	return out, nil
 }
 
-func (s *Store) upsertReviewQueueImpl(ctx context.Context, rows []semanticcontracts.ReviewItemRecord) error {
-	if len(rows) == 0 {
-		return nil
+func normalizeGlobalClusterRows(rows []semanticcontracts.GlobalClusterRecord) ([]semanticcontracts.GlobalClusterRecord, error) {
+	normalizedRows := make([]semanticcontracts.GlobalClusterRecord, 0, len(rows))
+	for _, row := range rows {
+		normalized := normalizeGlobalClusterRecord(row)
+		if globalClusterKey(normalized) == "" {
+			return nil, fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
+		}
+		normalizedRows = append(normalizedRows, normalized)
 	}
+	return normalizedRows, nil
+}
+
+func normalizeReviewQueueRows(rows []semanticcontracts.ReviewItemRecord) ([]semanticcontracts.ReviewItemRecord, error) {
 	normalizedRows := make([]semanticcontracts.ReviewItemRecord, 0, len(rows))
-	targetEnvironments := map[string]struct{}{}
 	for _, row := range rows {
 		normalized := normalizeReviewItemRecord(row)
 		if reviewItemKey(normalized) == "" {
-			return fmt.Errorf("review item record missing environment and/or review_item_id")
+			return nil, fmt.Errorf("review item record missing environment and/or review_item_id")
 		}
-		targetEnvironments[strings.TrimSpace(normalized.Environment)] = struct{}{}
 		normalizedRows = append(normalizedRows, normalized)
 	}
-	semanticSubdir := semanticSubdirectoryScope(s.semanticSubdirectory)
+	return normalizedRows, nil
+}
 
-	return s.withTx(ctx, func(tx pgx.Tx) error {
-		for environment := range targetEnvironments {
-			_, err := tx.Exec(ctx, `
-DELETE FROM cfa_sem_review_queue
-WHERE semantic_subdir = $1 AND environment = $2
-`, semanticSubdir, environment)
-			if err != nil {
-				return fmt.Errorf("delete review queue environment %q: %w", environment, err)
-			}
+func insertGlobalClustersTx(ctx context.Context, tx pgx.Tx, currentWeek string, rows []semanticcontracts.GlobalClusterRecord) error {
+	for _, row := range rows {
+		payload, err := marshalPayload(row)
+		if err != nil {
+			return err
 		}
-		for _, row := range normalizedRows {
-			payload, err := marshalPayload(row)
-			if err != nil {
-				return err
-			}
-			_, err = tx.Exec(ctx, `
+		_, err = tx.Exec(ctx, `
+INSERT INTO cfa_sem_global_clusters (
+  semantic_subdir, environment, phase2_cluster_id, support_count, contributing_tests_count, payload
+) VALUES (
+  $1, $2, $3, $4, $5, $6
+)
+ON CONFLICT (semantic_subdir, environment, phase2_cluster_id)
+DO UPDATE SET
+  support_count = EXCLUDED.support_count,
+  contributing_tests_count = EXCLUDED.contributing_tests_count,
+  payload = EXCLUDED.payload
+`, currentWeek, row.Environment, row.Phase2ClusterID, row.SupportCount, row.ContributingTestsCount, payload)
+		if err != nil {
+			return fmt.Errorf("upsert global cluster (%s,%s): %w", row.Environment, row.Phase2ClusterID, err)
+		}
+	}
+	return nil
+}
+
+func insertReviewQueueTx(ctx context.Context, tx pgx.Tx, currentWeek string, rows []semanticcontracts.ReviewItemRecord) error {
+	for _, row := range rows {
+		payload, err := marshalPayload(row)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
 INSERT INTO cfa_sem_review_queue (
   semantic_subdir, environment, review_item_id, phase, reason, payload
 ) VALUES (
@@ -330,13 +160,12 @@ DO UPDATE SET
   phase = EXCLUDED.phase,
   reason = EXCLUDED.reason,
   payload = EXCLUDED.payload
-`, semanticSubdir, row.Environment, row.ReviewItemID, row.Phase, row.Reason, payload)
-			if err != nil {
-				return fmt.Errorf("upsert review queue item (%s,%s): %w", row.Environment, row.ReviewItemID, err)
-			}
+`, currentWeek, row.Environment, row.ReviewItemID, row.Phase, row.Reason, payload)
+		if err != nil {
+			return fmt.Errorf("upsert review queue item (%s,%s): %w", row.Environment, row.ReviewItemID, err)
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 func (s *Store) listReviewQueueImpl(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error) {
@@ -344,7 +173,7 @@ func (s *Store) listReviewQueueImpl(ctx context.Context) ([]semanticcontracts.Re
 SELECT payload
 FROM cfa_sem_review_queue
 WHERE semantic_subdir = $1
-`, semanticSubdirectoryScope(s.semanticSubdirectory))
+`, weekScope(s.week))
 	if err != nil {
 		return nil, fmt.Errorf("query review queue: %w", err)
 	}

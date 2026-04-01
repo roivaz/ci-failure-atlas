@@ -24,8 +24,9 @@ func NewMigrateCommand() (*cobra.Command, error) {
 	postgresRaw.Initialize = true
 
 	importCmd := &cobra.Command{
-		Use:   "ndjson-to-postgres",
-		Short: "Import facts/state data from NDJSON into PostgreSQL.",
+		Use:     "import-legacy-data",
+		Aliases: []string{"ndjson-to-postgres"},
+		Short:   "Import legacy facts/state snapshots into PostgreSQL.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			postgresValidated, err := postgresRaw.Validate()
 			if err != nil {
@@ -48,12 +49,12 @@ func NewMigrateCommand() (*cobra.Command, error) {
 				_ = store.Close()
 			}()
 
-			counts, err := importNDJSONFactsAndState(cmd.Context(), dataDirectory, store)
+			counts, err := importLegacyFactsAndState(cmd.Context(), dataDirectory, store)
 			if err != nil {
 				return err
 			}
 
-			cmd.Printf("NDJSON -> PostgreSQL import completed.\n")
+			cmd.Printf("Legacy snapshot import completed.\n")
 			cmd.Printf("  facts.runs: %d\n", counts.Runs)
 			cmd.Printf("  facts.pull_requests: %d\n", counts.PullRequests)
 			cmd.Printf("  facts.artifact_failures: %d\n", counts.ArtifactFailures)
@@ -67,7 +68,9 @@ func NewMigrateCommand() (*cobra.Command, error) {
 			return nil
 		},
 	}
-	importCmd.Flags().StringVar(&dataDirectory, "ndjson.data-dir", dataDirectory, "root directory for NDJSON facts/state data to import")
+	importCmd.Flags().StringVar(&dataDirectory, "legacy.data-dir", dataDirectory, "root directory for legacy facts/state snapshots to import")
+	importCmd.Flags().StringVar(&dataDirectory, "ndjson.data-dir", dataDirectory, "deprecated alias for --legacy.data-dir")
+	_ = importCmd.Flags().MarkHidden("ndjson.data-dir")
 	if err := postgresoptions.BindOptions(postgresRaw, importCmd); err != nil {
 		return nil, err
 	}
@@ -80,7 +83,7 @@ func NewMigrateCommand() (*cobra.Command, error) {
 	return cmd, nil
 }
 
-type ndjsonImportCounts struct {
+type legacyImportCounts struct {
 	Runs              int
 	PullRequests      int
 	ArtifactFailures  int
@@ -92,8 +95,8 @@ type ndjsonImportCounts struct {
 	Phase3Links       int
 }
 
-func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst storecontracts.Store) (ndjsonImportCounts, error) {
-	counts := ndjsonImportCounts{}
+func importLegacyFactsAndState(ctx context.Context, dataDirectory string, dst storecontracts.Store) (legacyImportCounts, error) {
+	counts := legacyImportCounts{}
 	if dst == nil {
 		return counts, fmt.Errorf("destination store is required")
 	}
@@ -111,7 +114,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	factsPath := filepath.Join(dataDirectory, "facts")
 	statePath := filepath.Join(dataDirectory, "state")
 
-	runs, err := readNDJSONFile[storecontracts.RunRecord](filepath.Join(factsPath, "runs.ndjson"))
+	runs, err := readJSONLinesFile[storecontracts.RunRecord](filepath.Join(factsPath, "runs.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -120,7 +123,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	}
 	counts.Runs = len(runs)
 
-	pullRequests, err := readNDJSONFile[storecontracts.PullRequestRecord](filepath.Join(factsPath, "pull_requests.ndjson"))
+	pullRequests, err := readJSONLinesFile[storecontracts.PullRequestRecord](filepath.Join(factsPath, "pull_requests.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -129,7 +132,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	}
 	counts.PullRequests = len(pullRequests)
 
-	artifactFailures, err := readNDJSONFile[storecontracts.ArtifactFailureRecord](filepath.Join(factsPath, "artifact_failures.ndjson"))
+	artifactFailures, err := readJSONLinesFile[storecontracts.ArtifactFailureRecord](filepath.Join(factsPath, "artifact_failures.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -138,7 +141,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	}
 	counts.ArtifactFailures = len(artifactFailures)
 
-	rawFailures, err := readNDJSONFile[storecontracts.RawFailureRecord](filepath.Join(factsPath, "raw_failures.ndjson"))
+	rawFailures, err := readJSONLinesFile[storecontracts.RawFailureRecord](filepath.Join(factsPath, "raw_failures.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -147,7 +150,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	}
 	counts.RawFailures = len(rawFailures)
 
-	metricsDaily, err := readNDJSONFile[storecontracts.MetricDailyRecord](filepath.Join(factsPath, "metrics_daily.ndjson"))
+	metricsDaily, err := readJSONLinesFile[storecontracts.MetricDailyRecord](filepath.Join(factsPath, "metrics_daily.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -156,7 +159,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	}
 	counts.MetricsDaily = len(metricsDaily)
 
-	testMetadataDaily, err := readNDJSONFile[storecontracts.TestMetadataDailyRecord](filepath.Join(factsPath, "test_metadata_daily.ndjson"))
+	testMetadataDaily, err := readJSONLinesFile[storecontracts.TestMetadataDailyRecord](filepath.Join(factsPath, "test_metadata_daily.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -165,7 +168,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	}
 	counts.TestMetadataDaily = len(testMetadataDaily)
 
-	checkpoints, err := readNDJSONFile[storecontracts.CheckpointRecord](filepath.Join(statePath, "checkpoints.ndjson"))
+	checkpoints, err := readJSONLinesFile[storecontracts.CheckpointRecord](filepath.Join(statePath, "checkpoints.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -174,7 +177,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	}
 	counts.Checkpoints = len(checkpoints)
 
-	phase3Issues, err := readNDJSONFile[semanticcontracts.Phase3IssueRecord](filepath.Join(statePath, "phase3", "issues.ndjson"))
+	phase3Issues, err := readJSONLinesFile[semanticcontracts.Phase3IssueRecord](filepath.Join(statePath, "phase3", "issues.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -183,7 +186,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	}
 	counts.Phase3Issues = len(phase3Issues)
 
-	phase3Links, err := readNDJSONFile[semanticcontracts.Phase3LinkRecord](filepath.Join(statePath, "phase3", "links.ndjson"))
+	phase3Links, err := readJSONLinesFile[semanticcontracts.Phase3LinkRecord](filepath.Join(statePath, "phase3", "links.ndjson"))
 	if err != nil {
 		return counts, err
 	}
@@ -195,7 +198,7 @@ func importNDJSONFactsAndState(ctx context.Context, dataDirectory string, dst st
 	return counts, nil
 }
 
-func readNDJSONFile[T any](path string) ([]T, error) {
+func readJSONLinesFile[T any](path string) ([]T, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -217,7 +220,7 @@ func readNDJSONFile[T any](path string) ([]T, error) {
 		}
 		var row T
 		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			return nil, fmt.Errorf("decode ndjson row from %q: %w", path, err)
+			return nil, fmt.Errorf("decode JSON-lines row from %q: %w", path, err)
 		}
 		out = append(out, row)
 	}

@@ -16,10 +16,8 @@ import (
 	reportsummary "ci-failure-atlas/pkg/report/summary"
 	"ci-failure-atlas/pkg/report/triagehtml"
 	reportweekly "ci-failure-atlas/pkg/report/weekly"
-	phase1engine "ci-failure-atlas/pkg/semantic/engine/phase1"
-	phase2engine "ci-failure-atlas/pkg/semantic/engine/phase2"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
-	semanticinput "ci-failure-atlas/pkg/semantic/input"
+	semanticworkflow "ci-failure-atlas/pkg/semantic/workflow"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 
@@ -36,12 +34,11 @@ const (
 )
 
 type BuildOptions struct {
-	SiteRoot           string
-	SourceEnvironments []string
-	CurrentWeekStart   string
-	HistoryWeeks       int
-	FromExisting       bool
-	PostgresPool       *pgxpool.Pool
+	SiteRoot         string
+	CurrentWeekStart string
+	HistoryWeeks     int
+	FromExisting     bool
+	PostgresPool     *pgxpool.Pool
 }
 
 type WeekDirectory struct {
@@ -160,9 +157,8 @@ func generateSiteReportsForWeekStarts(
 		if index+1 < len(weekSubdirectories) {
 			nextWeekSubdirectory = weekSubdirectories[index+1]
 		}
-		weekEndExclusive := weekStart.AddDate(0, 0, 7)
 		if runSemanticWorkflow {
-			if err := runSemanticWorkflowForWeek(ctx, resolved, weekSubdir, resolved.SourceEnvironments, weekStart, weekEndExclusive); err != nil {
+			if err := runSemanticWorkflowForWeek(ctx, resolved, weekSubdir, weekStart); err != nil {
 				return err
 			}
 		}
@@ -173,9 +169,7 @@ func generateSiteReportsForWeekStarts(
 			previousWeekSubdirectory,
 			nextWeekSubdirectory,
 			weekStart,
-			weekEndExclusive,
 			resolved.HistoryWeeks,
-			resolved.SourceEnvironments,
 		); err != nil {
 			return err
 		}
@@ -229,12 +223,11 @@ func Push(ctx context.Context, opts PushOptions) (PushResult, error) {
 }
 
 type normalizedBuildOptions struct {
-	SiteRoot           string
-	SourceEnvironments []string
-	CurrentWeekStart   time.Time
-	HistoryWeeks       int
-	FromExisting       bool
-	PostgresPool       *pgxpool.Pool
+	SiteRoot         string
+	CurrentWeekStart time.Time
+	HistoryWeeks     int
+	FromExisting     bool
+	PostgresPool     *pgxpool.Pool
 }
 
 func normalizeBuildOptions(opts BuildOptions) (normalizedBuildOptions, error) {
@@ -246,7 +239,6 @@ func normalizeBuildOptions(opts BuildOptions) (normalizedBuildOptions, error) {
 	if weeks <= 0 {
 		weeks = defaultHistoryWeeks
 	}
-	sourceEnvironments := normalizeSourceEnvironments(opts.SourceEnvironments)
 	currentWeekStart, err := resolveCurrentWeekStart(opts.CurrentWeekStart)
 	if err != nil {
 		return normalizedBuildOptions{}, err
@@ -256,37 +248,12 @@ func normalizeBuildOptions(opts BuildOptions) (normalizedBuildOptions, error) {
 		return normalizedBuildOptions{}, fmt.Errorf("postgres pool is required")
 	}
 	return normalizedBuildOptions{
-		SiteRoot:           siteRoot,
-		SourceEnvironments: sourceEnvironments,
-		CurrentWeekStart:   currentWeekStart,
-		HistoryWeeks:       weeks,
-		FromExisting:       opts.FromExisting,
-		PostgresPool:       pool,
+		SiteRoot:         siteRoot,
+		CurrentWeekStart: currentWeekStart,
+		HistoryWeeks:     weeks,
+		FromExisting:     opts.FromExisting,
+		PostgresPool:     pool,
 	}, nil
-}
-
-func normalizeSourceEnvironments(raw []string) []string {
-	if len(raw) == 0 {
-		return []string{"dev", "int", "stg", "prod"}
-	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(raw))
-	for _, value := range raw {
-		normalized := strings.ToLower(strings.TrimSpace(value))
-		if normalized == "" {
-			continue
-		}
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		out = append(out, normalized)
-	}
-	if len(out) == 0 {
-		return []string{"dev", "int", "stg", "prod"}
-	}
-	sort.Strings(out)
-	return out
 }
 
 func resolveCurrentWeekStart(raw string) (time.Time, error) {
@@ -294,9 +261,13 @@ func resolveCurrentWeekStart(raw string) (time.Time, error) {
 	if trimmed == "" {
 		return latestSundayUTC(time.Now().UTC()), nil
 	}
-	parsed, err := time.Parse("2006-01-02", trimmed)
+	normalizedWeek, err := postgresstore.NormalizeWeek(trimmed)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid --start-date %q (expected YYYY-MM-DD): %w", trimmed, err)
+		return time.Time{}, fmt.Errorf("invalid --start-date %q (expected YYYY-MM-DD Sunday start): %w", trimmed, err)
+	}
+	parsed, err := time.Parse("2006-01-02", normalizedWeek)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse week %q: %w", normalizedWeek, err)
 	}
 	return parsed.UTC(), nil
 }
@@ -320,7 +291,7 @@ func weekStartsToGenerate(currentWeekStart time.Time, weeks int) []time.Time {
 }
 
 func discoverSemanticWeekStarts(ctx context.Context, resolved normalizedBuildOptions) ([]time.Time, error) {
-	weeks, err := postgresstore.ListSemanticSubdirectories(ctx, resolved.PostgresPool)
+	weeks, err := postgresstore.ListWeeks(ctx, resolved.PostgresPool)
 	if err != nil {
 		return nil, fmt.Errorf("list semantic weeks from postgres: %w", err)
 	}
@@ -386,10 +357,10 @@ func resetSiteRootForReportRebuild(siteRoot string) error {
 func openSemanticStoreForWeek(resolved normalizedBuildOptions, semanticSubdirectory string) (storecontracts.Store, error) {
 	week := strings.TrimSpace(semanticSubdirectory)
 	if week == "" {
-		return nil, fmt.Errorf("semantic subdirectory is required")
+		return nil, fmt.Errorf("week is required")
 	}
 	store, err := postgresstore.New(resolved.PostgresPool, postgresstore.Options{
-		SemanticSubdirectory: week,
+		Week: week,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open postgres semantic store for week %q: %w", week, err)
@@ -401,9 +372,7 @@ func runSemanticWorkflowForWeek(
 	ctx context.Context,
 	resolved normalizedBuildOptions,
 	semanticSubdirectory string,
-	sourceEnvironments []string,
 	windowStart time.Time,
-	windowEndExclusive time.Time,
 ) error {
 	store, err := openSemanticStoreForWeek(resolved, semanticSubdirectory)
 	if err != nil {
@@ -413,47 +382,9 @@ func runSemanticWorkflowForWeek(
 		_ = store.Close()
 	}()
 
-	environmentSet := map[string]struct{}{}
-	for _, environment := range sourceEnvironments {
-		normalized := strings.ToLower(strings.TrimSpace(environment))
-		if normalized == "" {
-			continue
-		}
-		environmentSet[normalized] = struct{}{}
-	}
-	start := windowStart.UTC()
-	end := windowEndExclusive.UTC()
-	enriched, err := semanticinput.BuildEnrichedFailures(ctx, store, semanticinput.BuildOptions{
-		EnvironmentSet: environmentSet,
-		WindowStart:    &start,
-		WindowEnd:      &end,
-	})
+	_, err = semanticworkflow.MaterializeWeek(ctx, store, windowStart.UTC())
 	if err != nil {
-		return fmt.Errorf("build enriched semantic input for week %q: %w", semanticSubdirectory, err)
-	}
-	workset := phase1engine.BuildWorkset(enriched.Rows)
-	normalized := phase1engine.Normalize(workset)
-	assignments := phase1engine.Classify(normalized)
-	testClusters, reviewItems, err := phase1engine.Compile(workset, assignments)
-	if err != nil {
-		return fmt.Errorf("compile phase1 outputs for week %q: %w", semanticSubdirectory, err)
-	}
-	globalClusters, mergedReviewQueue, err := phase2engine.Merge(testClusters, reviewItems)
-	if err != nil {
-		return fmt.Errorf("run workflow phase2 merge for week %q: %w", semanticSubdirectory, err)
-	}
-
-	if err := store.UpsertPhase1Workset(ctx, workset); err != nil {
-		return fmt.Errorf("persist workflow phase1 workset for week %q: %w", semanticSubdirectory, err)
-	}
-	if err := store.UpsertTestClusters(ctx, testClusters); err != nil {
-		return fmt.Errorf("persist workflow test clusters for week %q: %w", semanticSubdirectory, err)
-	}
-	if err := store.UpsertReviewQueue(ctx, mergedReviewQueue); err != nil {
-		return fmt.Errorf("persist workflow review queue for week %q: %w", semanticSubdirectory, err)
-	}
-	if err := store.UpsertGlobalClusters(ctx, globalClusters); err != nil {
-		return fmt.Errorf("persist workflow global clusters for week %q: %w", semanticSubdirectory, err)
+		return fmt.Errorf("run semantic workflow for week %q: %w", semanticSubdirectory, err)
 	}
 	return nil
 }
@@ -465,9 +396,7 @@ func generateSiteReportsForWeek(
 	previousWeekSubdirectory string,
 	nextWeekSubdirectory string,
 	windowStart time.Time,
-	windowEndExclusive time.Time,
 	historyWeeks int,
-	sourceEnvironments []string,
 ) error {
 	logger := loggerFromContext(ctx).WithValues("component", "report.site")
 	totalStart := time.Now()
@@ -498,14 +427,14 @@ func generateSiteReportsForWeek(
 
 	historyStart := time.Now()
 	historyResolverOptions := semhistory.BuildOptions{
-		CurrentSemanticSubdir:        semanticSubdirectory,
+		CurrentWeek:                  semanticSubdirectory,
 		GlobalSignatureLookbackWeeks: historyWeeks,
 	}
-	historyResolverOptions.ListSemanticWeeks = func(ctx context.Context) ([]string, error) {
-		return postgresstore.ListSemanticSubdirectories(ctx, resolved.PostgresPool)
+	historyResolverOptions.ListWeeks = func(ctx context.Context) ([]string, error) {
+		return postgresstore.ListWeeks(ctx, resolved.PostgresPool)
 	}
-	historyResolverOptions.OpenStore = func(_ context.Context, semanticSubdir string) (storecontracts.Store, error) {
-		return openSemanticStoreForWeek(resolved, semanticSubdir)
+	historyResolverOptions.OpenStore = func(_ context.Context, week string) (storecontracts.Store, error) {
+		return openSemanticStoreForWeek(resolved, week)
 	}
 	historyResolver, err := semhistory.BuildGlobalSignatureResolver(ctx, historyResolverOptions)
 	if err != nil {
@@ -518,7 +447,7 @@ func generateSiteReportsForWeek(
 	weeklyOpts.OutputPath = filepath.Join(siteWeekDirectory, weeklyReportFile)
 	weeklyOpts.StartDate = windowStart.UTC().Format("2006-01-02")
 	weeklyOpts.TargetRate = defaultWeeklyTargetRate
-	weeklyOpts.SemanticSubdirectory = semanticSubdirectory
+	weeklyOpts.Week = semanticSubdirectory
 	weeklyOpts.HistoryHorizonWeeks = historyWeeks
 	weeklyOpts.HistoryResolver = historyResolver
 	weeklyOpts.Chrome = buildReportChromeOptions(
@@ -537,10 +466,7 @@ func generateSiteReportsForWeek(
 	summaryOpts.OutputPath = filepath.Join(siteWeekDirectory, globalReportFile)
 	summaryOpts.Format = "html"
 	summaryOpts.Top = 25
-	summaryOpts.WindowStart = windowStart.UTC().Format("2006-01-02")
-	summaryOpts.WindowEnd = windowEndExclusive.UTC().Format("2006-01-02")
-	summaryOpts.Environments = append([]string(nil), sourceEnvironments...)
-	summaryOpts.SemanticSubdirectory = semanticSubdirectory
+	summaryOpts.Week = semanticSubdirectory
 	summaryOpts.HistoryHorizonWeeks = historyWeeks
 	summaryOpts.HistoryResolver = historyResolver
 	summaryOpts.Chrome = buildReportChromeOptions(

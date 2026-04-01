@@ -45,20 +45,20 @@ The system has three active planes:
    - Runtime entrypoint: `cfa run`
 
 2. **Semantic materialization**
-   - Triggered by `cfa report site build` (or reused via `--from-existing`)
-   - Phase1 and phase2 execute in memory during site build for performance
-   - Core semantic datasets persisted by default in PostgreSQL semantic namespaces:
-     - `phase1_workset`
-     - `test_clusters`
+   - Triggered by `cfa semantic materialize`
+   - `cfa app export-site` is export-only and reuses existing semantic snapshots
+   - Phase1 and phase2 execute in memory during semantic materialization
+   - Core semantic datasets persisted by default in PostgreSQL week partitions:
      - `review_queue`
      - `global_clusters`
+     - Phase3 issues/links/events
 
 3. **Product surfaces**
    - Static site:
      - Weekly report (`weekly-metrics.html`)
      - Global signature triage (`global-signature-triage.html`)
-   - Dynamic review app:
-     - `cfa report review` for Phase3 manual linking and cross-week propagation
+  - Dynamic app:
+    - `cfa app` for weekly/global views plus Phase3 manual linking and cross-week propagation
 
 ## Storage Model (Current)
 
@@ -68,7 +68,7 @@ Current runtime uses:
 
 - normalized facts/state tables (`cfa_runs`, `cfa_raw_failures`, `cfa_metrics_daily`, ...)
 - semantic/Phase3 tables with typed keys + JSONB payload
-- semantic namespace isolation via `semantic_subdir` (week-scoped partitions)
+- canonical Sunday-starting week partitioning in PostgreSQL semantic tables
 
 NDJSON is no longer a runtime store and is kept only as an import format for migration tooling.
 
@@ -77,17 +77,14 @@ NDJSON is no longer a runtime store and is kept only as an import format for mig
 - `cfa run`  
   Runs all controllers continuously.
 
-- `cfa report site build`  
-  Builds semantic outputs (unless `--from-existing`) and generates weekly/global site pages.
+- `cfa semantic materialize`  
+  Materializes one semantic week from facts/state into PostgreSQL.
 
-- `cfa report site run`  
-  Serves generated static site locally.
+- `cfa app`  
+  Runs the unified weekly/global/review application.
 
-- `cfa report site push`  
-  Uploads site content to Azure static website storage.
-
-- `cfa report review`  
-  Runs the local Phase3 review application.
+- `cfa app export-site`  
+  Exports weekly/global/archive static HTML from existing semantic snapshots in PostgreSQL.
 
 ## Key Decisions (Current)
 
@@ -99,7 +96,7 @@ NDJSON is no longer a runtime store and is kept only as an import format for mig
    - at runtime in review app,
    - at build-time when generating site reports.
 6. **Performance-first pipeline**:
-   - in-memory phase1->phase2 in site build,
+   - in-memory phase1->phase2 in semantic materialization,
    - bulk reads and in-memory indexing in hot report paths,
    - reduced default semantic artifact persistence.
 7. **Storage remains abstracted by contracts**, preserving portability to future backends.

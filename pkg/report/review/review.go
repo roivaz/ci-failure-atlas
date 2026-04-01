@@ -14,9 +14,10 @@ import (
 	"time"
 
 	triagehtml "ci-failure-atlas/pkg/report/triagehtml"
+	"ci-failure-atlas/pkg/report/weeknav"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
-	phase3engine "ci-failure-atlas/pkg/semantic/engine/phase3"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
+	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 
@@ -38,17 +39,21 @@ const (
 )
 
 type HandlerOptions struct {
-	DataDirectory        string
-	SemanticSubdirectory string
-	HistoryHorizonWeeks  int
-	UsePostgres          bool
-	PostgresPool         *pgxpool.Pool
+	DefaultWeek         string
+	HistoryHorizonWeeks int
+	PostgresPool        *pgxpool.Pool
+	RoutePrefix         string
+	WeeklyPath          string
+	GlobalPath          string
 }
 
 type handler struct {
 	defaultWeek         string
 	historyHorizonWeeks int
 	postgresPool        *pgxpool.Pool
+	routePrefix         string
+	weeklyPath          string
+	globalPath          string
 }
 
 type phase3Anchor struct {
@@ -97,11 +102,18 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if opts.PostgresPool == nil {
 		return nil, fmt.Errorf("postgres pool is required")
 	}
+	defaultWeek, err := postgresstore.NormalizeWeek(opts.DefaultWeek)
+	if err != nil {
+		return nil, fmt.Errorf("invalid default week: %w", err)
+	}
 
 	h := &handler{
-		defaultWeek:         strings.TrimSpace(opts.SemanticSubdirectory),
+		defaultWeek:         defaultWeek,
 		historyHorizonWeeks: historyHorizonWeeks,
 		postgresPool:        opts.PostgresPool,
+		routePrefix:         normalizeRoutePrefix(opts.RoutePrefix),
+		weeklyPath:          normalizeAbsolutePath(opts.WeeklyPath),
+		globalPath:          normalizeAbsolutePath(opts.GlobalPath),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.handleRoot)
@@ -111,16 +123,16 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	return mux, nil
 }
 
-func (h *handler) openStoreForWeek(semanticSubdirectory string) (storecontracts.Store, error) {
-	week := strings.TrimSpace(semanticSubdirectory)
+func (h *handler) openStoreForWeek(week string) (storecontracts.Store, error) {
+	week = strings.TrimSpace(week)
 	if week == "" {
-		return nil, fmt.Errorf("semantic subdirectory is required")
+		return nil, fmt.Errorf("week is required")
 	}
 	store, err := postgresstore.New(h.postgresPool, postgresstore.Options{
-		SemanticSubdirectory: week,
+		Week: week,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open postgres store for semantic week %q: %w", week, err)
+		return nil, fmt.Errorf("open postgres store for week %q: %w", week, err)
 	}
 	return store, nil
 }
@@ -136,7 +148,7 @@ func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	notice := strings.TrimSpace(r.URL.Query().Get("notice"))
-	rendered := renderPage(snapshot, notice)
+	rendered := h.renderPage(snapshot, notice)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(rendered))
 }
@@ -360,9 +372,9 @@ func (h *handler) redirectWithNotice(w http.ResponseWriter, r *http.Request, wee
 	if strings.TrimSpace(notice) != "" {
 		q.Set("notice", strings.TrimSpace(notice))
 	}
-	target := "/"
+	target := h.routePath("/")
 	if encoded := q.Encode(); encoded != "" {
-		target = "/?" + encoded
+		target += "?" + encoded
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
@@ -381,18 +393,15 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 		_ = store.Close()
 	}()
 
-	clusters, err := store.ListGlobalClusters(ctx)
+	weekData, err := semanticquery.LoadWeekData(ctx, store, semanticquery.LoadWeekDataOptions{
+		IncludeRawFailures: true,
+	})
 	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("list global clusters: %w", err)
+		return weekSnapshot{}, err
 	}
-	reviewQueue, err := store.ListReviewQueue(ctx)
-	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("list review queue: %w", err)
-	}
-	links, err := store.ListPhase3Links(ctx)
-	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("list phase3 links: %w", err)
-	}
+	clusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	reviewQueue := append([]semanticcontracts.ReviewItemRecord(nil), weekData.ReviewQueue...)
+	links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
 	childAnchorsByClusterID := map[string][]phase3Anchor{}
 	childLaneKeysByClusterID := map[string][]string{}
 	for _, cluster := range clusters {
@@ -415,17 +424,10 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 	if err != nil {
 		return weekSnapshot{}, fmt.Errorf("build linked child clusters: %w", err)
 	}
-	clusters, err = phase3engine.Merge(clusters, links)
-	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("apply phase3 materialized view: %w", err)
-	}
-	phase1Workset, err := store.ListPhase1Workset(ctx)
-	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("list phase1 workset: %w", err)
-	}
+	clusters = append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
 
 	reviewIndex := buildReviewSignalIndex(reviewQueue)
-	rawTextIndex := buildPhase1WorksetRawTextIndex(phase1Workset)
+	rawTextIndex := semanticquery.RawFailureTextByEnvironmentRow(weekData.RawFailures)
 	phase3ClusterByAnchor := map[string]string{}
 	for _, row := range links {
 		anchor := phase3Anchor{
@@ -657,58 +659,32 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 }
 
 func (h *handler) discoverSemanticWeeks(ctx context.Context) ([]string, error) {
-	weeks, err := postgresstore.ListSemanticSubdirectories(ctx, h.postgresPool)
+	weeks, err := postgresstore.ListWeeks(ctx, h.postgresPool)
 	if err != nil {
-		return nil, fmt.Errorf("list semantic snapshots from postgres: %w", err)
+		return nil, fmt.Errorf("list semantic weeks from postgres: %w", err)
 	}
 	if len(weeks) == 0 {
-		return nil, fmt.Errorf("no semantic snapshots found in postgres store")
+		return nil, fmt.Errorf("no semantic weeks found in postgres store")
 	}
 	return weeks, nil
 }
 
 func (h *handler) buildHistoryResolver(ctx context.Context, week string) (semhistory.GlobalSignatureResolver, error) {
 	buildOptions := semhistory.BuildOptions{
-		CurrentSemanticSubdir:        strings.TrimSpace(week),
+		CurrentWeek:                  strings.TrimSpace(week),
 		GlobalSignatureLookbackWeeks: h.historyHorizonWeeks,
 	}
-	buildOptions.ListSemanticWeeks = func(ctx context.Context) ([]string, error) {
-		return postgresstore.ListSemanticSubdirectories(ctx, h.postgresPool)
+	buildOptions.ListWeeks = func(ctx context.Context) ([]string, error) {
+		return postgresstore.ListWeeks(ctx, h.postgresPool)
 	}
-	buildOptions.OpenStore = func(_ context.Context, semanticSubdir string) (storecontracts.Store, error) {
-		return h.openStoreForWeek(semanticSubdir)
+	buildOptions.OpenStore = func(_ context.Context, week string) (storecontracts.Store, error) {
+		return h.openStoreForWeek(week)
 	}
 	return semhistory.BuildGlobalSignatureResolver(ctx, buildOptions)
 }
 
 func resolveWeekWindow(weeks []string, requestedWeek string, defaultWeek string) (string, string, string, int) {
-	if len(weeks) == 0 {
-		return "", "", "", -1
-	}
-	week := strings.TrimSpace(requestedWeek)
-	if week == "" {
-		defaultWeek = strings.TrimSpace(defaultWeek)
-		if defaultWeek != "" && containsString(weeks, defaultWeek) {
-			week = defaultWeek
-		}
-	}
-	if week == "" || !containsString(weeks, week) {
-		week = weeks[len(weeks)-1]
-	}
-	index := sort.SearchStrings(weeks, week)
-	if index < 0 || index >= len(weeks) || weeks[index] != week {
-		index = len(weeks) - 1
-		week = weeks[index]
-	}
-	previous := ""
-	next := ""
-	if index > 0 {
-		previous = weeks[index-1]
-	}
-	if index+1 < len(weeks) {
-		next = weeks[index+1]
-	}
-	return week, previous, next, index
+	return weeknav.ResolveWindow(weeks, requestedWeek, defaultWeek, time.Now().UTC())
 }
 
 func sortedEnvironmentKeys(values map[string]int) []string {
@@ -1149,14 +1125,14 @@ func unlinkAnchors(ctx context.Context, store storecontracts.Store, anchors []ph
 	return nil
 }
 
-func renderPage(snapshot weekSnapshot, notice string) string {
+func (h *handler) renderPage(snapshot weekSnapshot, notice string) string {
 	previousHref := ""
 	nextHref := ""
 	if strings.TrimSpace(snapshot.PreviousWeek) != "" {
-		previousHref = "/?week=" + url.QueryEscape(snapshot.PreviousWeek)
+		previousHref = h.viewHref(h.routePath("/"), snapshot.PreviousWeek)
 	}
 	if strings.TrimSpace(snapshot.NextWeek) != "" {
-		nextHref = "/?week=" + url.QueryEscape(snapshot.NextWeek)
+		nextHref = h.viewHref(h.routePath("/"), snapshot.NextWeek)
 	}
 	chrome := triagehtml.ReportChromeHTML(triagehtml.ReportChromeOptions{
 		CurrentWeek:  snapshot.Week,
@@ -1164,6 +1140,8 @@ func renderPage(snapshot weekSnapshot, notice string) string {
 		PreviousHref: previousHref,
 		NextWeek:     snapshot.NextWeek,
 		NextHref:     nextHref,
+		WeeklyHref:   h.viewHref(h.weeklyPath, snapshot.Week),
+		GlobalHref:   h.viewHref(h.globalPath, snapshot.Week),
 	})
 
 	var b strings.Builder
@@ -1216,12 +1194,12 @@ func renderPage(snapshot weekSnapshot, notice string) string {
 	if strings.TrimSpace(notice) != "" {
 		b.WriteString(fmt.Sprintf("    <div class=\"phase3-notice\">%s</div>\n", html.EscapeString(notice)))
 	}
-	b.WriteString("    <form method=\"post\" action=\"/actions/links\">\n")
+	b.WriteString(fmt.Sprintf("    <form method=\"post\" action=\"%s\">\n", html.EscapeString(h.routePath("/actions/links"))))
 	b.WriteString(fmt.Sprintf("      <input type=\"hidden\" name=\"week\" value=\"%s\" />\n", html.EscapeString(snapshot.Week)))
 	b.WriteString("      <div class=\"phase3-controls\">\n")
 	b.WriteString(fmt.Sprintf("        <button class=\"primary\" type=\"submit\" name=\"action\" value=\"%s\">Link selected</button>\n", phase3ActionLink))
 	b.WriteString(fmt.Sprintf("        <button type=\"submit\" name=\"action\" value=\"%s\">Disband cluster</button>\n", phase3ActionDisband))
-	b.WriteString(fmt.Sprintf("        <a href=\"/?week=%s\">Refresh</a>\n", url.QueryEscape(snapshot.Week)))
+	b.WriteString(fmt.Sprintf("        <a href=\"%s\">Refresh</a>\n", html.EscapeString(h.viewHref(h.routePath("/"), snapshot.Week))))
 	b.WriteString("        <button type=\"button\" id=\"phase3-select-all\">Select all</button>\n")
 	b.WriteString("        <button type=\"button\" id=\"phase3-clear-all\">Clear selection</button>\n")
 	b.WriteString("      </div>\n")
@@ -1252,8 +1230,16 @@ func renderPage(snapshot weekSnapshot, notice string) string {
 		}
 	}
 	b.WriteString("    </form>\n")
-	b.WriteString("    <div class=\"phase3-api-links muted\">JSON: <a href=\"/api/weeks\">/api/weeks</a> | ")
-	b.WriteString(fmt.Sprintf("<a href=\"/api/week?week=%s\">/api/week?week=%s</a></div>\n", url.QueryEscape(snapshot.Week), html.EscapeString(snapshot.Week)))
+	b.WriteString(fmt.Sprintf(
+		"    <div class=\"phase3-api-links muted\">JSON: <a href=\"%s\">%s</a> | ",
+		html.EscapeString(h.routePath("/api/weeks")),
+		html.EscapeString(h.routePath("/api/weeks")),
+	))
+	b.WriteString(fmt.Sprintf(
+		"<a href=\"%s\">%s</a></div>\n",
+		html.EscapeString(h.viewHref(h.routePath("/api/week"), snapshot.Week)),
+		html.EscapeString(h.routePath("/api/week?week="+snapshot.Week)),
+	))
 	b.WriteString("  </div>\n")
 	b.WriteString(triagehtml.ThemeToggleScriptTag())
 	b.WriteString("  <script>\n")
@@ -1385,26 +1371,6 @@ func reviewReasonsForGlobalCluster(cluster semanticcontracts.GlobalClusterRecord
 	return out
 }
 
-func buildPhase1WorksetRawTextIndex(rows []semanticcontracts.Phase1WorksetRecord) map[string]string {
-	byRowID := map[string]string{}
-	for _, row := range rows {
-		environment := normalizeEnvironment(row.Environment)
-		rowID := strings.TrimSpace(row.RowID)
-		rawText := strings.TrimSpace(row.RawText)
-		if environment == "" {
-			continue
-		}
-		rowKey := phase1WorksetRowKey(environment, rowID)
-		if rowKey == "" || rawText == "" {
-			continue
-		}
-		if _, exists := byRowID[rowKey]; !exists {
-			byRowID[rowKey] = rawText
-		}
-	}
-	return byRowID
-}
-
 func anchorsForCluster(
 	environment string,
 	references []semanticcontracts.ReferenceRecord,
@@ -1466,7 +1432,7 @@ func fullErrorSamplesForReferences(
 		if rowID == "" {
 			continue
 		}
-		sample := strings.TrimSpace(rawTextByRowKey[phase1WorksetRowKey(environment, rowID)])
+		sample := strings.TrimSpace(rawTextByRowKey[semanticquery.EnvironmentRowKey(environment, rowID)])
 		if sample == "" {
 			continue
 		}
@@ -1822,13 +1788,55 @@ func newPhase3ClusterID(anchors []phase3Anchor) string {
 	return phase3ClusterIDPrefix + hex.EncodeToString(sum[:])[:12]
 }
 
-func phase1WorksetRowKey(environment string, rowID string) string {
-	normalizedEnvironment := normalizeEnvironment(environment)
-	trimmedRowID := strings.TrimSpace(rowID)
-	if normalizedEnvironment == "" || trimmedRowID == "" {
+func normalizeRoutePrefix(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || trimmed == "/" {
 		return ""
 	}
-	return normalizedEnvironment + "|" + trimmedRowID
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	return strings.TrimRight(trimmed, "/")
+}
+
+func normalizeAbsolutePath(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	return trimmed
+}
+
+func (h *handler) routePath(path string) string {
+	normalizedPath := normalizeAbsolutePath(path)
+	if normalizedPath == "" {
+		normalizedPath = "/"
+	}
+	if h.routePrefix == "" {
+		return normalizedPath
+	}
+	if normalizedPath == "/" {
+		return h.routePrefix + "/"
+	}
+	return h.routePrefix + normalizedPath
+}
+
+func (h *handler) viewHref(path string, week string) string {
+	normalizedPath := normalizeAbsolutePath(path)
+	if normalizedPath == "" {
+		return ""
+	}
+	q := url.Values{}
+	if strings.TrimSpace(week) != "" {
+		q.Set("week", strings.TrimSpace(week))
+	}
+	if encoded := q.Encode(); encoded != "" {
+		return normalizedPath + "?" + encoded
+	}
+	return normalizedPath
 }
 
 func supportShare(value int, total int) float64 {
@@ -1884,11 +1892,3 @@ func environmentsForPhrase(set map[string]struct{}, currentEnvironment string) [
 	return out
 }
 
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if strings.TrimSpace(value) == strings.TrimSpace(target) {
-			return true
-		}
-	}
-	return false
-}

@@ -26,7 +26,7 @@ func (s *Store) withTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	return nil
 }
 
-func semanticSubdirectoryScope(value string) string {
+func weekScope(value string) string {
 	return value
 }
 

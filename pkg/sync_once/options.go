@@ -120,9 +120,7 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err = postgresstore.New(postgresCompleted.Connection, postgresstore.Options{
-		SemanticSubdirectory: postgresCompleted.SemanticSubdirectory,
-	})
+	store, err = postgresstore.New(postgresCompleted.Connection, postgresstore.Options{})
 	if err != nil {
 		postgresCompleted.Cleanup()
 		return nil, fmt.Errorf("create postgres store: %w", err)

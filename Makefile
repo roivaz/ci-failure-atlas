@@ -1,19 +1,36 @@
 SHELL := /usr/bin/env bash
 
 CFA ?= go run cmd/main.go
-SOURCE_ENVS ?= dev,int,stg,prod
 GO ?= go
 GO_PACKAGES ?= ./...
 RUN_ARGS ?=
 BINARY ?= bin/cfa
 COVER_PROFILE ?= .work/coverage.out
 
-# Latest Sunday at or before today.
-START_DATE ?= $(shell dow=$$(date +%u); date -d "$$(date +%F) -$$((dow % 7)) days" +%F)
+APP_LISTEN ?= 127.0.0.1:8082
+APP_WEEK ?=
+APP_ARGS ?=
+
 SITE_ROOT ?= site
 HISTORY_WEEKS ?= 4
+EXPORT_SITE_ARGS ?=
+
+SOURCE_ENVS ?= dev,int,stg,prod
+SEMANTIC_WEEK ?=
+SEMANTIC_WEEKS ?= 4
+SEMANTIC_ARGS ?=
+CONTROLLER_ENVS ?= $(SOURCE_ENVS)
+CONTROLLER_HISTORY_WEEKS ?= $(HISTORY_WEEKS)
+CONTROLLER_ARGS ?=
+RUN_ONCE_ARGS ?=
+SYNC_ONCE_ARGS ?=
+
+LEGACY_DATA_DIR ?= data
+MIGRATE_ARGS ?=
+
 AZ_STORAGE_ACCOUNT ?= cihealthreports
 AZ_STORAGE_AUTH_MODE ?= login
+AZ_UPLOAD_ARGS ?=
 AZ_RESOURCE_GROUP ?= ci-health-reports
 AZ_DEPLOYMENT_NAME ?= ci-failure-reports-static-web-$(shell date -u +%Y%m%d%H%M%S)
 AZ_LOCATION ?= westus3
@@ -22,7 +39,7 @@ AZ_STATIC_WEBSITE_ENABLED ?= true
 AZ_STATIC_INDEX_DOCUMENT ?= index.html
 AZ_STATIC_ERROR_DOCUMENT ?= 404.html
 
-.PHONY: help fmt fmt-check vet test test-race test-cover build run tidy check clean report-context site-build site-build-from-existing site-push deploy-static-website-storage
+.PHONY: help fmt fmt-check vet test test-race test-cover build run tidy check clean clean-site distclean semantic-materialize semantic-backfill app export-site site-upload deploy-static-website-storage run-controllers run-once sync-once migrate-legacy-data
 
 help:
 	@echo "Go targets:"
@@ -33,16 +50,28 @@ help:
 	@echo "  make test-race"
 	@echo "  make test-cover"
 	@echo "  make build"
-	@echo "  make run RUN_ARGS='report weekly --start-date 2026-03-08'"
+	@echo "  make run RUN_ARGS='app --app.listen 127.0.0.1:8082'"
 	@echo "  make tidy"
 	@echo "  make check"
 	@echo "  make clean"
+	@echo "  make clean-site"
+	@echo "  make distclean"
 	@echo ""
-	@echo "Report targets:"
-	@echo "  make site-build"
-	@echo "  make site-build-from-existing"
-	@echo "  make site-push"
+	@echo "Semantic targets:"
+	@echo "  make semantic-materialize"
+	@echo "  make semantic-backfill"
+	@echo ""
+	@echo "App targets:"
+	@echo "  make app"
+	@echo "  make export-site"
+	@echo "  make site-upload"
 	@echo "  make deploy-static-website-storage"
+	@echo ""
+	@echo "Controller and migration targets:"
+	@echo "  make run-controllers"
+	@echo "  make run-once RUN_ONCE_ARGS='--controllers.name <name> --controllers.key <key>'"
+	@echo "  make sync-once SYNC_ONCE_ARGS='--controllers.name <name>'"
+	@echo "  make migrate-legacy-data LEGACY_DATA_DIR=data"
 	@echo ""
 	@echo "Variables (override as needed):"
 	@echo "  GO=$(GO)"
@@ -50,10 +79,15 @@ help:
 	@echo "  RUN_ARGS=$(RUN_ARGS)"
 	@echo "  BINARY=$(BINARY)"
 	@echo "  COVER_PROFILE=$(COVER_PROFILE)"
-	@echo "  START_DATE=$(START_DATE)"
+	@echo "  APP_LISTEN=$(APP_LISTEN)"
+	@echo "  APP_WEEK=$(APP_WEEK)"
 	@echo "  SITE_ROOT=$(SITE_ROOT)"
 	@echo "  HISTORY_WEEKS=$(HISTORY_WEEKS)"
-	@echo "  SOURCE_ENVS=$(SOURCE_ENVS)"
+	@echo "  SEMANTIC_WEEK=$(SEMANTIC_WEEK)"
+	@echo "  SEMANTIC_WEEKS=$(SEMANTIC_WEEKS)"
+	@echo "  CONTROLLER_ENVS=$(CONTROLLER_ENVS)"
+	@echo "  CONTROLLER_HISTORY_WEEKS=$(CONTROLLER_HISTORY_WEEKS)"
+	@echo "  LEGACY_DATA_DIR=$(LEGACY_DATA_DIR)"
 	@echo "  AZ_STORAGE_ACCOUNT=$(AZ_STORAGE_ACCOUNT)"
 	@echo "  AZ_STORAGE_AUTH_MODE=$(AZ_STORAGE_AUTH_MODE)"
 	@echo "  AZ_RESOURCE_GROUP=$(AZ_RESOURCE_GROUP)"
@@ -65,8 +99,13 @@ help:
 	@echo "  AZ_STATIC_ERROR_DOCUMENT=$(AZ_STATIC_ERROR_DOCUMENT)"
 	@echo ""
 	@echo "Example:"
-	@echo "  make site-build START_DATE=2026-03-08 HISTORY_WEEKS=4"
-	@echo "  make run RUN_ARGS='report review --storage.semantic-subdir 2026-03-08'"
+	@echo "  make semantic-materialize SEMANTIC_WEEK=2026-03-29"
+	@echo "  make semantic-backfill SEMANTIC_WEEKS=8"
+	@echo "  make app APP_WEEK=2026-03-08"
+	@echo "  make export-site SITE_ROOT=site HISTORY_WEEKS=4"
+	@echo "  make site-upload AZ_STORAGE_ACCOUNT=myreportstorage SITE_ROOT=site"
+	@echo "  make run-controllers CONTROLLER_ENVS=dev,int,stg,prod"
+	@echo "  make migrate-legacy-data LEGACY_DATA_DIR=data"
 	@echo "  make deploy-static-website-storage AZ_RESOURCE_GROUP=my-rg AZ_STORAGE_ACCOUNT=myreportstorage"
 
 fmt:
@@ -102,15 +141,69 @@ test-cover:
 
 build:
 	@mkdir -p "$$(dirname "$(BINARY)")"
-	$(GO) build -o "$(BINARY)" ./cmd/main.go
+	$(GO) build -o "$(BINARY)" ./cmd
 
 run:
-	$(GO) run cmd/main.go $(RUN_ARGS)
+	$(CFA) $(RUN_ARGS)
 
-CONTROLLER_RUN_ENVS ?= dev,int,stg,prod
-CONTROLLER_HISTORY_WEEKS ?= $(HISTORY_WEEKS)
-run-controllers: RUN_ARGS=run --source.envs $(CONTROLLER_RUN_ENVS) --history.weeks $(CONTROLLER_HISTORY_WEEKS)
-run-controllers: run
+semantic-materialize:
+	$(CFA) semantic materialize \
+		$(if $(strip $(SEMANTIC_WEEK)),--week "$(SEMANTIC_WEEK)",) $(SEMANTIC_ARGS)
+
+semantic-backfill:
+	@set -euo pipefail; \
+		weeks="$(SEMANTIC_WEEKS)"; \
+		if ! [[ "$$weeks" =~ ^[0-9]+$$ ]] || [[ "$$weeks" -le 0 ]]; then \
+			echo "SEMANTIC_WEEKS must be a positive integer (got: $$weeks)"; \
+			exit 1; \
+		fi; \
+		base_week="$$(date -u -d "$$(date -u +%F) -$$(date -u +%w) days" +%F)"; \
+		for ((offset = weeks - 1; offset >= 0; offset--)); do \
+			week="$$(date -u -d "$$base_week - $$((7 * offset)) days" +%F)"; \
+			echo "materializing $$week"; \
+			$(CFA) semantic materialize --week "$$week" $(SEMANTIC_ARGS); \
+		done
+
+app:
+	$(CFA) app \
+		--app.listen "$(APP_LISTEN)" \
+		--history.weeks "$(HISTORY_WEEKS)" $(if $(strip $(APP_WEEK)),--week "$(APP_WEEK)",) $(APP_ARGS)
+
+site-export:
+	$(CFA) app export-site \
+		--site.root "$(SITE_ROOT)" \
+		--history.weeks "$(HISTORY_WEEKS)" $(EXPORT_SITE_ARGS)
+
+site-upload:
+	@if [[ -z "$(AZ_STORAGE_ACCOUNT)" ]]; then \
+		echo "AZ_STORAGE_ACCOUNT is required (example: make site-upload AZ_STORAGE_ACCOUNT=myreportstorage)"; \
+		exit 1; \
+	fi
+	@if [[ ! -d "$(SITE_ROOT)" ]]; then \
+		echo "SITE_ROOT \"$(SITE_ROOT)\" does not exist; run 'make export-site' first"; \
+		exit 1; \
+	fi
+	az storage blob upload-batch \
+		--destination '$$web' \
+		--source "$(SITE_ROOT)" \
+		--account-name "$(AZ_STORAGE_ACCOUNT)" \
+		--auth-mode "$(AZ_STORAGE_AUTH_MODE)" \
+		--overwrite $(AZ_UPLOAD_ARGS)
+
+run-controllers:
+	$(CFA) run \
+		--source.envs "$(CONTROLLER_ENVS)" \
+		--history.weeks "$(CONTROLLER_HISTORY_WEEKS)" $(CONTROLLER_ARGS)
+
+run-once:
+	$(CFA) run-once $(RUN_ONCE_ARGS)
+
+sync-once:
+	$(CFA) sync-once $(SYNC_ONCE_ARGS)
+
+migrate-legacy-data:
+	$(CFA) migrate import-legacy-data \
+		--legacy.data-dir "$(LEGACY_DATA_DIR)" $(MIGRATE_ARGS)
 
 tidy:
 	$(GO) mod tidy
@@ -120,39 +213,10 @@ check: fmt-check vet test
 clean:
 	@rm -rf "$(BINARY)" "$(COVER_PROFILE)"
 
-report-context:
-	@echo "START_DATE=$(START_DATE)"
-	@echo "SOURCE_ENVS=$(SOURCE_ENVS)"
+clean-site:
+	@rm -rf "$(SITE_ROOT)"
 
-site-build: report-context
-	$(CFA) report site build \
-		--site.root "$(SITE_ROOT)" \
-		--source.envs "$(SOURCE_ENVS)" \
-		--history.weeks "$(HISTORY_WEEKS)" \
-		--start-date "$(START_DATE)"
-
-site-build-from-existing:
-	$(CFA) report site build \
-		--site.root "$(SITE_ROOT)" \
-		--from-existing
-
-site-build-only-latest:
-	@make site-build \
-		START_DATE="$(START_DATE)" \
-		HISTORY_WEEKS="$(HISTORY_WEEKS)" \
-		SOURCE_ENVS="$(SOURCE_ENVS)" \
-		SITE_ROOT="$(SITE_ROOT)"
-
-site-push:
-	@if [[ -z "$(AZ_STORAGE_ACCOUNT)" ]]; then \
-		echo "AZ_STORAGE_ACCOUNT is required (example: make site-push AZ_STORAGE_ACCOUNT=myreportstorage)"; \
-		exit 1; \
-	fi
-	$(CFA) report site push \
-		--site.root "$(SITE_ROOT)" \
-		--site.storage-account "$(AZ_STORAGE_ACCOUNT)" \
-		--site.auth-mode "$(AZ_STORAGE_AUTH_MODE)" \
-		--site.container '$$web'
+distclean: clean clean-site
 
 deploy-static-website-storage:
 	@if [[ -z "$(AZ_RESOURCE_GROUP)" ]]; then \

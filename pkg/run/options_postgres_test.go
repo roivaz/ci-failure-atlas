@@ -26,7 +26,6 @@ func TestCompleteUsesPostgresStoreWhenEnabled(t *testing.T) {
 	raw.PostgresOptions.Database = server.Database
 	raw.PostgresOptions.SSLMode = "disable"
 	raw.PostgresOptions.Initialize = true
-	raw.PostgresOptions.SemanticSubdirectory = "2026-03-22"
 
 	validated, err := raw.Validate()
 	if err != nil {

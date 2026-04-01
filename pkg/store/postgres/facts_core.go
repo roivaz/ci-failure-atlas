@@ -91,7 +91,7 @@ FROM cfa_runs
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate runs: %w", err)
 	}
-	sortRunsLikeNDJSON(out)
+	sortRunsForStableOutput(out)
 	return out, nil
 }
 
@@ -788,7 +788,7 @@ WHERE environment = $1
 	return out, nil
 }
 
-func sortRunsLikeNDJSON(rows []storecontracts.RunRecord) {
+func sortRunsForStableOutput(rows []storecontracts.RunRecord) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Environment != rows[j].Environment {
 			return rows[i].Environment < rows[j].Environment

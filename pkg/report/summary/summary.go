@@ -14,9 +14,10 @@ import (
 
 	"ci-failure-atlas/pkg/report/triagehtml"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
-	phase3engine "ci-failure-atlas/pkg/semantic/engine/phase3"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
+	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
+	postgresstore "ci-failure-atlas/pkg/store/postgres"
 )
 
 type Options struct {
@@ -25,14 +26,11 @@ type Options struct {
 	ReviewPath           string
 	OutputPath           string
 	Format               string
-	WindowStart          string
-	WindowEnd            string
 	Top                  int
 	MinPercent           float64
 	Environments         []string
 	SplitByEnvironment   bool
-	DataDirectory        string
-	SemanticSubdirectory string
+	Week                 string
 	HistoryHorizonWeeks  int
 	HistoryResolver      semhistory.GlobalSignatureResolver
 	Chrome               triagehtml.ReportChromeOptions
@@ -88,29 +86,6 @@ type globalCluster struct {
 	LinkedChildren          []globalCluster    `json:"linked_children,omitempty"`
 }
 
-type testCluster struct {
-	SchemaVersion           string      `json:"schema_version"`
-	Phase1ClusterID         string      `json:"phase1_cluster_id"`
-	Lane                    string      `json:"lane"`
-	JobName                 string      `json:"job_name"`
-	TestName                string      `json:"test_name"`
-	TestSuite               string      `json:"test_suite"`
-	CanonicalEvidencePhrase string      `json:"canonical_evidence_phrase"`
-	SearchQueryPhrase       string      `json:"search_query_phrase"`
-	SupportCount            int         `json:"support_count"`
-	SeenPostGoodCommit      bool        `json:"seen_post_good_commit"`
-	PostGoodCommitCount     int         `json:"post_good_commit_count"`
-	MemberSignatureIDs      []string    `json:"member_signature_ids"`
-	References              []reference `json:"references"`
-}
-
-type reviewItem struct {
-	SchemaVersion string `json:"schema_version"`
-	ReviewItemID  string `json:"review_item_id"`
-	Phase         string `json:"phase"`
-	Reason        string `json:"reason"`
-}
-
 func Run(ctx context.Context, args []string) error {
 	_ = ctx
 	_ = args
@@ -128,43 +103,31 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 
 	logger := loggerFromContext(ctx).WithValues("component", "report.summary")
 
-	sourceGlobalRows, err := store.ListGlobalClusters(ctx)
+	weekData, err := semanticquery.LoadWeekData(ctx, store, semanticquery.LoadWeekDataOptions{
+		IncludeRawFailures: true,
+	})
 	if err != nil {
-		return fmt.Errorf("list global clusters: %w", err)
+		return err
 	}
-	phase3Links, err := store.ListPhase3Links(ctx)
-	if err != nil {
-		return fmt.Errorf("list phase3 links: %w", err)
-	}
+	sourceGlobalRows := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
+	globalRows := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
+	reviewRows := append([]semanticcontracts.ReviewItemRecord(nil), weekData.ReviewQueue...)
 	linkedChildrenByClusterKey, err := linkedChildrenByMergedClusterKey(sourceGlobalRows, phase3Links)
 	if err != nil {
 		return fmt.Errorf("build linked child clusters: %w", err)
 	}
-	globalRows, err := phase3engine.Merge(sourceGlobalRows, phase3Links)
-	if err != nil {
-		return fmt.Errorf("apply phase3 materialized view: %w", err)
-	}
 	reportGlobalRows := toReportGlobalClusters(globalRows)
 	reportLinkedChildrenByClusterKey := toReportGlobalClusterGroupMap(linkedChildrenByClusterKey)
-	rawFailuresByRun, err := loadRawFailuresByEnvironmentRun(ctx, store)
-	if err != nil {
-		return fmt.Errorf("list raw failures: %w", err)
-	}
+	rawFailuresByRun := indexRawFailuresByEnvironmentRun(weekData.RawFailures)
 	reportLinkedChildrenByClusterKey = attachGlobalFullErrorSamplesByGroup(
 		reportLinkedChildrenByClusterKey,
 		summaryFullErrorExamplesLimit,
 		rawFailuresByRun,
 	)
-	testRows, err := store.ListTestClusters(ctx)
-	if err != nil {
-		return fmt.Errorf("list test clusters: %w", err)
-	}
-	reviewRows, err := store.ListReviewQueue(ctx)
-	if err != nil {
-		return fmt.Errorf("list review queue: %w", err)
-	}
-	targetEnvs := resolveSummaryTargetEnvironments(validated.Environments, globalRows, testRows, reviewRows)
+	targetEnvs := semanticquery.ResolveTargetEnvironments(validated.Environments, weekData)
 	metricWindowStart, metricWindowEnd := summaryMetricWindowBounds(validated)
+	windowStartRaw, windowEndRaw := summaryMetricWindowStrings(metricWindowStart, metricWindowEnd)
 	overallJobsByEnvironment, err := metricRunTotalsByEnvironment(
 		ctx,
 		store,
@@ -180,8 +143,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	historyResolver := validated.HistoryResolver
 	if historyResolver == nil {
 		historyResolver, err = semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-			DataDirectory:                validated.DataDirectory,
-			CurrentSemanticSubdir:        validated.SemanticSubdirectory,
+			CurrentWeek:                  validated.Week,
 			GlobalSignatureLookbackWeeks: validated.HistoryHorizonWeeks,
 		})
 		if err != nil {
@@ -197,8 +159,8 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		time.Now().UTC(),
 		validated.Environments,
 		overallJobsByEnvironment,
-		validated.WindowStart,
-		validated.WindowEnd,
+		windowStartRaw,
+		windowEndRaw,
 		historyResolver,
 		validated.Chrome,
 	)
@@ -208,7 +170,6 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		}
 		for _, environment := range targetEnvs {
 			filteredGlobalRows := filterGlobalClustersByEnvironment(globalRows, environment)
-			filteredTestRows := filterTestClustersByEnvironment(testRows, environment)
 			filteredReviewRows := filterReviewItemsByEnvironment(reviewRows, environment)
 			reportFilteredGlobalRows := toReportGlobalClusters(filteredGlobalRows)
 			htmlGlobalRows := attachGlobalFullErrorSamples(reportFilteredGlobalRows, summaryFullErrorExamplesLimit, rawFailuresByRun)
@@ -220,8 +181,8 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 				time.Now().UTC(),
 				[]string{environment},
 				overallJobsByEnvironment,
-				validated.WindowStart,
-				validated.WindowEnd,
+				windowStartRaw,
+				windowEndRaw,
 				historyResolver,
 				validated.Chrome,
 			)
@@ -235,7 +196,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 				"format", reportFormatHTML,
 				"environment", environment,
 				"globalClusters", len(filteredGlobalRows),
-				"testClusters", len(filteredTestRows),
+				"testClusters", weekData.TestClusterCountsByEnv[environment],
 				"reviewItems", len(filteredReviewRows),
 				"top", validated.Top,
 				"minPercent", validated.MinPercent,
@@ -244,7 +205,6 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		return nil
 	}
 	filteredGlobalRows := globalRows
-	filteredTestRows := testRows
 	filteredReviewRows := reviewRows
 	if len(validated.Environments) > 0 {
 		envSet := make(map[string]struct{}, len(validated.Environments))
@@ -252,7 +212,6 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			envSet[normalizeReportEnvironment(environment)] = struct{}{}
 		}
 		filteredGlobalRows = filterGlobalClustersByEnvironmentSet(globalRows, envSet)
-		filteredTestRows = filterTestClustersByEnvironmentSet(testRows, envSet)
 		filteredReviewRows = filterReviewItemsByEnvironmentSet(reviewRows, envSet)
 		reportFilteredGlobalRows := toReportGlobalClusters(filteredGlobalRows)
 		htmlGlobalRows := attachGlobalFullErrorSamples(reportFilteredGlobalRows, summaryFullErrorExamplesLimit, rawFailuresByRun)
@@ -264,8 +223,8 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			time.Now().UTC(),
 			validated.Environments,
 			overallJobsByEnvironment,
-			validated.WindowStart,
-			validated.WindowEnd,
+			windowStartRaw,
+			windowEndRaw,
 			historyResolver,
 			validated.Chrome,
 		)
@@ -279,12 +238,35 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		"format", reportFormatHTML,
 		"phase3Links", len(phase3Links),
 		"globalClusters", len(filteredGlobalRows),
-		"testClusters", len(filteredTestRows),
+		"testClusters", totalCountForEnvironments(weekData.TestClusterCountsByEnv, validated.Environments),
 		"reviewItems", len(filteredReviewRows),
 		"top", validated.Top,
 		"minPercent", validated.MinPercent,
 	)
 	return nil
+}
+
+func GenerateHTML(ctx context.Context, store storecontracts.Store, opts Options) (string, error) {
+	tmp, err := os.CreateTemp("", "cfa-summary-*.html")
+	if err != nil {
+		return "", fmt.Errorf("create temp summary output: %w", err)
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+
+	opts.OutputPath = tmpPath
+	opts.Format = reportFormatHTML
+	if err := Generate(ctx, store, opts); err != nil {
+		return "", err
+	}
+	content, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("read generated summary output: %w", err)
+	}
+	return string(content), nil
 }
 
 func validateOptions(opts Options) (Options, error) {
@@ -303,18 +285,18 @@ func validateOptions(opts Options) (Options, error) {
 	if opts.MinPercent < 0 {
 		return Options{}, errors.New("--min-percent must be >= 0")
 	}
-	windowStart, windowEnd, err := normalizeReportWindow(opts.WindowStart, opts.WindowEnd)
+	week, err := postgresstore.NormalizeWeek(opts.Week)
 	if err != nil {
-		return Options{}, err
+		return Options{}, fmt.Errorf("invalid week %q: %w", strings.TrimSpace(opts.Week), err)
+	}
+	if week == "" {
+		return Options{}, errors.New("missing week (expected YYYY-MM-DD Sunday start)")
 	}
 	if opts.HistoryHorizonWeeks <= 0 {
 		opts.HistoryHorizonWeeks = 4
 	}
-	opts.WindowStart = windowStart
-	opts.WindowEnd = windowEnd
 	opts.Environments = normalizeReportEnvironments(opts.Environments)
-	opts.DataDirectory = strings.TrimSpace(opts.DataDirectory)
-	opts.SemanticSubdirectory = strings.TrimSpace(opts.SemanticSubdirectory)
+	opts.Week = week
 	return opts, nil
 }
 
@@ -376,37 +358,23 @@ func metricRunTotalsByEnvironment(
 }
 
 func summaryMetricWindowBounds(opts Options) (time.Time, time.Time) {
-	parseRFC3339UTC := func(value string) (time.Time, bool) {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			return time.Time{}, false
-		}
-		parsed, err := time.Parse(time.RFC3339, trimmed)
-		if err != nil {
-			return time.Time{}, false
-		}
-		return parsed.UTC(), true
-	}
-	if start, okStart := parseRFC3339UTC(opts.WindowStart); okStart {
-		if end, okEnd := parseRFC3339UTC(opts.WindowEnd); okEnd && start.Before(end) {
-			return start, end
-		}
-	}
-	trimmedDataDir := strings.TrimSpace(opts.DataDirectory)
-	trimmedSemanticSubdir := strings.TrimSpace(opts.SemanticSubdirectory)
-	if trimmedDataDir == "" || trimmedSemanticSubdir == "" {
+	week, err := postgresstore.NormalizeWeek(opts.Week)
+	if err != nil || week == "" {
 		return time.Time{}, time.Time{}
 	}
-	metadata, exists, err := semhistory.ReadWindowMetadata(trimmedDataDir, trimmedSemanticSubdir)
-	if err != nil || !exists {
+	start, err := time.Parse("2006-01-02", week)
+	if err != nil {
 		return time.Time{}, time.Time{}
 	}
-	start, okStart := parseRFC3339UTC(metadata.WindowStart)
-	end, okEnd := parseRFC3339UTC(metadata.WindowEnd)
-	if !okStart || !okEnd || !start.Before(end) {
-		return time.Time{}, time.Time{}
+	start = start.UTC()
+	return start, start.AddDate(0, 0, 7)
+}
+
+func summaryMetricWindowStrings(start time.Time, end time.Time) (string, string) {
+	if start.IsZero() || end.IsZero() || !start.Before(end) {
+		return "", ""
 	}
-	return start, end
+	return start.Format(time.RFC3339), end.Format(time.RFC3339)
 }
 
 func parseMetricDate(value string) (time.Time, bool) {
@@ -442,47 +410,23 @@ func normalizeReportEnvironment(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func resolveSummaryTargetEnvironments(
-	configured []string,
-	globalRows []semanticcontracts.GlobalClusterRecord,
-	testRows []semanticcontracts.TestClusterRecord,
-	reviewRows []semanticcontracts.ReviewItemRecord,
-) []string {
-	normalizedConfigured := normalizeReportEnvironments(configured)
-	if len(normalizedConfigured) > 0 {
-		return normalizedConfigured
+func totalCountForEnvironments(counts map[string]int, environments []string) int {
+	if len(counts) == 0 {
+		return 0
 	}
-	set := map[string]struct{}{}
-	for _, row := range globalRows {
-		environment := normalizeReportEnvironment(row.Environment)
-		if environment == "" {
-			continue
+	normalizedEnvironments := normalizeReportEnvironments(environments)
+	if len(normalizedEnvironments) == 0 {
+		total := 0
+		for _, count := range counts {
+			total += count
 		}
-		set[environment] = struct{}{}
+		return total
 	}
-	for _, row := range testRows {
-		environment := normalizeReportEnvironment(row.Environment)
-		if environment == "" {
-			continue
-		}
-		set[environment] = struct{}{}
+	total := 0
+	for _, environment := range normalizedEnvironments {
+		total += counts[environment]
 	}
-	for _, row := range reviewRows {
-		environment := normalizeReportEnvironment(row.Environment)
-		if environment == "" {
-			continue
-		}
-		set[environment] = struct{}{}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(set))
-	for environment := range set {
-		out = append(out, environment)
-	}
-	sort.Strings(out)
-	return out
+	return total
 }
 
 func outputPathForEnvironment(outputPath, environment string) string {
@@ -512,26 +456,6 @@ func filterGlobalClustersByEnvironmentSet(rows []semanticcontracts.GlobalCluster
 		return append([]semanticcontracts.GlobalClusterRecord(nil), rows...)
 	}
 	out := make([]semanticcontracts.GlobalClusterRecord, 0, len(rows))
-	for _, row := range rows {
-		environment := normalizeReportEnvironment(row.Environment)
-		if _, ok := envSet[environment]; !ok {
-			continue
-		}
-		out = append(out, row)
-	}
-	return out
-}
-
-func filterTestClustersByEnvironment(rows []semanticcontracts.TestClusterRecord, environment string) []semanticcontracts.TestClusterRecord {
-	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
-	return filterTestClustersByEnvironmentSet(rows, envSet)
-}
-
-func filterTestClustersByEnvironmentSet(rows []semanticcontracts.TestClusterRecord, envSet map[string]struct{}) []semanticcontracts.TestClusterRecord {
-	if len(envSet) == 0 {
-		return append([]semanticcontracts.TestClusterRecord(nil), rows...)
-	}
-	out := make([]semanticcontracts.TestClusterRecord, 0, len(rows))
 	for _, row := range rows {
 		environment := normalizeReportEnvironment(row.Environment)
 		if _, ok := envSet[environment]; !ok {
@@ -708,28 +632,6 @@ func toReportContributingTests(rows []semanticcontracts.ContributingTestRecord) 
 	return out
 }
 
-func toReportTestClusters(rows []semanticcontracts.TestClusterRecord) []testCluster {
-	out := make([]testCluster, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, testCluster{
-			SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
-			Phase1ClusterID:         strings.TrimSpace(row.Phase1ClusterID),
-			Lane:                    strings.TrimSpace(row.Lane),
-			JobName:                 strings.TrimSpace(row.JobName),
-			TestName:                strings.TrimSpace(row.TestName),
-			TestSuite:               strings.TrimSpace(row.TestSuite),
-			CanonicalEvidencePhrase: strings.TrimSpace(row.CanonicalEvidencePhrase),
-			SearchQueryPhrase:       strings.TrimSpace(row.SearchQueryPhrase),
-			SupportCount:            row.SupportCount,
-			SeenPostGoodCommit:      row.SeenPostGoodCommit,
-			PostGoodCommitCount:     row.PostGoodCommitCount,
-			MemberSignatureIDs:      append([]string(nil), row.MemberSignatureIDs...),
-			References:              toReportReferences(row.References),
-		})
-	}
-	return out
-}
-
 func toReportReferences(rows []semanticcontracts.ReferenceRecord) []reference {
 	out := make([]reference, 0, len(rows))
 	for _, row := range rows {
@@ -739,19 +641,6 @@ func toReportReferences(rows []semanticcontracts.ReferenceRecord) []reference {
 			SignatureID:    strings.TrimSpace(row.SignatureID),
 			PRNumber:       row.PRNumber,
 			PostGoodCommit: row.PostGoodCommit,
-		})
-	}
-	return out
-}
-
-func toReportReviewItems(rows []semanticcontracts.ReviewItemRecord) []reviewItem {
-	out := make([]reviewItem, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, reviewItem{
-			SchemaVersion: strings.TrimSpace(row.SchemaVersion),
-			ReviewItemID:  strings.TrimSpace(row.ReviewItemID),
-			Phase:         strings.TrimSpace(row.Phase),
-			Reason:        strings.TrimSpace(row.Reason),
 		})
 	}
 	return out
@@ -793,14 +682,7 @@ func min(a, b int) int {
 	return b
 }
 
-func loadRawFailuresByEnvironmentRun(
-	ctx context.Context,
-	store storecontracts.Store,
-) (map[string][]storecontracts.RawFailureRecord, error) {
-	rows, err := store.ListRawFailures(ctx)
-	if err != nil {
-		return nil, err
-	}
+func indexRawFailuresByEnvironmentRun(rows []storecontracts.RawFailureRecord) map[string][]storecontracts.RawFailureRecord {
 	byRun := map[string][]storecontracts.RawFailureRecord{}
 	for _, row := range rows {
 		environment := normalizeReportEnvironment(row.Environment)
@@ -824,7 +706,7 @@ func loadRawFailuresByEnvironmentRun(
 		})
 		byRun[key] = runRows
 	}
-	return byRun, nil
+	return byRun
 }
 
 func attachGlobalFullErrorSamples(
@@ -954,45 +836,4 @@ func appendUniqueLimitedSample(existing []string, candidate string, limit int) [
 		return existing
 	}
 	return append(existing, trimmedCandidate)
-}
-
-func normalizeReportWindow(rawStart string, rawEnd string) (string, string, error) {
-	startRaw := strings.TrimSpace(rawStart)
-	endRaw := strings.TrimSpace(rawEnd)
-	if startRaw == "" && endRaw == "" {
-		return "", "", nil
-	}
-	if startRaw == "" || endRaw == "" {
-		return "", "", fmt.Errorf("both --workflow.window.start and --workflow.window.end must be set together")
-	}
-	start, err := parseReportWindowBoundary(startRaw, false)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid --workflow.window.start value: %w", err)
-	}
-	end, err := parseReportWindowBoundary(endRaw, true)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid --workflow.window.end value: %w", err)
-	}
-	if !start.Before(end) {
-		return "", "", fmt.Errorf("workflow window start must be before end (start=%s end=%s)", start.Format(time.RFC3339), end.Format(time.RFC3339))
-	}
-	return start.Format(time.RFC3339), end.Format(time.RFC3339), nil
-}
-
-func parseReportWindowBoundary(raw string, endBoundary bool) (time.Time, error) {
-	_ = endBoundary
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return time.Time{}, fmt.Errorf("empty boundary")
-	}
-	if parsed, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
-		return parsed.UTC(), nil
-	}
-	if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
-		return parsed.UTC(), nil
-	}
-	if parsed, err := time.Parse("2006-01-02", trimmed); err == nil {
-		return parsed.UTC(), nil
-	}
-	return time.Time{}, fmt.Errorf("unsupported time format %q (use RFC3339 or YYYY-MM-DD)", raw)
 }

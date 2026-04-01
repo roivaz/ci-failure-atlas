@@ -46,3 +46,24 @@ func TestSiteRunURLFromListenAddress(t *testing.T) {
 		})
 	}
 }
+
+func TestNewAppCommandIncludesExportSiteSubcommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := NewAppCommand()
+	if err != nil {
+		t.Fatalf("create app command: %v", err)
+	}
+
+	if got, want := cmd.Name(), "app"; got != want {
+		t.Fatalf("unexpected command name: got=%q want=%q", got, want)
+	}
+
+	exportCmd, _, err := cmd.Find([]string{"export-site"})
+	if err != nil {
+		t.Fatalf("find export-site subcommand: %v", err)
+	}
+	if exportCmd == nil || exportCmd.Name() != "export-site" {
+		t.Fatalf("expected export-site subcommand, got=%v", exportCmd)
+	}
+}

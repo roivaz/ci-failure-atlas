@@ -40,7 +40,8 @@ func main() {
 		cli.NewRunCommand,
 		cli.NewRunOnceCommand,
 		cli.NewSyncOnceCommand,
-		cli.NewReportCommand,
+		cli.NewSemanticCommand,
+		cli.NewAppCommand,
 		cli.NewMigrateCommand,
 	}
 

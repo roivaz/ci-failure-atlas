@@ -14,12 +14,10 @@ import (
 const defaultLookbackWeeks = 4
 
 type BuildOptions struct {
-	DataDirectory                string
-	CurrentSemanticSubdir        string
+	CurrentWeek                  string
 	GlobalSignatureLookbackWeeks int
-	ListSemanticWeeks            func(context.Context) ([]string, error)
+	ListWeeks                    func(context.Context) ([]string, error)
 	OpenStore                    func(context.Context, string) (storecontracts.Store, error)
-	ReadWindowMetadata           func(string) (WindowMetadata, bool, error)
 }
 
 type SignatureKey struct {
@@ -74,32 +72,20 @@ func (r *globalSignatureResolver) PresenceForPhase3Cluster(environment string, p
 }
 
 func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (GlobalSignatureResolver, error) {
-	currentSubdir := strings.TrimSpace(opts.CurrentSemanticSubdir)
-	if currentSubdir == "" {
+	currentWeekLabel := strings.TrimSpace(opts.CurrentWeek)
+	if currentWeekLabel == "" {
 		return &globalSignatureResolver{
 			byKey:              map[string]SignaturePresence{},
 			byPhase3ClusterKey: map[string]SignaturePresence{},
 		}, nil
 	}
 
-	currentWeek, ok := parseWeekStart(currentSubdir)
+	currentWeek, ok := parseWeekStart(currentWeekLabel)
 	if !ok {
 		return &globalSignatureResolver{
 			byKey:              map[string]SignaturePresence{},
 			byPhase3ClusterKey: map[string]SignaturePresence{},
 		}, nil
-	}
-
-	windowMetadataReader := opts.ReadWindowMetadata
-	if windowMetadataReader != nil {
-		if metadata, exists, err := windowMetadataReader(currentSubdir); err != nil {
-			return nil, fmt.Errorf("read current semantic window metadata: %w", err)
-		} else if exists && !isCanonicalSevenDayWindow(metadata) {
-			return &globalSignatureResolver{
-				byKey:              map[string]SignaturePresence{},
-				byPhase3ClusterKey: map[string]SignaturePresence{},
-			}, nil
-		}
 	}
 
 	lookbackWeeks := opts.GlobalSignatureLookbackWeeks
@@ -108,7 +94,7 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 	}
 	lookbackStart := currentWeek.AddDate(0, 0, -(lookbackWeeks * 7))
 
-	semanticWeeksLister := opts.ListSemanticWeeks
+	semanticWeeksLister := opts.ListWeeks
 	if semanticWeeksLister == nil {
 		return &globalSignatureResolver{
 			byKey:              map[string]SignaturePresence{},
@@ -144,15 +130,6 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 		}
 		if weekStart.Before(lookbackStart) {
 			continue
-		}
-		if windowMetadataReader != nil {
-			metadata, exists, metadataErr := windowMetadataReader(weekName)
-			if metadataErr != nil {
-				return nil, fmt.Errorf("read semantic window metadata for week %q: %w", weekName, metadataErr)
-			}
-			if !exists || !isCanonicalSevenDayWindow(metadata) {
-				continue
-			}
 		}
 
 		weekStore, err := storeOpener(ctx, weekName)

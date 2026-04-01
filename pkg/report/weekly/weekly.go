@@ -13,9 +13,10 @@ import (
 
 	"ci-failure-atlas/pkg/report/triagehtml"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
-	phase3engine "ci-failure-atlas/pkg/semantic/engine/phase3"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
+	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
+	postgresstore "ci-failure-atlas/pkg/store/postgres"
 )
 
 const (
@@ -47,8 +48,7 @@ type Options struct {
 	OutputPath           string
 	StartDate            string
 	TargetRate           float64
-	DataDirectory        string
-	SemanticSubdirectory string
+	Week                 string
 	HistoryHorizonWeeks  int
 	HistoryResolver      semhistory.GlobalSignatureResolver
 	Chrome               triagehtml.ReportChromeOptions
@@ -58,8 +58,7 @@ type validatedOptions struct {
 	OutputPath           string
 	StartDate            time.Time
 	TargetRate           float64
-	DataDirectory        string
-	SemanticSubdirectory string
+	Week                 string
 	HistoryHorizonWeeks  int
 	HistoryResolver      semhistory.GlobalSignatureResolver
 	Chrome               triagehtml.ReportChromeOptions
@@ -159,6 +158,10 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	return GenerateWithComparison(ctx, store, nil, opts)
 }
 
+func GenerateHTML(ctx context.Context, store storecontracts.Store, opts Options) (string, error) {
+	return GenerateHTMLWithComparison(ctx, store, nil, opts)
+}
+
 func GenerateWithComparison(
 	ctx context.Context,
 	store storecontracts.Store,
@@ -186,17 +189,19 @@ func GenerateWithComparison(
 		return err
 	}
 
-	currentSemantic, err := loadSemanticSnapshot(ctx, store)
+	currentWeekData, err := semanticquery.LoadWeekData(ctx, store, semanticquery.LoadWeekDataOptions{
+		IncludeRawFailures: true,
+	})
+	if err != nil {
+		return fmt.Errorf("load current semantic inputs: %w", err)
+	}
+	currentSemantic, err := loadSemanticSnapshot(currentWeekData)
 	if err != nil {
 		return fmt.Errorf("load current semantic snapshot: %w", err)
 	}
-	rawFailureRows, err := store.ListRawFailures(ctx)
-	if err != nil {
-		return fmt.Errorf("list raw failures: %w", err)
-	}
 	loadSignatureFullErrorSamplesByEnvironment(
 		currentDates,
-		rawFailureRows,
+		currentWeekData.RawFailures,
 		&currentSemantic,
 		weeklySignatureFullErrorExamples,
 	)
@@ -215,7 +220,11 @@ func GenerateWithComparison(
 	topSignaturesByEnv := rankTopSignaturesByEnvironment(currentSemantic, 0, 0)
 	var previousSemantic semanticSnapshot
 	if previousSemanticStore != nil {
-		previousSemantic, err = loadSemanticSnapshot(ctx, previousSemanticStore)
+		previousWeekData, loadErr := semanticquery.LoadWeekData(ctx, previousSemanticStore, semanticquery.LoadWeekDataOptions{})
+		if loadErr != nil {
+			return fmt.Errorf("load previous semantic inputs: %w", loadErr)
+		}
+		previousSemantic, err = loadSemanticSnapshot(previousWeekData)
 		if err != nil {
 			return fmt.Errorf("load previous semantic snapshot: %w", err)
 		}
@@ -223,8 +232,7 @@ func GenerateWithComparison(
 	historyResolver := validated.HistoryResolver
 	if historyResolver == nil {
 		historyResolver, err = semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-			DataDirectory:                validated.DataDirectory,
-			CurrentSemanticSubdir:        validated.SemanticSubdirectory,
+			CurrentWeek:                  validated.Week,
 			GlobalSignatureLookbackWeeks: validated.HistoryHorizonWeeks,
 		})
 		if err != nil {
@@ -255,6 +263,33 @@ func GenerateWithComparison(
 		return fmt.Errorf("write weekly report: %w", err)
 	}
 	return nil
+}
+
+func GenerateHTMLWithComparison(
+	ctx context.Context,
+	store storecontracts.Store,
+	previousSemanticStore storecontracts.Store,
+	opts Options,
+) (string, error) {
+	tmp, err := os.CreateTemp("", "cfa-weekly-*.html")
+	if err != nil {
+		return "", fmt.Errorf("create temp weekly output: %w", err)
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+
+	opts.OutputPath = tmpPath
+	if err := GenerateWithComparison(ctx, store, previousSemanticStore, opts); err != nil {
+		return "", err
+	}
+	content, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("read generated weekly output: %w", err)
+	}
+	return string(content), nil
 }
 
 func buildEnvReports(ctx context.Context, store storecontracts.Store, dates []string) ([]envReport, error) {
@@ -335,7 +370,7 @@ func loadMetricsDailyByEnvironmentDate(
 	return out, nil
 }
 
-func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (semanticSnapshot, error) {
+func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, error) {
 	out := semanticSnapshot{
 		ByEnvironment:                    map[string]semanticEnvSummary{},
 		ClusterSignaturesByEnv:           map[string][]topSignature{},
@@ -350,22 +385,13 @@ func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (sema
 		PhraseFullErrorsByEnv:            map[string]map[string][]string{},
 	}
 
-	sourceGlobalClusters, err := store.ListGlobalClusters(ctx)
-	if err != nil {
-		return out, err
-	}
-	phase3Links, err := store.ListPhase3Links(ctx)
-	if err != nil {
-		return out, err
-	}
+	sourceGlobalClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
 	linkedChildrenByMergedClusterKey, err := weeklyLinkedChildrenByMergedClusterKey(sourceGlobalClusters, phase3Links)
 	if err != nil {
 		return out, err
 	}
-	globalClusters, err := phase3engine.Merge(sourceGlobalClusters, phase3Links)
-	if err != nil {
-		return out, fmt.Errorf("merge phase3 linked global clusters: %w", err)
-	}
+	globalClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
 	for _, row := range globalClusters {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
@@ -538,25 +564,13 @@ func loadSemanticSnapshot(ctx context.Context, store storecontracts.Store) (sema
 		}
 	}
 
-	testClusters, err := store.ListTestClusters(ctx)
-	if err != nil {
-		return out, err
-	}
-	for _, row := range testClusters {
-		environment := normalizeReportEnvironment(row.Environment)
-		if environment == "" {
-			continue
-		}
+	for environment, testClusterCount := range weekData.TestClusterCountsByEnv {
 		summary := out.ByEnvironment[environment]
-		summary.TestClusters++
+		summary.TestClusters = testClusterCount
 		out.ByEnvironment[environment] = summary
 	}
 
-	reviewItems, err := store.ListReviewQueue(ctx)
-	if err != nil {
-		return out, err
-	}
-	for _, row := range reviewItems {
+	for _, row := range weekData.ReviewQueue {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
 			continue
@@ -585,6 +599,21 @@ func validateOptions(opts Options) (validatedOptions, error) {
 	if opts.TargetRate <= 0 || opts.TargetRate > 100 {
 		return validatedOptions{}, fmt.Errorf("invalid --target-rate %.2f (expected range: 0 < target <= 100)", opts.TargetRate)
 	}
+	startWeek, err := postgresstore.NormalizeWeek(startDateRaw)
+	if err != nil {
+		return validatedOptions{}, fmt.Errorf("invalid --start-date %q (expected YYYY-MM-DD Sunday start): %w", startDateRaw, err)
+	}
+	week := strings.TrimSpace(opts.Week)
+	if week == "" {
+		week = startWeek
+	}
+	normalizedWeek, err := postgresstore.NormalizeWeek(week)
+	if err != nil {
+		return validatedOptions{}, fmt.Errorf("invalid week %q: %w", week, err)
+	}
+	if normalizedWeek != startWeek {
+		return validatedOptions{}, fmt.Errorf("week %q must match --start-date %q", normalizedWeek, startWeek)
+	}
 	if opts.HistoryHorizonWeeks <= 0 {
 		opts.HistoryHorizonWeeks = 4
 	}
@@ -592,8 +621,7 @@ func validateOptions(opts Options) (validatedOptions, error) {
 		OutputPath:           outputPath,
 		StartDate:            startDate.UTC(),
 		TargetRate:           opts.TargetRate,
-		DataDirectory:        strings.TrimSpace(opts.DataDirectory),
-		SemanticSubdirectory: strings.TrimSpace(opts.SemanticSubdirectory),
+		Week:                 normalizedWeek,
 		HistoryHorizonWeeks:  opts.HistoryHorizonWeeks,
 		HistoryResolver:      opts.HistoryResolver,
 		Chrome:               opts.Chrome,

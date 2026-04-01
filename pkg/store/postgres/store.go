@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
+	"time"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
@@ -13,12 +13,12 @@ import (
 )
 
 type Options struct {
-	SemanticSubdirectory string
+	Week string
 }
 
 type Store struct {
-	pool                 *pgxpool.Pool
-	semanticSubdirectory string
+	pool *pgxpool.Pool
+	week string
 }
 
 var _ storecontracts.Store = (*Store)(nil)
@@ -27,13 +27,13 @@ func New(pool *pgxpool.Pool, opts Options) (*Store, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("postgres pool is required")
 	}
-	semanticSubdirectory, err := normalizeSemanticSubdirectory(opts.SemanticSubdirectory)
+	week, err := NormalizeWeek(opts.Week)
 	if err != nil {
-		return nil, fmt.Errorf("invalid semantic subdirectory: %w", err)
+		return nil, fmt.Errorf("invalid week: %w", err)
 	}
 	return &Store{
-		pool:                 pool,
-		semanticSubdirectory: semanticSubdirectory,
+		pool: pool,
+		week: week,
 	}, nil
 }
 
@@ -233,67 +233,11 @@ func (s *Store) ListDeadLetters(ctx context.Context, limit int) ([]storecontract
 	return s.listDeadLettersImpl(ctx, limit)
 }
 
-func (s *Store) UpsertPhase1Workset(ctx context.Context, rows []semanticcontracts.Phase1WorksetRecord) error {
+func (s *Store) ReplaceMaterializedWeek(ctx context.Context, week storecontracts.MaterializedWeek) error {
 	if err := requireContext(ctx); err != nil {
 		return err
 	}
-	return s.upsertPhase1WorksetImpl(ctx, rows)
-}
-
-func (s *Store) ListPhase1Workset(ctx context.Context) ([]semanticcontracts.Phase1WorksetRecord, error) {
-	if err := requireContext(ctx); err != nil {
-		return nil, err
-	}
-	return s.listPhase1WorksetImpl(ctx)
-}
-
-func (s *Store) UpsertPhase1Normalized(ctx context.Context, _ []semanticcontracts.Phase1NormalizedRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.unimplemented("UpsertPhase1Normalized")
-}
-
-func (s *Store) ListPhase1Normalized(ctx context.Context) ([]semanticcontracts.Phase1NormalizedRecord, error) {
-	if err := requireContext(ctx); err != nil {
-		return nil, err
-	}
-	return nil, s.unimplemented("ListPhase1Normalized")
-}
-
-func (s *Store) UpsertPhase1Assignments(ctx context.Context, _ []semanticcontracts.Phase1AssignmentRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.unimplemented("UpsertPhase1Assignments")
-}
-
-func (s *Store) ListPhase1Assignments(ctx context.Context) ([]semanticcontracts.Phase1AssignmentRecord, error) {
-	if err := requireContext(ctx); err != nil {
-		return nil, err
-	}
-	return nil, s.unimplemented("ListPhase1Assignments")
-}
-
-func (s *Store) UpsertTestClusters(ctx context.Context, rows []semanticcontracts.TestClusterRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.upsertTestClustersImpl(ctx, rows)
-}
-
-func (s *Store) ListTestClusters(ctx context.Context) ([]semanticcontracts.TestClusterRecord, error) {
-	if err := requireContext(ctx); err != nil {
-		return nil, err
-	}
-	return s.listTestClustersImpl(ctx)
-}
-
-func (s *Store) UpsertGlobalClusters(ctx context.Context, rows []semanticcontracts.GlobalClusterRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.upsertGlobalClustersImpl(ctx, rows)
+	return s.replaceMaterializedWeekImpl(ctx, week)
 }
 
 func (s *Store) ListGlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error) {
@@ -301,13 +245,6 @@ func (s *Store) ListGlobalClusters(ctx context.Context) ([]semanticcontracts.Glo
 		return nil, err
 	}
 	return s.listGlobalClustersImpl(ctx)
-}
-
-func (s *Store) UpsertReviewQueue(ctx context.Context, rows []semanticcontracts.ReviewItemRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.upsertReviewQueueImpl(ctx, rows)
 }
 
 func (s *Store) ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error) {
@@ -366,9 +303,6 @@ func (s *Store) ListPhase3Events(ctx context.Context, limit int) ([]semanticcont
 	return s.listPhase3EventsImpl(ctx, limit)
 }
 
-func (s *Store) unimplemented(method string) error {
-	return fmt.Errorf("%w: %s", ErrNotImplemented, method)
-}
 
 func requireContext(ctx context.Context) error {
 	if ctx == nil {
@@ -377,25 +311,20 @@ func requireContext(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func normalizeSemanticSubdirectory(value string) (string, error) {
+func NormalizeWeek(value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return "", nil
 	}
-	cleaned := filepath.Clean(trimmed)
-	if cleaned == "." {
-		return "", nil
+	parsed, err := time.Parse("2006-01-02", trimmed)
+	if err != nil {
+		return "", fmt.Errorf("must use YYYY-MM-DD format: %w", err)
 	}
-	if filepath.IsAbs(cleaned) {
-		return "", fmt.Errorf("must be a relative path")
+	if parsed.Format("2006-01-02") != trimmed {
+		return "", fmt.Errorf("must use YYYY-MM-DD format")
 	}
-	for _, part := range strings.Split(cleaned, string(filepath.Separator)) {
-		switch part {
-		case "", ".":
-			continue
-		case "..":
-			return "", fmt.Errorf("must not contain '..'")
-		}
+	if parsed.Weekday() != time.Sunday {
+		return "", fmt.Errorf("must start on Sunday")
 	}
-	return cleaned, nil
+	return parsed.UTC().Format("2006-01-02"), nil
 }
