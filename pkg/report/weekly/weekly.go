@@ -15,6 +15,7 @@ import (
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 )
@@ -42,26 +43,26 @@ const (
 	weeklySignatureFullErrorExamples = 3
 )
 
-var reportEnvironments = []string{"dev", "int", "stg", "prod"}
+var reportEnvironments = sourceoptions.SupportedEnvironments()
 
 type Options struct {
-	OutputPath           string
-	StartDate            string
-	TargetRate           float64
-	Week                 string
-	HistoryHorizonWeeks  int
-	HistoryResolver      semhistory.GlobalSignatureResolver
-	Chrome               triagehtml.ReportChromeOptions
+	OutputPath          string
+	StartDate           string
+	TargetRate          float64
+	Week                string
+	HistoryHorizonWeeks int
+	HistoryResolver     semhistory.GlobalSignatureResolver
+	Chrome              triagehtml.ReportChromeOptions
 }
 
 type validatedOptions struct {
-	OutputPath           string
-	StartDate            time.Time
-	TargetRate           float64
-	Week                 string
-	HistoryHorizonWeeks  int
-	HistoryResolver      semhistory.GlobalSignatureResolver
-	Chrome               triagehtml.ReportChromeOptions
+	OutputPath          string
+	StartDate           time.Time
+	TargetRate          float64
+	Week                string
+	HistoryHorizonWeeks int
+	HistoryResolver     semhistory.GlobalSignatureResolver
+	Chrome              triagehtml.ReportChromeOptions
 }
 
 type counts struct {
@@ -197,7 +198,7 @@ func GenerateWithComparison(
 	}
 	currentSemantic, err := loadSemanticSnapshot(currentWeekData)
 	if err != nil {
-		return fmt.Errorf("load current semantic snapshot: %w", err)
+		return fmt.Errorf("load current semantic week: %w", err)
 	}
 	loadSignatureFullErrorSamplesByEnvironment(
 		currentDates,
@@ -226,7 +227,7 @@ func GenerateWithComparison(
 		}
 		previousSemantic, err = loadSemanticSnapshot(previousWeekData)
 		if err != nil {
-			return fmt.Errorf("load previous semantic snapshot: %w", err)
+			return fmt.Errorf("load previous semantic week: %w", err)
 		}
 	}
 	historyResolver := validated.HistoryResolver
@@ -618,13 +619,13 @@ func validateOptions(opts Options) (validatedOptions, error) {
 		opts.HistoryHorizonWeeks = 4
 	}
 	return validatedOptions{
-		OutputPath:           outputPath,
-		StartDate:            startDate.UTC(),
-		TargetRate:           opts.TargetRate,
-		Week:                 normalizedWeek,
-		HistoryHorizonWeeks:  opts.HistoryHorizonWeeks,
-		HistoryResolver:      opts.HistoryResolver,
-		Chrome:               opts.Chrome,
+		OutputPath:          outputPath,
+		StartDate:           startDate.UTC(),
+		TargetRate:          opts.TargetRate,
+		Week:                normalizedWeek,
+		HistoryHorizonWeeks: opts.HistoryHorizonWeeks,
+		HistoryResolver:     opts.HistoryResolver,
+		Chrome:              opts.Chrome,
 	}, nil
 }
 
@@ -1057,7 +1058,7 @@ func buildHTML(
 		}
 		signatures := topSignaturesByEnv[environment]
 		if len(signatures) == 0 {
-			b.WriteString("      <p class=\"panel-empty\">No semantic signatures available for this environment in the selected semantic snapshot.</p>\n")
+			b.WriteString("      <p class=\"panel-empty\">No semantic signatures available for this environment in the selected semantic week.</p>\n")
 		} else {
 			triageRows := make([]triagehtml.SignatureRow, 0, len(signatures))
 			for _, item := range signatures {
@@ -1099,8 +1100,6 @@ func buildHTML(
 			} else {
 				b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
 					IncludeTrend:       true,
-					GitHubRepoOwner:    triagehtml.DefaultGitHubRepoOwner,
-					GitHubRepoName:     triagehtml.DefaultGitHubRepoName,
 					ImpactTotalJobs:    report.Totals.RunCount,
 					LoadedRowsLimit:    weeklySignatureLoadedRowsLimit,
 					InitialVisibleRows: weeklySignatureVisibleRows,

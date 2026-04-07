@@ -45,7 +45,7 @@ func TestHTTPClientListFailuresUsesDeterministicPaths(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := NewHTTPClient(server.URL + "/gcs")
+	client := NewHTTPClient(ClientOptions{ArtifactsBaseURL: server.URL + "/gcs"})
 	failures, err := client.ListFailures(context.Background(), "dev", "https://prow.ci.openshift.org/view/gs/test-bucket/job/12345")
 	if err != nil {
 		t.Fatalf("list failures: %v", err)
@@ -99,7 +99,7 @@ func TestHTTPClientListFailuresUsesEnvironmentMap(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := NewHTTPClient(server.URL + "/gcs")
+	client := NewHTTPClient(ClientOptions{ArtifactsBaseURL: server.URL + "/gcs"})
 	failures, err := client.ListFailures(context.Background(), "int", "https://prow.ci.openshift.org/view/gs/test-bucket/job/12345")
 	if err != nil {
 		t.Fatalf("list failures: %v", err)
@@ -120,7 +120,7 @@ func TestHTTPClientListFailuresUsesEnvironmentMap(t *testing.T) {
 func TestHTTPClientJunitPathsForEnvironment(t *testing.T) {
 	t.Parallel()
 
-	client := NewHTTPClient("https://example.com/gcs")
+	client := NewHTTPClient(ClientOptions{ArtifactsBaseURL: "https://example.com/gcs"})
 
 	tests := []struct {
 		environment string
@@ -158,7 +158,7 @@ func TestHTTPClientJunitPathsForEnvironment(t *testing.T) {
 func TestHTTPClientJunitPathsForPeriodicEnvironmentsExcludeProvisionArtifacts(t *testing.T) {
 	t.Parallel()
 
-	client := NewHTTPClient("https://example.com/gcs")
+	client := NewHTTPClient(ClientOptions{ArtifactsBaseURL: "https://example.com/gcs"})
 	for _, environment := range []string{"int", "stg", "prod"} {
 		paths := client.junitPathsForEnvironment(environment)
 		if len(paths) == 0 {
@@ -247,7 +247,7 @@ func TestHTTPClientListFailuresReturnsErrorWhenOneDeterministicPathFails(t *test
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := NewHTTPClient(server.URL + "/gcs")
+	client := NewHTTPClient(ClientOptions{ArtifactsBaseURL: server.URL + "/gcs"})
 	failures, err := client.ListFailures(context.Background(), "dev", "https://prow.ci.openshift.org/view/gs/test-bucket/job/999")
 	if err == nil {
 		t.Fatalf("expected error when one deterministic junit path fails, failures=%v", failures)
@@ -299,7 +299,7 @@ func TestHTTPClientListFailuresTreatsHTMLAsNotFoundWithoutRetry(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := NewHTTPClient(server.URL + "/gcs")
+	client := NewHTTPClient(ClientOptions{ArtifactsBaseURL: server.URL + "/gcs"})
 	failures, err := client.ListFailures(context.Background(), "dev", "https://prow.ci.openshift.org/view/gs/test-bucket/job/1001")
 	if err != nil {
 		t.Fatalf("expected HTML response to be treated as missing artifact, got err=%v", err)
@@ -351,7 +351,7 @@ func TestHTTPClientListFailuresTreatsUnparseableJUnitAsTerminalMissing(t *testin
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := NewHTTPClient(server.URL + "/gcs")
+	client := NewHTTPClient(ClientOptions{ArtifactsBaseURL: server.URL + "/gcs"})
 	failures, err := client.ListFailures(context.Background(), "dev", "https://prow.ci.openshift.org/view/gs/test-bucket/job/1002")
 	if err != nil {
 		t.Fatalf("expected unparseable junit content to be treated as missing artifact, got err=%v", err)
@@ -408,7 +408,7 @@ func TestHTTPClientListFailuresRetries429AndSucceeds(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := NewHTTPClient(server.URL + "/gcs")
+	client := NewHTTPClient(ClientOptions{ArtifactsBaseURL: server.URL + "/gcs"})
 	failures, err := client.ListFailures(context.Background(), "dev", "https://prow.ci.openshift.org/view/gs/test-bucket/job/1000")
 	if err != nil {
 		t.Fatalf("expected retries to eventually succeed, got err=%v", err)

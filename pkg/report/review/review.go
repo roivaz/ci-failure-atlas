@@ -18,6 +18,7 @@ import (
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 
@@ -1183,7 +1184,7 @@ func (h *handler) renderPage(snapshot weekSnapshot, notice string) string {
 	b.WriteString("\n  </style>\n</head>\n<body>\n")
 	b.WriteString("  <div class=\"phase3-shell\">\n")
 	b.WriteString("    <h1>Semantic Review (Phase3)</h1>\n")
-	b.WriteString("    <p class=\"muted\">Human-only linking with durable row-level anchors. Rebuild snapshots via CLI, then use Refresh here.</p>\n")
+	b.WriteString("    <p class=\"muted\">Human-only linking with durable row-level anchors. Rematerialize weeks via CLI, then use Refresh here.</p>\n")
 	b.WriteString(chrome)
 	b.WriteString("    <div class=\"phase3-top\">\n")
 	b.WriteString(fmt.Sprintf("      <div class=\"phase3-card\"><strong>Week</strong><br /><span class=\"muted\">%s</span></div>\n", html.EscapeString(snapshot.Week)))
@@ -1281,7 +1282,7 @@ func groupRowsByEnvironment(rows []triagehtml.SignatureRow) (map[string][]triage
 }
 
 func orderedReviewEnvironments(grouped map[string][]triagehtml.SignatureRow) []string {
-	fixedOrder := []string{"dev", "int", "stg", "prod"}
+	fixedOrder := sourceoptions.SupportedEnvironments()
 	set := map[string]struct{}{}
 	for environment := range grouped {
 		normalized := normalizeEnvironment(environment)
@@ -1891,4 +1892,3 @@ func environmentsForPhrase(set map[string]struct{}, currentEnvironment string) [
 	sort.Strings(out)
 	return out
 }
-

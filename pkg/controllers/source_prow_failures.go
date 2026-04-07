@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	"ci-failure-atlas/pkg/source/prowartifacts"
 	"ci-failure-atlas/pkg/store/contracts"
 
@@ -73,7 +74,11 @@ func newSourceProwFailuresController(logger logr.Logger, deps Dependencies, clie
 	}
 
 	if client == nil {
-		client = prowartifacts.NewHTTPClient(deps.Source.ProwArtifactsBaseURL)
+		client = prowartifacts.NewHTTPClient(prowartifacts.ClientOptions{
+			ArtifactsBaseURL:       deps.Source.ProwArtifactsBaseURL,
+			JUnitPathsByEnvMapping: sourceoptions.DeterministicJUnitPathsByEnvironment(),
+			DefaultJUnitPaths:      sourceoptions.DefaultJUnitPaths(),
+		})
 	}
 
 	return &sourceProwFailuresController{

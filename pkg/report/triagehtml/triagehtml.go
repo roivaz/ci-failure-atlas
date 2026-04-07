@@ -8,11 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
-)
 
-const (
-	DefaultGitHubRepoOwner = "Azure"
-	DefaultGitHubRepoName  = "ARO-HCP"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 )
 
 type RunReference struct {
@@ -1411,10 +1408,10 @@ func isSingleKnownPR(row SignatureRow) bool {
 func normalizedOptions(options TableOptions) TableOptions {
 	opts := options
 	if strings.TrimSpace(opts.GitHubRepoOwner) == "" {
-		opts.GitHubRepoOwner = DefaultGitHubRepoOwner
+		opts.GitHubRepoOwner = sourceoptions.DefaultGitHubRepoOwner()
 	}
 	if strings.TrimSpace(opts.GitHubRepoName) == "" {
-		opts.GitHubRepoName = DefaultGitHubRepoName
+		opts.GitHubRepoName = sourceoptions.DefaultGitHubRepoName()
 	}
 	if strings.TrimSpace(opts.FullErrorsSummaryLabel) == "" {
 		opts.FullErrorsSummaryLabel = "Full failure examples"

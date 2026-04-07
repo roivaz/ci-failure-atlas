@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-logr/logr"
 
-	factsnormalize "ci-failure-atlas/pkg/facts/normalize"
+	sourcenormalize "ci-failure-atlas/pkg/source/normalize"
 	"ci-failure-atlas/pkg/store/contracts"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -394,7 +394,7 @@ func buildRawFailureRecords(environment, runURL, occurredAt string, artifactRows
 
 	out := make([]contracts.RawFailureRecord, 0, len(ordered))
 	for _, row := range ordered {
-		normalizedText := factsnormalize.Text(row.FailureText)
+		normalizedText := sourcenormalize.Text(row.FailureText)
 		if normalizedText == "" {
 			continue
 		}
@@ -431,7 +431,7 @@ func buildSyntheticRawFailureRecord(environment, runURL, occurredAt string) cont
 	normalizedEnvironment := normalizeEnvironment(environment)
 	normalizedRunURL := strings.TrimSpace(runURL)
 	normalizedOccurredAt := strings.TrimSpace(occurredAt)
-	normalizedText := factsnormalize.Text(rawFailureSyntheticText)
+	normalizedText := sourcenormalize.Text(rawFailureSyntheticText)
 	rowID := sha256Hex(strings.Join([]string{
 		normalizedEnvironment,
 		normalizedRunURL,

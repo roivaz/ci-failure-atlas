@@ -1,189 +1,153 @@
 # CI Failure Atlas Design
 
 Status: current architecture snapshot  
-Last updated: 2026-03-16
+Last updated: 2026-04-01
 
 ## Purpose
 
-CI Failure Atlas ingests CI run/failure data, builds semantic failure clusters, and serves two operator-facing outputs:
+CI Failure Atlas ingests CI run/failure data, materializes semantic failure clusters by week, and serves operator-facing triage and review workflows.
 
-- a static triage site (weekly + global triage reports), and
-- a local review app for human Phase3 linking.
+The important architectural point is that the Go app + PostgreSQL runtime is no longer the target state. It is the current state.
 
-The current implementation is optimized for local operation and fast iteration while preserving deterministic outputs and a clean path to a database-backed architecture.
+## System Overview
 
-## Semantic Phase Definitions
+The runtime has three main planes:
 
-The semantic pipeline is split into three phases:
-
-1. **Phase1 (normalize + test-scoped clustering)**
-   - Builds enriched failure evidence from ingested facts.
-   - Normalizes failure text and classifies failures into deterministic test-scoped clusters.
-   - Produces semantic artifacts centered on `phase1_workset`, `test_clusters`, and `review_queue`.
-
-2. **Phase2 (global merge)**
-   - Merges phase1 test-scoped clusters into global failure signatures.
-   - Produces `global_clusters` as the main static triage input.
-
-3. **Phase3 (human linking and reconciliation)**
-   - Human-in-the-loop linking of semantically equivalent phase2 signatures.
-   - Uses stable row-level anchors (`environment + run_url + row_id`) and durable link state.
-   - Applied as a materialized view in the review app and during site build.
-
-## Current Architecture Snapshot
-
-The system has three active planes:
-
-1. **Controllers (ingestion + derived facts)**
-   - `source.sippy.runs`
-   - `source.sippy.tests-daily`
-   - `source.github.pull-requests`
-   - `source.prow.failures`
-   - `facts.runs`
-   - `facts.raw-failures`
-   - `metrics.rollup.daily`
-   - Runtime entrypoint: `cfa run`
+1. **Controllers**
+   - Ingest and derive facts into PostgreSQL.
+   - Main entrypoint: `cfa run`
+   - Supporting debug helpers: `cfa run-once`, `cfa sync-once`
 
 2. **Semantic materialization**
-   - Triggered by `cfa semantic materialize`
-   - `cfa app export-site` is export-only and reuses existing semantic snapshots
-   - Phase1 and phase2 execute in memory during semantic materialization
-   - Core semantic datasets persisted by default in PostgreSQL week partitions:
-     - `review_queue`
-     - `global_clusters`
-     - Phase3 issues/links/events
+   - Builds one semantic week from facts already stored in PostgreSQL.
+   - Main entrypoint: `cfa semantic materialize`
+   - Phase1 and phase2 execute in memory; persisted outputs are the user-facing week datasets.
 
 3. **Product surfaces**
-   - Static site:
-     - Weekly report (`weekly-metrics.html`)
-     - Global signature triage (`global-signature-triage.html`)
-  - Dynamic app:
-    - `cfa app` for weekly/global views plus Phase3 manual linking and cross-week propagation
+   - `cfa app` serves weekly/global/review views from PostgreSQL.
+   - `cfa app export-site` renders static HTML from the same PostgreSQL-backed data as a compatibility/export path.
 
-## Storage Model (Current)
+## Semantic Pipeline
 
-Storage is PostgreSQL-only behind interfaces in `pkg/store/contracts` and implemented in `pkg/store/postgres`.
+The semantic workflow is still logically split into three phases:
 
-Current runtime uses:
+1. **Phase1: normalize + test-scoped clustering**
+   - Build enriched failure evidence from facts.
+   - Normalize failure text.
+   - Classify failures into deterministic test-scoped clusters.
 
-- normalized facts/state tables (`cfa_runs`, `cfa_raw_failures`, `cfa_metrics_daily`, ...)
-- semantic/Phase3 tables with typed keys + JSONB payload
-- canonical Sunday-starting week partitioning in PostgreSQL semantic tables
+2. **Phase2: global merge**
+   - Merge test-scoped clusters into global failure signatures.
+   - Produce the global signature rows used by weekly/global triage and review flows.
 
-NDJSON is no longer a runtime store and is kept only as an import format for migration tooling.
+3. **Phase3: human linking and reconciliation**
+   - Operators link semantically equivalent signatures in the review UI.
+   - Durable row-level anchors remain `environment + run_url + row_id`.
+   - Stored Phase3 state is reapplied both in the live app and in exported static reports.
+
+## Storage Model
+
+PostgreSQL is the active runtime store behind `pkg/store/contracts` and `pkg/store/postgres`.
+
+The current persisted model is:
+
+- facts/state tables such as `cfa_runs`, `cfa_raw_failures`, `cfa_metrics_daily`, and related checkpoints/metadata
+- semantic week tables for:
+  - `cfa_sem_global_clusters`
+  - `cfa_sem_review_queue`
+- Phase3 state tables for:
+  - `cfa_phase3_issues`
+  - `cfa_phase3_links`
+  - `cfa_phase3_events`
+
+NDJSON is no longer part of the runtime architecture. It remains only as a legacy import format for `cfa migrate import-legacy-data`.
+
+## Semantic Week Contract
+
+The semantic partitioning contract is now explicit:
+
+- one stored semantic partition equals one UTC week
+- a week is keyed by a Sunday-starting `YYYY-MM-DD`
+- materialization replaces the full stored week, not partial per-environment slices
+- history/navigation in the app and reports is based on these stored weeks
+
+This removes the old ambiguity around generic semantic subdirectories or ad hoc materialization windows.
+
+## Local Runtime Model
+
+Local operation defaults to embedded PostgreSQL with initialization and migrations enabled. That is a development convenience, not the architecture itself.
+
+In practice:
+
+- `cfa run`, `cfa semantic materialize`, and `cfa app` all operate against PostgreSQL
+- embedded Postgres is the default local transport
+- switching to remote PostgreSQL is a configuration detail via `--storage.postgres.*`, not a different runtime model
+
+## Product Surfaces
+
+### Unified app
+
+`cfa app` is the primary operator surface:
+
+- weekly report view
+- global signature triage view
+- Phase3 review/linking workflow
+- cross-week history lookups based on stored semantic weeks
+
+### Static export
+
+`cfa app export-site` remains intentionally supported because current publishing still relies on uploading static HTML.
+
+Its role is now narrow:
+
+- read already-materialized PostgreSQL data
+- render weekly/global/archive HTML
+- hand off publishing to Azure CLI or another external script
+
+It is not the architectural center of the system and it is not responsible for running semantic materialization.
 
 ## Current Command Surface
 
-- `cfa run`  
-  Runs all controllers continuously.
+Primary commands:
 
-- `cfa semantic materialize`  
-  Materializes one semantic week from facts/state into PostgreSQL.
+- `cfa run`
+- `cfa semantic materialize`
+- `cfa app`
+- `cfa app export-site`
 
-- `cfa app`  
-  Runs the unified weekly/global/review application.
+Secondary maintenance/debug commands:
 
-- `cfa app export-site`  
-  Exports weekly/global/archive static HTML from existing semantic snapshots in PostgreSQL.
+- `cfa run-once`
+- `cfa sync-once`
+- `cfa migrate import-legacy-data`
 
-## Key Decisions (Current)
+## Key Design Decisions
 
-1. **Core product scope is intentionally narrow**: controllers + site weekly/global triage + review app.
-2. **Single history knob**: `history.weeks` is used consistently across ingestion/report history semantics.
-3. **Phase3 source of truth is durable links** (`cfa_phase3_links`), not pre-collapsed weekly assets.
-4. **Row-level anchors are mandatory** for Phase3 durability (`environment + run_url + row_id`).
-5. **Phase3 aggregation is a materialized view**:
-   - at runtime in review app,
-   - at build-time when generating site reports.
-6. **Performance-first pipeline**:
-   - in-memory phase1->phase2 in semantic materialization,
-   - bulk reads and in-memory indexing in hot report paths,
-   - reduced default semantic artifact persistence.
-7. **Storage remains abstracted by contracts**, preserving portability to future backends.
+1. **App + DB is the primary runtime**
+   - Reports, review, and exported HTML all read from PostgreSQL-backed state.
 
-## Future Architecture: Go Web App + PostgreSQL
+2. **Semantic weeks are canonical**
+   - The UI, materialization contract, and storage schema all agree on Sunday-starting week partitions.
 
-### Target State
+3. **Only user-facing semantic outputs are persisted by default**
+   - Phase1 internals remain in-memory unless future debugging needs justify additional persistence.
 
-- A single Go web application serving both:
-  - review workflows (human-in-the-loop linking and curation),
-  - triage/report views.
-- PostgreSQL as primary store for facts, semantic data, and Phase3 state.
-- NDJSON retained only as optional import/export or migration tooling.
+4. **Phase3 source of truth is durable link state**
+   - The review workflow stores stable issue/link/event records rather than collapsing decisions into transient export artifacts.
 
-### Steps Already Taken Toward This Direction
+5. **Static export is compatibility, not primary architecture**
+   - It exists to bridge current hosting, not to define the long-term runtime shape.
 
-1. **Store abstraction is in place** (`pkg/store/contracts`) and already exercised by controllers/reports.
-2. **Hot-path performance work is backend-agnostic**:
-   - N+1 reads removed in semantic/report paths,
-   - bulk preload/index patterns used in reports,
-   - in-memory semantic phase transitions in site build.
-3. **Semantic and Phase3 contracts are explicit and durable**, reducing coupling to NDJSON file mechanics.
-4. **Command surface trimmed to core operations**, reducing migration scope and maintenance load.
-5. **PostgreSQL Step 1 is implemented**:
-   - mixed-schema migrations (normalized facts/state + typed-key JSONB semantic/Phase3 tables),
-   - implemented currently used store methods,
-   - NDJSON/PostgreSQL parity tests for implemented store methods,
-   - command-path smoke tests for postgres-enabled `run`, `run-once`, `sync-once`, `workflow phase1`, and `workflow phase2`.
+## Next Milestone
 
-### Step 2 Refactor Design (Remove Phase1/Test-Cluster Persistence Dependency)
+The major remaining phase is hosted operation.
 
-Goal: make `phase1_workset` and `test_clusters` purely internal pipeline data, not required persisted assets.
+That work includes:
 
-1. **Runtime data flow**
-   - Keep phase1 outputs (`workset`, `normalized`, `assignments`, `test_clusters`) in memory for phase transitions.
-   - Persist only user-facing semantic outputs required by current product surfaces:
-     - `global_clusters`
-     - `review_queue`
-     - `window_metadata` (or equivalent metadata row)
-     - Phase3 state (`issues`, `links`, `events`).
+- deploying the Go app in a hosted environment
+- running against managed PostgreSQL
+- scheduling controllers and semantic materialization/backfill
+- adding auth, deployment automation, backups, and runbooks
+- deciding when storage-account-hosted static export can become optional instead of primary
 
-2. **Execution-path changes**
-   - `workflow phase1` becomes an internal computation stage in build/review-oriented flows.
-   - `workflow phase2` consumes in-memory phase1 outputs where possible (instead of re-reading `test_clusters` from store).
-   - Report and review generation read global-level semantic data + Phase3 links as the source of truth.
-
-3. **Debuggability without default persistence**
-   - Keep optional debug persistence for phase1 internals behind an explicit opt-in flag.
-   - Default mode remains minimal persistence to reduce IO/storage churn and simplify backend migration.
-
-4. **Acceptance criteria**
-   - Site build and review app behavior remain unchanged for operators.
-   - No required reads of `phase1_workset`/`test_clusters` in normal runtime paths.
-   - Parity tests continue to pass for persisted datasets.
-
-### Step 2 Contract + Schema Trim Plan (Minimal Semantic Persistence)
-
-1. **Contract trim (target)**
-   - Keep facts/state methods unchanged.
-   - Keep semantic/Phase3 methods needed by product surfaces:
-     - `Upsert/ListGlobalClusters`
-     - `Upsert/ListReviewQueue`
-     - `Upsert/ListPhase3Issues`
-     - `Upsert/ListPhase3Links`
-     - `DeletePhase3Links`
-     - `Append/ListPhase3Events`
-   - De-scope phase1 persistence methods from primary contract surface (or move to debug-only extension interface).
-
-2. **Schema trim (target)**
-   - Keep:
-     - `cfa_sem_global_clusters`
-     - `cfa_sem_review_queue`
-     - `cfa_phase3_issues`
-     - `cfa_phase3_links`
-     - `cfa_phase3_events`
-   - Transition phase1-oriented semantic tables (`cfa_sem_phase1_workset`, `cfa_sem_test_clusters`) to optional/debug lifecycle, then remove after migration window.
-
-3. **Migration sequence**
-   - Introduce code paths that no longer depend on phase1 persisted tables.
-   - Mark phase1 persistence methods as deprecated in contracts.
-   - Remove writes first, then remove reads, then apply schema-drop migration for deprecated tables.
-   - Keep explicit rollback window with compatibility checks before irreversible drops.
-
-### Next Steps (Concise)
-
-1. **Execute Step 2 refactor**: remove hard dependency on persisted `phase1_workset`/`test_clusters`.
-2. **Trim store contracts + schema** to minimal persisted semantic model.
-3. **Introduce service-layer APIs** for review and triage data access.
-4. **Move review UI to the Go web app runtime** and deprecate standalone local-only patterns.
-5. **Move static site generation to DB-backed reads** (or server-rendered equivalent), then phase out NDJSON as primary runtime storage.
+The architecture refactor is largely complete; the next work is operationalization.

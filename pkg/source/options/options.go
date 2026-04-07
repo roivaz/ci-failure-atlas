@@ -1,4 +1,4 @@
-package sourceoptions
+package options
 
 import (
 	"context"
@@ -9,26 +9,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var supportedEnvironments = []string{"dev", "int", "stg", "prod"}
-
-const defaultHistoryHorizonWeeks = 4
-
 func DefaultOptions() *RawOptions {
+	defaults := DefaultRuntimeDefaults()
 	return &RawOptions{
-		SippyBaseURL:         "https://sippy.dptools.openshift.org",
-		ProwArtifactsBaseURL: "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs",
-		Environments:         []string{"dev"},
-		SippyOrg:             "Azure",
-		SippyRepo:            "ARO-HCP",
-		SippyReleaseDev:      "Presubmits",
-		SippyReleaseInt:      "aro-integration",
-		SippyReleaseStg:      "aro-stage",
-		SippyReleaseProd:     "aro-production",
-		HistoryHorizonWeeks:  defaultHistoryHorizonWeeks,
+		SippyBaseURL:         defaults.SippyBaseURL,
+		ProwArtifactsBaseURL: defaults.ProwArtifactsBaseURL,
+		Environments:         append([]string(nil), defaults.DefaultEnvironments...),
+		SippyOrg:             defaults.SippyOrg,
+		SippyRepo:            defaults.SippyRepo,
+		SippyReleaseDev:      defaults.Environments["dev"].SippyRelease,
+		SippyReleaseInt:      defaults.Environments["int"].SippyRelease,
+		SippyReleaseStg:      defaults.Environments["stg"].SippyRelease,
+		SippyReleaseProd:     defaults.Environments["prod"].SippyRelease,
+		HistoryHorizonWeeks:  defaults.HistoryHorizonWeeks,
 	}
 }
 
 func BindSourceOptions(opts *RawOptions, cmd *cobra.Command) error {
+	allowedEnvironments := strings.Join(SupportedEnvironments(), ",")
 	cmd.Flags().StringVar(&opts.SippyBaseURL, "source.sippy.base-url", opts.SippyBaseURL, "Base URL for the Sippy API.")
 	cmd.Flags().StringVar(&opts.SippyOrg, "source.sippy.org", opts.SippyOrg, "Git organization filter used in Sippy queries.")
 	cmd.Flags().StringVar(&opts.SippyRepo, "source.sippy.repo", opts.SippyRepo, "Git repository filter used in Sippy queries.")
@@ -38,7 +36,7 @@ func BindSourceOptions(opts *RawOptions, cmd *cobra.Command) error {
 	cmd.Flags().StringVar(&opts.SippyReleaseProd, "source.sippy.release.prod", opts.SippyReleaseProd, "Sippy release value for the prod environment.")
 	cmd.Flags().IntVar(&opts.HistoryHorizonWeeks, "history.weeks", opts.HistoryHorizonWeeks, "Number of weeks to look back for ingestion, reconciliation, and report history.")
 	cmd.Flags().StringVar(&opts.ProwArtifactsBaseURL, "source.prow-artifacts.base-url", opts.ProwArtifactsBaseURL, "Base URL for Prow/GCS artifacts.")
-	cmd.Flags().StringSliceVar(&opts.Environments, "source.envs", opts.Environments, "Environments to ingest from (allowed: dev,int,stg,prod).")
+	cmd.Flags().StringSliceVar(&opts.Environments, "source.envs", opts.Environments, "Environments to ingest from (allowed: "+allowedEnvironments+").")
 	return nil
 }
 
@@ -106,6 +104,7 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 		return nil, fmt.Errorf("the history horizon must be > 0 weeks (set --history.weeks)")
 	}
 
+	supportedEnvironments := SupportedEnvironments()
 	envs := normalizeEnvironments(o.Environments)
 	if len(envs) == 0 {
 		return nil, fmt.Errorf("at least one environment must be provided with --source.envs (allowed: %s)", strings.Join(supportedEnvironments, ","))
@@ -159,7 +158,7 @@ func normalizeEnvironments(raw []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(raw))
 	for _, value := range raw {
-		normalized := strings.ToLower(strings.TrimSpace(value))
+		normalized := normalizeEnvironmentName(value)
 		if normalized == "" {
 			continue
 		}

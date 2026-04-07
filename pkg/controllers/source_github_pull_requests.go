@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr"
 
 	githubsource "ci-failure-atlas/pkg/source/githubpullrequests"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	"ci-failure-atlas/pkg/store/contracts"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -69,7 +70,7 @@ func newSourceGitHubPullRequestsController(
 			continue
 		}
 		validEnvironmentCount++
-		if supportsPRLookupForEnvironment(normalized) {
+		if sourceoptions.SupportsPRLookupForEnvironment(normalized) {
 			prLookupEnabled = true
 		}
 	}

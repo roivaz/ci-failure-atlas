@@ -1,4 +1,4 @@
-package testrules
+package lanes
 
 import (
 	"regexp"
@@ -18,9 +18,9 @@ type TestFilter struct {
 	TestNameRegex string
 }
 
-type testRule struct {
-	filter TestFilter
-	lane   Lane
+type Rule struct {
+	Filter TestFilter
+	Lane   Lane
 }
 
 type compiledTestRule struct {
@@ -29,61 +29,80 @@ type compiledTestRule struct {
 	lane          Lane
 }
 
-// TODO: Wire these rules via CLI flags/config file.
-var testRulesByEnvironment = map[string][]testRule{
+// defaultRulesByEnvironment is the built-in lane/filter rule set shared by
+// ingestion, metrics rollups, and semantic/report consumers.
+var defaultRulesByEnvironment = map[string][]Rule{
 	"dev": {
 		{
-			filter: TestFilter{
+			Filter: TestFilter{
 				TestSuite: "rp-api-compat-all/parallel",
 			},
-			lane: LaneE2E,
+			Lane: LaneE2E,
 		},
 		{
-			filter: TestFilter{
+			Filter: TestFilter{
 				TestSuite:     "step graph",
 				TestNameRegex: `Microsoft\.Azure\.ARO\.HCP`,
 			},
-			lane: LaneProvision,
+			Lane: LaneProvision,
 		},
 	},
 	"int": {
 		{
-			filter: TestFilter{
+			Filter: TestFilter{
 				TestSuite: "integration/parallel",
 			},
-			lane: LaneE2E,
+			Lane: LaneE2E,
 		},
 	},
 	"stg": {
 		{
-			filter: TestFilter{
+			Filter: TestFilter{
 				TestSuite: "stage/parallel",
 			},
-			lane: LaneE2E,
+			Lane: LaneE2E,
 		},
 	},
 	"prod": {
 		{
-			filter: TestFilter{
+			Filter: TestFilter{
 				TestSuite: "prod/parallel",
 			},
-			lane: LaneE2E,
+			Lane: LaneE2E,
 		},
 	},
 }
 
-var compiledRulesByEnvironment = compileRulesByEnvironment(testRulesByEnvironment)
+var compiledRulesByEnvironment = compileRulesByEnvironment(defaultRulesByEnvironment)
+
+func DefaultRulesByEnvironment() map[string][]Rule {
+	out := make(map[string][]Rule, len(defaultRulesByEnvironment))
+	for environment, rules := range defaultRulesByEnvironment {
+		cloned := make([]Rule, 0, len(rules))
+		for _, rule := range rules {
+			cloned = append(cloned, Rule{
+				Filter: TestFilter{
+					TestSuite:     strings.TrimSpace(rule.Filter.TestSuite),
+					TestNameRegex: strings.TrimSpace(rule.Filter.TestNameRegex),
+				},
+				Lane: normalizeLane(rule.Lane),
+			})
+		}
+		out[environment] = cloned
+	}
+	return out
+}
 
 func FiltersForEnvironment(environment string) ([]TestFilter, bool) {
-	rules, ok := testRulesByEnvironment[normalizeEnvironment(environment)]
+	rules, ok := defaultRulesByEnvironment[normalizeEnvironment(environment)]
 	if !ok || len(rules) == 0 {
 		return nil, false
 	}
 	out := make([]TestFilter, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, TestFilter{
-			TestSuite:     strings.TrimSpace(rule.filter.TestSuite),
-			TestNameRegex: strings.TrimSpace(rule.filter.TestNameRegex),
+			TestSuite:     strings.TrimSpace(rule.Filter.TestSuite),
+			TestNameRegex: strings.TrimSpace(rule.Filter.TestNameRegex),
 		})
 	}
 	return out, true
@@ -113,7 +132,7 @@ func ClassifyLane(environment string, testSuite string, testName string) Lane {
 	return LaneUnknown
 }
 
-func compileRulesByEnvironment(raw map[string][]testRule) map[string][]compiledTestRule {
+func compileRulesByEnvironment(raw map[string][]Rule) map[string][]compiledTestRule {
 	out := map[string][]compiledTestRule{}
 	for environment, rules := range raw {
 		normalizedEnvironment := normalizeEnvironment(environment)
@@ -122,17 +141,17 @@ func compileRulesByEnvironment(raw map[string][]testRule) map[string][]compiledT
 		}
 		compiled := make([]compiledTestRule, 0, len(rules))
 		for _, rule := range rules {
-			suite := strings.TrimSpace(rule.filter.TestSuite)
+			suite := strings.TrimSpace(rule.Filter.TestSuite)
 			if suite == "" {
 				continue
 			}
-			normalizedLane := normalizeLane(rule.lane)
+			normalizedLane := normalizeLane(rule.Lane)
 			if normalizedLane == LaneUnknown {
 				continue
 			}
 
 			var testNameRegex *regexp.Regexp
-			if pattern := strings.TrimSpace(rule.filter.TestNameRegex); pattern != "" {
+			if pattern := strings.TrimSpace(rule.Filter.TestNameRegex); pattern != "" {
 				testNameRegex = regexp.MustCompile(pattern)
 			}
 			compiled = append(compiled, compiledTestRule{

@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-logr/logr"
 
+	sourcelanes "ci-failure-atlas/pkg/source/lanes"
 	"ci-failure-atlas/pkg/store/contracts"
-	"ci-failure-atlas/pkg/testrules"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -435,10 +435,10 @@ func classifyMetricLaneFamily(environment string, row contracts.RawFailureRecord
 		return laneFamilyCIInfra
 	}
 
-	switch testrules.ClassifyLane(environment, row.TestSuite, row.TestName) {
-	case testrules.LaneProvision:
+	switch sourcelanes.ClassifyLane(environment, row.TestSuite, row.TestName) {
+	case sourcelanes.LaneProvision:
 		return laneFamilyProvision
-	case testrules.LaneE2E:
+	case sourcelanes.LaneE2E:
 		return laneFamilyE2E
 	default:
 		return laneFamilyCIInfra

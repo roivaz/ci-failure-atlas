@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	sippysource "ci-failure-atlas/pkg/source/sippy"
 	"ci-failure-atlas/pkg/store/contracts"
 
@@ -22,14 +23,6 @@ const (
 	sourceSippyRunsDefaultPageSize   = 1000
 	sourceSippyRunsReplayWindow      = 3 * time.Hour
 )
-
-// TODO: Wire this map via CLI flags/config file (same for deterministic JUnit path mapping).
-var sippyJobNameByEnvironment = map[string]string{
-	"dev":  "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
-	"int":  "periodic-ci-Azure-ARO-HCP-main-periodic-integration-e2e-parallel",
-	"stg":  "periodic-ci-Azure-ARO-HCP-main-periodic-stage-e2e-parallel",
-	"prod": "periodic-ci-Azure-ARO-HCP-main-periodic-prod-e2e-parallel",
-}
 
 type sourceSippyRunsController struct {
 	logger            logr.Logger
@@ -62,8 +55,8 @@ func newSourceSippyRunsController(logger logr.Logger, deps Dependencies, client 
 		if strings.TrimSpace(deps.Source.SippyReleaseByEnv[env]) == "" {
 			return nil, fmt.Errorf("source.sippy.runs: missing sippy release mapping for environment %q", env)
 		}
-		if _, err := sippyJobNameForEnvironment(env); err != nil {
-			return nil, fmt.Errorf("source.sippy.runs: %w", err)
+		if _, ok := sourceoptions.SippyJobNameForEnvironment(env); !ok {
+			return nil, fmt.Errorf("source.sippy.runs: missing sippy job mapping for environment %q", normalizeEnvironment(env))
 		}
 	}
 
@@ -187,11 +180,11 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 	if err != nil {
 		return err
 	}
-	jobName, err := sippyJobNameForEnvironment(environment)
-	if err != nil {
-		return err
+	jobName, ok := sourceoptions.SippyJobNameForEnvironment(environment)
+	if !ok {
+		return fmt.Errorf("missing sippy job mapping for environment %q", normalizeEnvironment(environment))
 	}
-	usePRRepoFilter := supportsPRLookupForEnvironment(environment)
+	usePRRepoFilter := sourceoptions.SupportsPRLookupForEnvironment(environment)
 	org := c.deps.Source.SippyOrg
 	repo := c.deps.Source.SippyRepo
 	if !usePRRepoFilter {
@@ -287,11 +280,11 @@ func (c *sourceSippyRunsController) syncSingleRunByKey(ctx context.Context, key 
 	if err != nil {
 		return err
 	}
-	jobName, err := sippyJobNameForEnvironment(environment)
-	if err != nil {
-		return err
+	jobName, ok := sourceoptions.SippyJobNameForEnvironment(environment)
+	if !ok {
+		return fmt.Errorf("missing sippy job mapping for environment %q", normalizeEnvironment(environment))
 	}
-	usePRRepoFilter := supportsPRLookupForEnvironment(environment)
+	usePRRepoFilter := sourceoptions.SupportsPRLookupForEnvironment(environment)
 	org := c.deps.Source.SippyOrg
 	repo := c.deps.Source.SippyRepo
 	if !usePRRepoFilter {
@@ -342,18 +335,6 @@ func (c *sourceSippyRunsController) releaseForEnvironment(environment string) (s
 		return "", fmt.Errorf("missing sippy release for environment %q", normalized)
 	}
 	return release, nil
-}
-
-func sippyJobNameForEnvironment(environment string) (string, error) {
-	normalized := normalizeEnvironment(environment)
-	if normalized == "" {
-		return "", fmt.Errorf("empty environment")
-	}
-	jobName := strings.TrimSpace(sippyJobNameByEnvironment[normalized])
-	if jobName == "" {
-		return "", fmt.Errorf("missing sippy job mapping for environment %q", normalized)
-	}
-	return jobName, nil
 }
 
 func (c *sourceSippyRunsController) getCheckpointTime(ctx context.Context, environment string) (time.Time, error) {
@@ -413,7 +394,7 @@ func filterRunsByJobName(runs []sippysource.JobRun, jobName string) []sippysourc
 
 func mapToRunRecord(environment string, run sippysource.JobRun, existing contracts.RunRecord, existingFound bool) contracts.RunRecord {
 	normalizedPRSHA := strings.TrimSpace(run.PRSHA)
-	periodicMergedCodeEnvironment := !supportsPRLookupForEnvironment(environment)
+	periodicMergedCodeEnvironment := !sourceoptions.SupportsPRLookupForEnvironment(environment)
 	record := contracts.RunRecord{
 		Environment: normalizeEnvironment(environment),
 		RunURL:      strings.TrimSpace(run.RunURL),
@@ -444,10 +425,6 @@ func mapToRunRecord(environment string, run sippysource.JobRun, existing contrac
 		record.OccurredAt = run.StartedAt.UTC().Format(time.RFC3339Nano)
 	}
 	return record
-}
-
-func supportsPRLookupForEnvironment(environment string) bool {
-	return normalizeEnvironment(environment) == "dev"
 }
 
 func findRunByURL(runs []sippysource.JobRun, runURL string) (sippysource.JobRun, bool) {

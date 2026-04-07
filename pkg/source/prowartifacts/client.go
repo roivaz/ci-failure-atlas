@@ -13,37 +13,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 )
 
 const (
-	defaultArtifactsBaseURL = "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs"
-	defaultHTTPTimeout      = 90 * time.Second
+	defaultHTTPTimeout = 90 * time.Second
 )
-
-// TODO: Wire this map via CLI flags/config file (same for env-to-Sippy-job mapping).
-var deterministicJUnitPathsByEnvironment = map[string][]string{
-	"dev": {
-		"artifacts/e2e-parallel/aro-hcp-provision-environment/artifacts/junit_entrypoint.xml",
-		"prowjob_junit.xml",
-		"artifacts/e2e-parallel/aro-hcp-test-local/artifacts/junit.xml",
-	},
-	"int": {
-		"artifacts/integration-e2e-parallel/aro-hcp-test-persistent/artifacts/junit.xml",
-		"prowjob_junit.xml",
-	},
-	"stg": {
-		"artifacts/stage-e2e-parallel/aro-hcp-test-persistent/artifacts/junit.xml",
-		"prowjob_junit.xml",
-	},
-	"prod": {
-		"artifacts/prod-e2e-parallel/aro-hcp-test-persistent/artifacts/junit.xml",
-		"prowjob_junit.xml",
-	},
-}
-
-var defaultDeterministicJUnitPaths = []string{
-	"prowjob_junit.xml",
-}
 
 type Failure struct {
 	ArtifactURL string
@@ -56,23 +32,39 @@ type Client interface {
 	ListFailures(ctx context.Context, environment string, runURL string) ([]Failure, error)
 }
 
+type ClientOptions struct {
+	ArtifactsBaseURL       string
+	JUnitPathsByEnvMapping map[string][]string
+	DefaultJUnitPaths      []string
+}
+
 type HTTPClient struct {
 	artifactsBaseURL       string
 	httpClient             *http.Client
 	junitPathsByEnvMapping map[string][]string
+	defaultJUnitPaths      []string
 }
 
-func NewHTTPClient(artifactsBaseURL string) *HTTPClient {
-	baseURL := strings.TrimSpace(artifactsBaseURL)
+func NewHTTPClient(options ClientOptions) *HTTPClient {
+	baseURL := strings.TrimSpace(options.ArtifactsBaseURL)
 	if baseURL == "" {
-		baseURL = defaultArtifactsBaseURL
+		baseURL = sourceoptions.DefaultRuntimeDefaults().ProwArtifactsBaseURL
+	}
+	junitPathsByEnvMapping := options.JUnitPathsByEnvMapping
+	if len(junitPathsByEnvMapping) == 0 {
+		junitPathsByEnvMapping = sourceoptions.DeterministicJUnitPathsByEnvironment()
+	}
+	defaultJUnitPaths := normalizeDeterministicPaths(options.DefaultJUnitPaths)
+	if len(defaultJUnitPaths) == 0 {
+		defaultJUnitPaths = normalizeDeterministicPaths(sourceoptions.DefaultJUnitPaths())
 	}
 	return &HTTPClient{
 		artifactsBaseURL: strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{
 			Timeout: defaultHTTPTimeout,
 		},
-		junitPathsByEnvMapping: copyJUnitPathMap(deterministicJUnitPathsByEnvironment),
+		junitPathsByEnvMapping: copyJUnitPathMap(junitPathsByEnvMapping),
+		defaultJUnitPaths:      append([]string(nil), defaultJUnitPaths...),
 	}
 }
 
@@ -149,7 +141,7 @@ func (c *HTTPClient) junitPathsForEnvironment(environment string) []string {
 			return paths
 		}
 	}
-	return normalizeDeterministicPaths(defaultDeterministicJUnitPaths)
+	return append([]string(nil), c.defaultJUnitPaths...)
 }
 
 func (c *HTTPClient) artifactURL(prefix string, relPath string) string {

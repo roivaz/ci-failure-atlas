@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	sourcelanes "ci-failure-atlas/pkg/source/lanes"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
-	"ci-failure-atlas/pkg/testrules"
 )
 
 type EnrichedFailure struct {
@@ -144,7 +144,7 @@ func BuildEnrichedFailures(ctx context.Context, store storecontracts.Store, opts
 			RowID:          normalizedRow.RowID,
 			OccurredAt:     occurredAt,
 			JobName:        strings.TrimSpace(normalizedRun.JobName),
-			Lane:           string(testrules.ClassifyLane(environment, normalizedRow.TestSuite, normalizedRow.TestName)),
+			Lane:           string(sourcelanes.ClassifyLane(environment, normalizedRow.TestSuite, normalizedRow.TestName)),
 			PRNumber:       normalizedRun.PRNumber,
 			PostGoodCommit: normalizedRun.PostGoodCommit,
 			TestName:       normalizedRow.TestName,

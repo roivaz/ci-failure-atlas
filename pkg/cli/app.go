@@ -20,10 +20,7 @@ func NewAppCommand() (*cobra.Command, error) {
 	listen := "127.0.0.1:8082"
 	defaultWeek := ""
 	historyWeeks := 4
-	servePostgresRaw := postgresoptions.DefaultOptions()
-	servePostgresRaw.Enabled = true
-	servePostgresRaw.Embedded = true
-	servePostgresRaw.Initialize = true
+	servePostgresRaw := postgresoptions.DefaultCLIOptions()
 
 	cmd := &cobra.Command{
 		Use:           "app",
@@ -31,11 +28,7 @@ func NewAppCommand() (*cobra.Command, error) {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			postgresValidated, err := servePostgresRaw.Validate()
-			if err != nil {
-				return err
-			}
-			postgresCompleted, err := postgresValidated.Complete(cmd.Context())
+			postgresCompleted, err := completePostgresForCommand(cmd.Context(), servePostgresRaw)
 			if err != nil {
 				return err
 			}
@@ -90,19 +83,12 @@ func NewAppCommand() (*cobra.Command, error) {
 
 	exportSiteRoot := "site"
 	exportHistoryWeeks := 4
-	exportPostgresRaw := postgresoptions.DefaultOptions()
-	exportPostgresRaw.Enabled = true
-	exportPostgresRaw.Embedded = true
-	exportPostgresRaw.Initialize = true
+	exportPostgresRaw := postgresoptions.DefaultCLIOptions()
 	exportSiteCmd := &cobra.Command{
 		Use:   "export-site",
-		Short: "Export static HTML from existing semantic snapshots in PostgreSQL.",
+		Short: "Export static HTML from existing semantic weeks in PostgreSQL.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			postgresValidated, err := exportPostgresRaw.Validate()
-			if err != nil {
-				return err
-			}
-			postgresCompleted, err := postgresValidated.Complete(cmd.Context())
+			postgresCompleted, err := completePostgresForCommand(cmd.Context(), exportPostgresRaw)
 			if err != nil {
 				return err
 			}

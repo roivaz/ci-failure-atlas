@@ -1,4 +1,4 @@
-package sourceoptions
+package options
 
 import (
 	"context"

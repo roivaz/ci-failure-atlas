@@ -1,4 +1,4 @@
-package testrules
+package lanes
 
 import "testing"
 

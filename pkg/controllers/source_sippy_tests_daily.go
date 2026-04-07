@@ -11,9 +11,9 @@ import (
 
 	"github.com/go-logr/logr"
 
+	sourcelanes "ci-failure-atlas/pkg/source/lanes"
 	sippysource "ci-failure-atlas/pkg/source/sippy"
 	"ci-failure-atlas/pkg/store/contracts"
-	"ci-failure-atlas/pkg/testrules"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -376,7 +376,7 @@ func sippyTestsDailyKey(environment string, date string) string {
 func buildEnvironmentTestFilters(enabledEnvironments map[string]struct{}) (map[string][]compiledTestFilter, error) {
 	out := map[string][]compiledTestFilter{}
 	for environment := range enabledEnvironments {
-		rawFilters, ok := testrules.FiltersForEnvironment(environment)
+		rawFilters, ok := sourcelanes.FiltersForEnvironment(environment)
 		if !ok || len(rawFilters) == 0 {
 			return nil, fmt.Errorf("source.sippy.tests-daily: missing test filter map for environment %q", environment)
 		}

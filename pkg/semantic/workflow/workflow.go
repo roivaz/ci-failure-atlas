@@ -12,10 +12,11 @@ import (
 	phase1engine "ci-failure-atlas/pkg/semantic/engine/phase1"
 	phase2engine "ci-failure-atlas/pkg/semantic/engine/phase2"
 	semanticinput "ci-failure-atlas/pkg/semantic/input"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
-var SupportedEnvironments = []string{"dev", "int", "stg", "prod"}
+var supportedEnvironments = sourceoptions.SupportedEnvironments()
 
 type RunOptions struct {
 	Environments []string
@@ -59,8 +60,8 @@ func NormalizeEnvironments(raw []string) ([]string, map[string]struct{}, error) 
 		if normalized == "" {
 			continue
 		}
-		if !slices.Contains(SupportedEnvironments, normalized) {
-			return nil, nil, fmt.Errorf("unsupported environment %q (allowed: %s)", value, strings.Join(SupportedEnvironments, ","))
+		if !slices.Contains(supportedEnvironments, normalized) {
+			return nil, nil, fmt.Errorf("unsupported environment %q (allowed: %s)", value, strings.Join(supportedEnvironments, ","))
 		}
 		if _, exists := set[normalized]; exists {
 			continue
@@ -69,7 +70,7 @@ func NormalizeEnvironments(raw []string) ([]string, map[string]struct{}, error) 
 		out = append(out, normalized)
 	}
 	if len(out) == 0 {
-		return nil, nil, fmt.Errorf("at least one environment must be provided (allowed: %s)", strings.Join(SupportedEnvironments, ","))
+		return nil, nil, fmt.Errorf("at least one environment must be provided (allowed: %s)", strings.Join(supportedEnvironments, ","))
 	}
 	sort.Strings(out)
 	return out, set, nil
@@ -166,7 +167,7 @@ func MaterializeWeek(ctx context.Context, store storecontracts.Store, weekStart 
 	}
 	weekEnd := normalizedWeekStart.AddDate(0, 0, 7)
 	result, err := Run(ctx, store, RunOptions{
-		Environments: append([]string(nil), SupportedEnvironments...),
+		Environments: append([]string(nil), supportedEnvironments...),
 		WindowStart:  &normalizedWeekStart,
 		WindowEnd:    &weekEnd,
 	})
@@ -184,7 +185,7 @@ func MaterializeWeek(ctx context.Context, store storecontracts.Store, weekStart 
 
 func resolveEnvironmentSet(raw []string) ([]string, map[string]struct{}, error) {
 	if len(raw) == 0 {
-		raw = SupportedEnvironments
+		raw = supportedEnvironments
 	}
 	return NormalizeEnvironments(raw)
 }

@@ -19,32 +19,19 @@ import (
 
 func NewMigrateCommand() (*cobra.Command, error) {
 	dataDirectory := "data"
-	postgresRaw := postgresoptions.DefaultOptions()
-	postgresRaw.Enabled = true
-	postgresRaw.Initialize = true
+	postgresRaw := postgresoptions.DefaultCLIOptions()
+	postgresRaw.Embedded = false
 
 	importCmd := &cobra.Command{
 		Use:     "import-legacy-data",
 		Aliases: []string{"ndjson-to-postgres"},
 		Short:   "Import legacy facts/state snapshots into PostgreSQL.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			postgresValidated, err := postgresRaw.Validate()
-			if err != nil {
-				return err
-			}
-			if !postgresValidated.Enabled {
-				return fmt.Errorf("--storage.postgres.enabled must be true")
-			}
-			postgresCompleted, err := postgresValidated.Complete(cmd.Context())
+			postgresCompleted, store, err := openPostgresStoreForCommand(cmd.Context(), postgresRaw, postgresstore.Options{})
 			if err != nil {
 				return err
 			}
 			defer postgresCompleted.Cleanup()
-
-			store, err := postgresstore.New(postgresCompleted.Connection, postgresstore.Options{})
-			if err != nil {
-				return fmt.Errorf("create postgres store: %w", err)
-			}
 			defer func() {
 				_ = store.Close()
 			}()

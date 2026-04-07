@@ -35,6 +35,14 @@ func DefaultOptions() *RawOptions {
 	}
 }
 
+func DefaultCLIOptions() *RawOptions {
+	raw := DefaultOptions()
+	raw.Enabled = true
+	raw.Embedded = true
+	raw.Initialize = true
+	return raw
+}
+
 func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 	cmd.Flags().BoolVar(&opts.Enabled, "storage.postgres.enabled", opts.Enabled, "Enable PostgreSQL storage backend.")
 	cmd.Flags().BoolVar(&opts.Embedded, "storage.postgres.embedded", opts.Embedded, "Run an embedded Postgres database instead of connecting to a remote instance.")
@@ -72,13 +80,13 @@ type RawOptions struct {
 
 type validatedOptions struct {
 	*RawOptions
-	EmbeddedDataDir      string
-	EmbeddedBinaryDir    string
-	Hostname             string
-	User                 string
-	Password             string
-	Database             string
-	SSLMode              string
+	EmbeddedDataDir   string
+	EmbeddedBinaryDir string
+	Hostname          string
+	User              string
+	Password          string
+	Database          string
+	SSLMode           string
 }
 
 type ValidatedOptions struct {
@@ -151,14 +159,14 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 
 	return &ValidatedOptions{
 		validatedOptions: &validatedOptions{
-			RawOptions:           o,
-			EmbeddedDataDir:      embeddedDataDir,
-			EmbeddedBinaryDir:    embeddedBinaryDir,
-			Hostname:             hostname,
-			User:                 user,
-			Password:             password,
-			Database:             database,
-			SSLMode:              sslMode,
+			RawOptions:        o,
+			EmbeddedDataDir:   embeddedDataDir,
+			EmbeddedBinaryDir: embeddedBinaryDir,
+			Hostname:          hostname,
+			User:              user,
+			Password:          password,
+			Database:          database,
+			SSLMode:           sslMode,
 		},
 	}, nil
 }
@@ -293,4 +301,3 @@ func buildConnectionURL(user, password, host string, port int, database, sslMode
 	u.RawQuery = query.Encode()
 	return u.String(), nil
 }
-

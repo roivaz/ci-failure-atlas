@@ -9,15 +9,14 @@ import (
 
 	"ci-failure-atlas/pkg/report/triagehtml"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 )
 
-var triageEnvironmentOrder = []string{"dev", "int", "stg", "prod"}
+var triageEnvironmentOrder = sourceoptions.SupportedEnvironments()
 
 const (
-	defaultGitHubRepoOwner = "Azure"
-	defaultGitHubRepoName  = "ARO-HCP"
-	globalTrendWindowDays  = 7
-	globalLoadedRowsLimit  = 50
+	globalTrendWindowDays = 7
+	globalLoadedRowsLimit = 50
 )
 
 func buildGlobalTriageHTML(
@@ -219,8 +218,8 @@ func buildGlobalTriageHTML(
 		b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Rows loaded: %d / %d signatures &middot; initially visible: %d &middot; support sum: %d</p>\n", loadedRows, len(clusters), initialVisible, totalEnvironmentSupport))
 		b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
 			IncludeTrend:       true,
-			GitHubRepoOwner:    defaultGitHubRepoOwner,
-			GitHubRepoName:     defaultGitHubRepoName,
+			GitHubRepoOwner:    sourceoptions.DefaultGitHubRepoOwner(),
+			GitHubRepoName:     sourceoptions.DefaultGitHubRepoName(),
 			ImpactTotalJobs:    overallJobsByEnvironment[environment],
 			LoadedRowsLimit:    globalLoadedRowsLimit,
 			InitialVisibleRows: top,
@@ -432,8 +431,8 @@ func resolveGitHubPRURLFromProwRun(runURL string, prNumber int) (string, bool) {
 	return triagehtml.ResolveGitHubPRURLFromProwRun(
 		runURL,
 		prNumber,
-		defaultGitHubRepoOwner,
-		defaultGitHubRepoName,
+		sourceoptions.DefaultGitHubRepoOwner(),
+		sourceoptions.DefaultGitHubRepoName(),
 	)
 }
 

@@ -11,8 +11,8 @@ import (
 	reportreview "ci-failure-atlas/pkg/report/review"
 	reportsummary "ci-failure-atlas/pkg/report/summary"
 	"ci-failure-atlas/pkg/report/triagehtml"
-	"ci-failure-atlas/pkg/report/weeknav"
 	reportweekly "ci-failure-atlas/pkg/report/weekly"
+	"ci-failure-atlas/pkg/report/weeknav"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
@@ -144,7 +144,7 @@ func (h *handler) resolveWeekWindow(ctx context.Context, requestedWeek string) (
 	}
 	week, previousWeek, nextWeek, _ := weeknav.ResolveWindow(weeks, requestedWeek, h.defaultWeek, time.Now().UTC())
 	if week == "" {
-		return "", "", "", fmt.Errorf("no semantic snapshots found in postgres store")
+		return "", "", "", fmt.Errorf("no semantic weeks found in postgres store")
 	}
 	return week, previousWeek, nextWeek, nil
 }

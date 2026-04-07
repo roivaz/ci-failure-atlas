@@ -1,13 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"ci-failure-atlas/pkg/controllers"
 	"ci-failure-atlas/pkg/run"
-	"ci-failure-atlas/pkg/run_once"
-	"ci-failure-atlas/pkg/sync_once"
 )
 
 func NewRunCommand() (*cobra.Command, error) {
@@ -46,21 +46,15 @@ func NewRunOnceCommand() (*cobra.Command, error) {
 		SilenceErrors: true,
 	}
 
-	opts := run_once.DefaultOptions()
-	if err := run_once.BindOptions(opts, cmd); err != nil {
+	opts := defaultControllerCommandOptions()
+	if err := bindControllerCommandOptions(opts, cmd, true); err != nil {
 		return nil, fmt.Errorf("failed to bind options: %w", err)
 	}
 
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
-		validated, err := opts.Validate()
-		if err != nil {
-			return err
-		}
-		completed, err := validated.Complete(cmd.Context())
-		if err != nil {
-			return err
-		}
-		return completed.Run(cmd.Context())
+		return runNamedControllerCommand(cmd.Context(), opts, true, func(ctx context.Context, controller controllers.Controller, runtime *controllerCommandRuntime) error {
+			return controller.RunOnce(ctx, runtime.ControllerKey)
+		})
 	}
 
 	return cmd, nil
@@ -74,21 +68,15 @@ func NewSyncOnceCommand() (*cobra.Command, error) {
 		SilenceErrors: true,
 	}
 
-	opts := sync_once.DefaultOptions()
-	if err := sync_once.BindOptions(opts, cmd); err != nil {
+	opts := defaultControllerCommandOptions()
+	if err := bindControllerCommandOptions(opts, cmd, false); err != nil {
 		return nil, fmt.Errorf("failed to bind options: %w", err)
 	}
 
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
-		validated, err := opts.Validate()
-		if err != nil {
-			return err
-		}
-		completed, err := validated.Complete(cmd.Context())
-		if err != nil {
-			return err
-		}
-		return completed.Run(cmd.Context())
+		return runNamedControllerCommand(cmd.Context(), opts, false, func(ctx context.Context, controller controllers.Controller, _ *controllerCommandRuntime) error {
+			return controller.SyncOnce(ctx)
+		})
 	}
 
 	return cmd, nil

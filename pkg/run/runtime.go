@@ -9,20 +9,16 @@ import (
 	"github.com/spf13/cobra"
 
 	"ci-failure-atlas/pkg/controllers"
-	"ci-failure-atlas/pkg/sourceoptions"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	"ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 	postgresoptions "ci-failure-atlas/pkg/store/postgres/options"
 )
 
 func DefaultOptions() *RawOptions {
-	postgresRaw := postgresoptions.DefaultOptions()
-	postgresRaw.Enabled = true
-	postgresRaw.Embedded = true
-	postgresRaw.Initialize = true
 	return &RawOptions{
 		SourceOptions:   sourceoptions.DefaultOptions(),
-		PostgresOptions: postgresRaw,
+		PostgresOptions: postgresoptions.DefaultCLIOptions(),
 
 		SourceSippyRunsControllerThreads:       1,
 		SourceSippyTestsDailyControllerThreads: 1,
@@ -39,7 +35,7 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 		opts.SourceOptions = sourceoptions.DefaultOptions()
 	}
 	if opts.PostgresOptions == nil {
-		opts.PostgresOptions = postgresoptions.DefaultOptions()
+		opts.PostgresOptions = postgresoptions.DefaultCLIOptions()
 	}
 	opts.PostgresOptions.Enabled = true
 	if err := sourceoptions.BindSourceOptions(opts.SourceOptions, cmd); err != nil {
@@ -119,7 +115,7 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 	}
 
 	if o.PostgresOptions == nil {
-		o.PostgresOptions = postgresoptions.DefaultOptions()
+		o.PostgresOptions = postgresoptions.DefaultCLIOptions()
 	}
 	o.PostgresOptions.Enabled = true
 	postgresValidated, err := o.PostgresOptions.Validate()

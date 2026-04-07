@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	"ci-failure-atlas/pkg/store/contracts"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -222,7 +223,7 @@ func (c *factsRunsController) reconcileRun(ctx context.Context, run contracts.Ru
 	normalizedEnvironment := normalizeEnvironment(run.Environment)
 	next := run
 
-	if !supportsPRLookupForEnvironment(normalizedEnvironment) {
+	if !sourceoptions.SupportsPRLookupForEnvironment(normalizedEnvironment) {
 		next.PRState = ""
 		next.FinalMergedSHA = ""
 		next.MergedPR = true

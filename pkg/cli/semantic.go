@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	semanticworkflow "ci-failure-atlas/pkg/semantic/workflow"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 	postgresoptions "ci-failure-atlas/pkg/store/postgres/options"
 )
@@ -23,16 +24,13 @@ type materializeScope struct {
 func NewSemanticCommand() (*cobra.Command, error) {
 	cmd := &cobra.Command{
 		Use:           "semantic",
-		Short:         "Semantic snapshot workflows.",
+		Short:         "Semantic week workflows.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
 	week := ""
-	postgresRaw := postgresoptions.DefaultOptions()
-	postgresRaw.Enabled = true
-	postgresRaw.Embedded = true
-	postgresRaw.Initialize = true
+	postgresRaw := postgresoptions.DefaultCLIOptions()
 
 	materializeCmd := &cobra.Command{
 		Use:   "materialize",
@@ -47,25 +45,13 @@ cfa semantic materialize --week 2026-03-29
 				return err
 			}
 
-			postgresValidated, err := postgresRaw.Validate()
-			if err != nil {
-				return err
-			}
-			if !postgresValidated.Enabled {
-				return fmt.Errorf("--storage.postgres.enabled must be true")
-			}
-			postgresCompleted, err := postgresValidated.Complete(cmd.Context())
+			postgresCompleted, store, err := openPostgresStoreForCommand(cmd.Context(), postgresRaw, postgresstore.Options{
+				Week: scope.Week,
+			})
 			if err != nil {
 				return err
 			}
 			defer postgresCompleted.Cleanup()
-
-			store, err := postgresstore.New(postgresCompleted.Connection, postgresstore.Options{
-				Week: scope.Week,
-			})
-			if err != nil {
-				return fmt.Errorf("create postgres semantic store: %w", err)
-			}
 			defer func() {
 				_ = store.Close()
 			}()
@@ -113,7 +99,7 @@ func printMaterializeSummary(cmd *cobra.Command, scope materializeScope, result 
 	diagnostics := result.Phase1.Diagnostics
 	cmd.Printf("Materialized semantic week %s\n", scope.Week)
 	cmd.Printf("  window: %s .. %s\n", scope.WeekStart.Format(time.RFC3339), scope.WeekEnd.Format(time.RFC3339))
-	cmd.Printf("  environments: %s\n", strings.Join(semanticworkflow.SupportedEnvironments, ","))
+	cmd.Printf("  environments: %s\n", strings.Join(sourceoptions.SupportedEnvironments(), ","))
 	cmd.Printf("  raw failures: %d included of %d total\n", diagnostics.RowsIncluded, diagnostics.RawRowsTotal)
 	cmd.Printf("  test clusters: %d\n", len(result.Phase1.TestClusters))
 	cmd.Printf("  review queue: %d\n", len(result.Phase2.ReviewQueue))

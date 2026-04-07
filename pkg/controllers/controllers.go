@@ -5,7 +5,7 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"ci-failure-atlas/pkg/sourceoptions"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
 	"ci-failure-atlas/pkg/store/contracts"
 )
 
