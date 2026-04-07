@@ -77,12 +77,12 @@ func (h *handler) handleGlobalPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	week, previousWeek, nextWeek, err := h.resolveWeekWindow(r.Context(), strings.TrimSpace(r.URL.Query().Get("week")))
+	window, err := h.service.ResolveWeekWindow(r.Context(), strings.TrimSpace(r.URL.Query().Get("week")), time.Time{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	reportHTML, err := h.generateGlobalReport(r.Context(), week, previousWeek, nextWeek)
+	reportHTML, err := h.generateGlobalReport(r.Context(), window)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("generate global report: %v", err), http.StatusInternalServerError)
 		return
@@ -96,12 +96,12 @@ func (h *handler) handleWeeklyPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	week, previousWeek, nextWeek, err := h.resolveWeekWindow(r.Context(), strings.TrimSpace(r.URL.Query().Get("week")))
+	window, err := h.service.ResolveWeekWindow(r.Context(), strings.TrimSpace(r.URL.Query().Get("week")), time.Time{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	reportHTML, err := h.generateWeeklyReport(r.Context(), week, previousWeek, nextWeek)
+	reportHTML, err := h.generateWeeklyReport(r.Context(), window)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("generate weekly report: %v", err), http.StatusInternalServerError)
 		return
@@ -139,15 +139,8 @@ func (h *handler) handleAPIDailyTriage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (h *handler) resolveWeekWindow(ctx context.Context, requestedWeek string) (string, string, string, error) {
-	window, err := h.service.ResolveWeekWindow(ctx, requestedWeek, time.Time{})
-	if err != nil {
-		return "", "", "", err
-	}
-	return window.CurrentWeek, window.PreviousWeek, window.NextWeek, nil
-}
-
-func (h *handler) generateGlobalReport(ctx context.Context, week string, previousWeek string, nextWeek string) (string, error) {
+func (h *handler) generateGlobalReport(ctx context.Context, window frontservice.WeekWindow) (string, error) {
+	week := strings.TrimSpace(window.CurrentWeek)
 	store, err := h.service.OpenStoreForWeek(week)
 	if err != nil {
 		return "", err
@@ -164,23 +157,24 @@ func (h *handler) generateGlobalReport(ctx context.Context, week string, previou
 	opts := reportsummary.DefaultOptions()
 	opts.Top = 25
 	opts.MinPercent = 1.0
-	opts.Week = strings.TrimSpace(week)
+	opts.Week = week
 	opts.HistoryHorizonWeeks = h.service.HistoryHorizonWeeks()
 	opts.HistoryResolver = historyResolver
 	opts.Chrome = triagehtml.ReportChromeOptions{
-		CurrentWeek:  strings.TrimSpace(week),
+		CurrentWeek:  week,
 		CurrentView:  triagehtml.ReportViewGlobal,
-		PreviousWeek: strings.TrimSpace(previousWeek),
-		PreviousHref: navigationHref("/global", previousWeek),
-		NextWeek:     strings.TrimSpace(nextWeek),
-		NextHref:     navigationHref("/global", nextWeek),
+		PreviousWeek: strings.TrimSpace(window.PreviousWeek),
+		PreviousHref: navigationHref("/global", window.PreviousWeek),
+		NextWeek:     strings.TrimSpace(window.NextWeek),
+		NextHref:     navigationHref("/global", window.NextWeek),
 		WeeklyHref:   viewHref("/weekly", week),
 		GlobalHref:   viewHref("/global", week),
 	}
 	return reportsummary.GenerateHTML(ctx, store, opts)
 }
 
-func (h *handler) generateWeeklyReport(ctx context.Context, week string, previousWeek string, nextWeek string) (string, error) {
+func (h *handler) generateWeeklyReport(ctx context.Context, window frontservice.WeekWindow) (string, error) {
+	week := strings.TrimSpace(window.CurrentWeek)
 	store, err := h.service.OpenStoreForWeek(week)
 	if err != nil {
 		return "", err
@@ -190,8 +184,8 @@ func (h *handler) generateWeeklyReport(ctx context.Context, week string, previou
 	}()
 
 	var previousStore storecontracts.Store
-	if strings.TrimSpace(previousWeek) != "" {
-		openedPreviousStore, openErr := h.service.OpenStoreForWeek(previousWeek)
+	if strings.TrimSpace(window.PreviousWeek) != "" {
+		openedPreviousStore, openErr := h.service.OpenStoreForWeek(window.PreviousWeek)
 		if openErr != nil {
 			return "", openErr
 		}
@@ -207,17 +201,17 @@ func (h *handler) generateWeeklyReport(ctx context.Context, week string, previou
 	}
 
 	opts := reportweekly.DefaultOptions()
-	opts.StartDate = strings.TrimSpace(week)
-	opts.Week = strings.TrimSpace(week)
+	opts.StartDate = week
+	opts.Week = week
 	opts.HistoryHorizonWeeks = h.service.HistoryHorizonWeeks()
 	opts.HistoryResolver = historyResolver
 	opts.Chrome = triagehtml.ReportChromeOptions{
-		CurrentWeek:  strings.TrimSpace(week),
+		CurrentWeek:  week,
 		CurrentView:  triagehtml.ReportViewWeekly,
-		PreviousWeek: strings.TrimSpace(previousWeek),
-		PreviousHref: navigationHref("/weekly", previousWeek),
-		NextWeek:     strings.TrimSpace(nextWeek),
-		NextHref:     navigationHref("/weekly", nextWeek),
+		PreviousWeek: strings.TrimSpace(window.PreviousWeek),
+		PreviousHref: navigationHref("/weekly", window.PreviousWeek),
+		NextWeek:     strings.TrimSpace(window.NextWeek),
+		NextHref:     navigationHref("/weekly", window.NextWeek),
 		WeeklyHref:   viewHref("/weekly", week),
 		GlobalHref:   viewHref("/global", week),
 	}

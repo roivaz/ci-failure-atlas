@@ -1,0 +1,1371 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"ci-failure-atlas/pkg/report/triagehtml"
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	semhistory "ci-failure-atlas/pkg/semantic/history"
+	semanticquery "ci-failure-atlas/pkg/semantic/query"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
+	storecontracts "ci-failure-atlas/pkg/store/contracts"
+)
+
+const (
+	weeklyWindowDays               = 7
+	weeklyMetricRunCount           = "run_count"
+	weeklyMetricFailureCount       = "failure_count"
+	weeklyMetricFailedCIInfraRuns  = "failed_ci_infra_run_count"
+	weeklyMetricFailedProvisionRun = "failed_provision_run_count"
+	weeklyMetricFailedE2ERun       = "failed_e2e_run_count"
+	weeklyMetricPostGoodRunCount   = "post_good_run_count"
+	weeklyMetricPostGoodFailedE2E  = "post_good_failed_e2e_jobs"
+	weeklyMetricPostGoodFailedCI   = "post_good_failed_ci_infra_run_count"
+	weeklyMetricPostGoodFailedProv = "post_good_failed_provision_run_count"
+
+	weeklyDefaultPeriod            = "default"
+	weeklyTestSuccessTarget        = 95.0
+	weeklyTestSuccessMinRuns       = 10
+	weeklyTestsBelowTargetTopLimit = 5
+	weeklyFullErrorExamples        = 3
+)
+
+var weeklyReportEnvironments = sourceoptions.SupportedEnvironments()
+
+type WeeklyReportBuildOptions struct {
+	StartDate           time.Time
+	TargetRate          float64
+	Week                string
+	HistoryHorizonWeeks int
+	HistoryResolver     semhistory.GlobalSignatureResolver
+}
+
+type WeeklyCounts struct {
+	RunCount                int
+	FailureCount            int
+	FailedCIInfraRunCount   int
+	FailedProvisionRunCount int
+	FailedE2ERunCount       int
+	PostGoodRunCount        int
+	PostGoodFailedE2EJobs   int
+	PostGoodFailedCIInfra   int
+	PostGoodFailedProvision int
+}
+
+type counts = WeeklyCounts
+
+type WeeklyRunOutcomes struct {
+	TotalRuns           int
+	SuccessfulRuns      int
+	CIInfraFailedRuns   int
+	ProvisionFailedRuns int
+	E2EFailedRuns       int
+}
+
+type runOutcomes = WeeklyRunOutcomes
+
+type WeeklyDayReport struct {
+	Date                string
+	Counts              WeeklyCounts
+	PostGoodRunOutcomes WeeklyRunOutcomes
+}
+
+type dayReport = WeeklyDayReport
+
+type WeeklyEnvReport struct {
+	Environment string
+	Days        []WeeklyDayReport
+	Totals      WeeklyCounts
+}
+
+type envReport = WeeklyEnvReport
+
+type WeeklySemanticEnvSummary struct {
+	GlobalClusters int
+	TestClusters   int
+	ReviewItems    int
+	TopPhrase      string
+	TopSupport     int
+	TopPostGood    int
+}
+
+type semanticEnvSummary = WeeklySemanticEnvSummary
+
+type WeeklyTopSignature struct {
+	Environment       string
+	Phrase            string
+	ClusterID         string
+	SearchQuery       string
+	SupportCount      int
+	SupportShare      float64
+	PostGoodCount     int
+	BadPRScore        int
+	SeenInOtherEnvs   []string
+	QualityScore      int
+	QualityNoteLabels []string
+	ContributingTests []triagehtml.ContributingTest
+	References        []triagehtml.RunReference
+	FullErrorSamples  []string
+	LinkedChildren    []WeeklyTopSignature
+}
+
+type topSignature = WeeklyTopSignature
+
+type WeeklySemanticSnapshot struct {
+	ByEnvironment                    map[string]WeeklySemanticEnvSummary
+	ClusterSignaturesByEnv           map[string][]WeeklyTopSignature
+	PhraseSupportByEnv               map[string]map[string]int
+	PhrasePostGoodByEnv              map[string]map[string]int
+	PhraseReferencesByEnv            map[string]map[string][]triagehtml.RunReference
+	PhraseContributingTestsByEnv     map[string]map[string][]triagehtml.ContributingTest
+	PhraseClusterIDByEnv             map[string]map[string]string
+	PhraseSearchQueryByEnv           map[string]map[string]string
+	PhraseRepresentativeSupportByEnv map[string]map[string]int
+	PhraseSignatureIDs               map[string]map[string]map[string]struct{}
+	PhraseFullErrorsByEnv            map[string]map[string][]string
+}
+
+type semanticSnapshot = WeeklySemanticSnapshot
+
+type WeeklyBelowTargetTest struct {
+	TestName  string
+	TestSuite string
+	Date      string
+	PassRate  float64
+	Runs      int
+}
+
+type belowTargetTest = WeeklyBelowTargetTest
+
+type WeeklyReportData struct {
+	StartDate             time.Time
+	EndDate               time.Time
+	CurrentReports        []WeeklyEnvReport
+	PreviousReports       []WeeklyEnvReport
+	TargetRate            float64
+	CurrentSemantic       WeeklySemanticSnapshot
+	PreviousSemantic      WeeklySemanticSnapshot
+	TestsBelowTargetByEnv map[string][]WeeklyBelowTargetTest
+	TopSignaturesByEnv    map[string][]WeeklyTopSignature
+	HistoryResolver       semhistory.GlobalSignatureResolver
+}
+
+func BuildWeeklyReportData(
+	ctx context.Context,
+	store storecontracts.Store,
+	previousSemanticStore storecontracts.Store,
+	opts WeeklyReportBuildOptions,
+) (WeeklyReportData, error) {
+	if store == nil {
+		return WeeklyReportData{}, fmt.Errorf("store is required")
+	}
+	if opts.StartDate.IsZero() {
+		return WeeklyReportData{}, fmt.Errorf("start date is required")
+	}
+
+	currentDates := dateWindow(opts.StartDate, weeklyWindowDays)
+	currentReports, err := buildEnvReports(ctx, store, currentDates)
+	if err != nil {
+		return WeeklyReportData{}, err
+	}
+
+	previousStart := opts.StartDate.AddDate(0, 0, -weeklyWindowDays)
+	previousDates := dateWindow(previousStart, weeklyWindowDays)
+	previousReports, err := buildEnvReports(ctx, store, previousDates)
+	if err != nil {
+		return WeeklyReportData{}, err
+	}
+
+	currentWeekData, err := semanticquery.LoadWeekData(ctx, store, semanticquery.LoadWeekDataOptions{
+		IncludeRawFailures: true,
+	})
+	if err != nil {
+		return WeeklyReportData{}, fmt.Errorf("load current semantic inputs: %w", err)
+	}
+	currentSemantic, err := loadSemanticSnapshot(currentWeekData)
+	if err != nil {
+		return WeeklyReportData{}, fmt.Errorf("load current semantic week: %w", err)
+	}
+	loadSignatureFullErrorSamplesByEnvironment(
+		currentDates,
+		currentWeekData.RawFailures,
+		&currentSemantic,
+		weeklyFullErrorExamples,
+	)
+	testsBelowTargetByEnv, err := loadBelowTargetTestsByEnvironment(
+		ctx,
+		store,
+		currentDates,
+		weeklyDefaultPeriod,
+		weeklyTestSuccessTarget,
+		weeklyTestSuccessMinRuns,
+		weeklyTestsBelowTargetTopLimit,
+	)
+	if err != nil {
+		return WeeklyReportData{}, fmt.Errorf("load weekly tests below target: %w", err)
+	}
+	topSignaturesByEnv := rankTopSignaturesByEnvironment(currentSemantic, 0, 0)
+
+	var previousSemantic semanticSnapshot
+	if previousSemanticStore != nil {
+		previousWeekData, loadErr := semanticquery.LoadWeekData(ctx, previousSemanticStore, semanticquery.LoadWeekDataOptions{})
+		if loadErr != nil {
+			return WeeklyReportData{}, fmt.Errorf("load previous semantic inputs: %w", loadErr)
+		}
+		previousSemantic, err = loadSemanticSnapshot(previousWeekData)
+		if err != nil {
+			return WeeklyReportData{}, fmt.Errorf("load previous semantic week: %w", err)
+		}
+	}
+
+	historyResolver := opts.HistoryResolver
+	if historyResolver == nil {
+		lookbackWeeks := opts.HistoryHorizonWeeks
+		if lookbackWeeks <= 0 {
+			lookbackWeeks = DefaultHistoryWeeks
+		}
+		historyResolver, err = semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
+			CurrentWeek:                  strings.TrimSpace(opts.Week),
+			GlobalSignatureLookbackWeeks: lookbackWeeks,
+		})
+		if err != nil {
+			return WeeklyReportData{}, fmt.Errorf("build global signature history resolver: %w", err)
+		}
+	}
+
+	startDate := opts.StartDate.UTC()
+	return WeeklyReportData{
+		StartDate:             startDate,
+		EndDate:               startDate.AddDate(0, 0, weeklyWindowDays-1),
+		CurrentReports:        currentReports,
+		PreviousReports:       previousReports,
+		TargetRate:            opts.TargetRate,
+		CurrentSemantic:       currentSemantic,
+		PreviousSemantic:      previousSemantic,
+		TestsBelowTargetByEnv: testsBelowTargetByEnv,
+		TopSignaturesByEnv:    topSignaturesByEnv,
+		HistoryResolver:       historyResolver,
+	}, nil
+}
+
+func dateWindow(startDate time.Time, days int) []string {
+	if days <= 0 {
+		return nil
+	}
+	out := make([]string, 0, days)
+	for i := 0; i < days; i++ {
+		out = append(out, startDate.AddDate(0, 0, i).Format("2006-01-02"))
+	}
+	return out
+}
+
+func buildEnvReports(ctx context.Context, store storecontracts.Store, dates []string) ([]envReport, error) {
+	metricsByEnvironmentDate, err := loadMetricsDailyByEnvironmentDate(ctx, store, weeklyReportEnvironments, dates)
+	if err != nil {
+		return nil, err
+	}
+	reports := make([]envReport, 0, len(weeklyReportEnvironments))
+	for _, env := range weeklyReportEnvironments {
+		report := envReport{
+			Environment: env,
+			Days:        make([]dayReport, 0, len(dates)),
+		}
+		for _, date := range dates {
+			rows := metricsByEnvironmentDate[weeklyEnvironmentDateKey(env, date)]
+			dayCounts := collectCounts(rows)
+			day := dayReport{
+				Date:   date,
+				Counts: dayCounts,
+			}
+			if env == "dev" {
+				day.PostGoodRunOutcomes = collectPostGoodRunOutcomes(dayCounts)
+			}
+			report.Days = append(report.Days, day)
+			report.Totals = addCounts(report.Totals, dayCounts)
+		}
+		reports = append(reports, report)
+	}
+	return reports, nil
+}
+
+func loadMetricsDailyByEnvironmentDate(
+	ctx context.Context,
+	store storecontracts.Store,
+	environments []string,
+	dates []string,
+) (map[string][]storecontracts.MetricDailyRecord, error) {
+	rows, err := store.ListMetricsDaily(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list metrics daily: %w", err)
+	}
+	environmentSet := map[string]struct{}{}
+	for _, environment := range environments {
+		normalized := normalizeReportEnvironment(environment)
+		if normalized == "" {
+			continue
+		}
+		environmentSet[normalized] = struct{}{}
+	}
+	dateSet := map[string]struct{}{}
+	for _, date := range dates {
+		trimmed := strings.TrimSpace(date)
+		if trimmed == "" {
+			continue
+		}
+		dateSet[trimmed] = struct{}{}
+	}
+	out := make(map[string][]storecontracts.MetricDailyRecord, len(environmentSet)*len(dateSet))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if _, ok := environmentSet[environment]; !ok {
+			continue
+		}
+		date := strings.TrimSpace(row.Date)
+		if _, ok := dateSet[date]; !ok {
+			continue
+		}
+		key := weeklyEnvironmentDateKey(environment, date)
+		out[key] = append(out[key], row)
+	}
+	for key := range out {
+		metricRows := out[key]
+		sort.Slice(metricRows, func(i, j int) bool {
+			return strings.TrimSpace(metricRows[i].Metric) < strings.TrimSpace(metricRows[j].Metric)
+		})
+		out[key] = metricRows
+	}
+	return out, nil
+}
+
+func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, error) {
+	out := semanticSnapshot{
+		ByEnvironment:                    map[string]semanticEnvSummary{},
+		ClusterSignaturesByEnv:           map[string][]topSignature{},
+		PhraseSupportByEnv:               map[string]map[string]int{},
+		PhrasePostGoodByEnv:              map[string]map[string]int{},
+		PhraseReferencesByEnv:            map[string]map[string][]triagehtml.RunReference{},
+		PhraseContributingTestsByEnv:     map[string]map[string][]triagehtml.ContributingTest{},
+		PhraseClusterIDByEnv:             map[string]map[string]string{},
+		PhraseSearchQueryByEnv:           map[string]map[string]string{},
+		PhraseRepresentativeSupportByEnv: map[string]map[string]int{},
+		PhraseSignatureIDs:               map[string]map[string]map[string]struct{}{},
+		PhraseFullErrorsByEnv:            map[string]map[string][]string{},
+	}
+
+	sourceGlobalClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
+	linkedChildrenByMergedClusterKey, err := weeklyLinkedChildrenByMergedClusterKey(sourceGlobalClusters, phase3Links)
+	if err != nil {
+		return out, err
+	}
+	globalClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
+	for _, row := range globalClusters {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		summary := out.ByEnvironment[environment]
+		summary.GlobalClusters++
+
+		phrase := strings.TrimSpace(row.CanonicalEvidencePhrase)
+		if phrase == "" {
+			phrase = "(unknown evidence)"
+		}
+		support := row.SupportCount
+		if support < 0 {
+			support = 0
+		}
+		postGood := row.PostGoodCommitCount
+		if postGood < 0 {
+			postGood = 0
+		}
+
+		if support > summary.TopSupport || (support == summary.TopSupport && (summary.TopPhrase == "" || phrase < summary.TopPhrase)) {
+			summary.TopPhrase = phrase
+			summary.TopSupport = support
+			summary.TopPostGood = postGood
+		}
+		out.ByEnvironment[environment] = summary
+
+		if _, ok := out.PhraseSupportByEnv[environment]; !ok {
+			out.PhraseSupportByEnv[environment] = map[string]int{}
+		}
+		out.PhraseSupportByEnv[environment][phrase] += support
+
+		if _, ok := out.PhrasePostGoodByEnv[environment]; !ok {
+			out.PhrasePostGoodByEnv[environment] = map[string]int{}
+		}
+		out.PhrasePostGoodByEnv[environment][phrase] += postGood
+
+		if _, ok := out.PhraseReferencesByEnv[environment]; !ok {
+			out.PhraseReferencesByEnv[environment] = map[string][]triagehtml.RunReference{}
+		}
+		out.PhraseReferencesByEnv[environment][phrase] = append(
+			out.PhraseReferencesByEnv[environment][phrase],
+			toTriageRunReferences(row.References)...,
+		)
+		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
+			out.PhraseReferencesByEnv[environment][phrase] = append(
+				out.PhraseReferencesByEnv[environment][phrase],
+				triagehtml.RunReference{
+					RunURL:      sourceRunURL,
+					SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
+				},
+			)
+		}
+
+		if _, ok := out.PhraseContributingTestsByEnv[environment]; !ok {
+			out.PhraseContributingTestsByEnv[environment] = map[string][]triagehtml.ContributingTest{}
+		}
+		out.PhraseContributingTestsByEnv[environment][phrase] = mergeTriageContributingTests(
+			out.PhraseContributingTestsByEnv[environment][phrase],
+			toTriageContributingTests(row.ContributingTests),
+		)
+
+		if _, ok := out.PhraseRepresentativeSupportByEnv[environment]; !ok {
+			out.PhraseRepresentativeSupportByEnv[environment] = map[string]int{}
+		}
+		if _, ok := out.PhraseClusterIDByEnv[environment]; !ok {
+			out.PhraseClusterIDByEnv[environment] = map[string]string{}
+		}
+		if _, ok := out.PhraseSearchQueryByEnv[environment]; !ok {
+			out.PhraseSearchQueryByEnv[environment] = map[string]string{}
+		}
+		repSupport := out.PhraseRepresentativeSupportByEnv[environment][phrase]
+		if support > repSupport || strings.TrimSpace(out.PhraseClusterIDByEnv[environment][phrase]) == "" {
+			out.PhraseRepresentativeSupportByEnv[environment][phrase] = support
+			out.PhraseClusterIDByEnv[environment][phrase] = strings.TrimSpace(row.Phase2ClusterID)
+			out.PhraseSearchQueryByEnv[environment][phrase] = strings.TrimSpace(row.SearchQueryPhrase)
+		}
+
+		if _, ok := out.PhraseSignatureIDs[environment]; !ok {
+			out.PhraseSignatureIDs[environment] = map[string]map[string]struct{}{}
+		}
+		if _, ok := out.PhraseSignatureIDs[environment][phrase]; !ok {
+			out.PhraseSignatureIDs[environment][phrase] = map[string]struct{}{}
+		}
+		signatureIDs := out.PhraseSignatureIDs[environment][phrase]
+		for _, signatureID := range row.MemberSignatureIDs {
+			trimmedSignatureID := strings.TrimSpace(signatureID)
+			if trimmedSignatureID == "" {
+				continue
+			}
+			signatureIDs[trimmedSignatureID] = struct{}{}
+		}
+		if sourceSignatureID := strings.TrimSpace(row.SearchQuerySourceSignatureID); sourceSignatureID != "" {
+			signatureIDs[sourceSignatureID] = struct{}{}
+		}
+		for _, ref := range row.References {
+			signatureID := strings.TrimSpace(ref.SignatureID)
+			if signatureID == "" {
+				continue
+			}
+			signatureIDs[signatureID] = struct{}{}
+		}
+
+		qualityCodes := triagehtml.QualityIssueCodes(strings.TrimSpace(phrase))
+		qualityLabels := make([]string, 0, len(qualityCodes))
+		for _, code := range qualityCodes {
+			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+		}
+		linkedChildren := []topSignature(nil)
+		linkedChildrenRaw := linkedChildrenByMergedClusterKey[weeklyGlobalClusterKey(environment, row.Phase2ClusterID)]
+		if len(linkedChildrenRaw) > 0 {
+			linkedChildren = topSignaturesFromGlobalClusters(linkedChildrenRaw)
+		}
+		rowReferences := toTriageRunReferences(row.References)
+		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
+			rowReferences = append(rowReferences, triagehtml.RunReference{
+				RunURL:      sourceRunURL,
+				SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
+			})
+		}
+		out.ClusterSignaturesByEnv[environment] = append(out.ClusterSignaturesByEnv[environment], topSignature{
+			Environment:       environment,
+			Phrase:            strings.TrimSpace(phrase),
+			ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
+			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:      support,
+			PostGoodCount:     postGood,
+			QualityScore:      triagehtml.QualityScore(qualityCodes),
+			QualityNoteLabels: qualityLabels,
+			ContributingTests: triagehtml.OrderedContributingTests(toTriageContributingTests(row.ContributingTests)),
+			References:        rowReferences,
+			LinkedChildren:    linkedChildren,
+		})
+	}
+
+	for _, row := range sourceGlobalClusters {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		phrase := strings.TrimSpace(row.CanonicalEvidencePhrase)
+		if phrase == "" {
+			phrase = "(unknown evidence)"
+		}
+		if _, ok := out.PhraseSignatureIDs[environment]; !ok {
+			out.PhraseSignatureIDs[environment] = map[string]map[string]struct{}{}
+		}
+		if _, ok := out.PhraseSignatureIDs[environment][phrase]; !ok {
+			out.PhraseSignatureIDs[environment][phrase] = map[string]struct{}{}
+		}
+		signatureIDs := out.PhraseSignatureIDs[environment][phrase]
+		for _, signatureID := range row.MemberSignatureIDs {
+			trimmedSignatureID := strings.TrimSpace(signatureID)
+			if trimmedSignatureID == "" {
+				continue
+			}
+			signatureIDs[trimmedSignatureID] = struct{}{}
+		}
+		if sourceSignatureID := strings.TrimSpace(row.SearchQuerySourceSignatureID); sourceSignatureID != "" {
+			signatureIDs[sourceSignatureID] = struct{}{}
+		}
+		for _, ref := range row.References {
+			signatureID := strings.TrimSpace(ref.SignatureID)
+			if signatureID == "" {
+				continue
+			}
+			signatureIDs[signatureID] = struct{}{}
+		}
+	}
+
+	for environment, testClusterCount := range weekData.TestClusterCountsByEnv {
+		summary := out.ByEnvironment[environment]
+		summary.TestClusters = testClusterCount
+		out.ByEnvironment[environment] = summary
+	}
+
+	for _, row := range weekData.ReviewQueue {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		summary := out.ByEnvironment[environment]
+		summary.ReviewItems++
+		out.ByEnvironment[environment] = summary
+	}
+
+	return out, nil
+}
+
+func collectCounts(rows []storecontracts.MetricDailyRecord) counts {
+	out := counts{}
+	for _, row := range rows {
+		value := int(row.Value)
+		switch strings.TrimSpace(row.Metric) {
+		case weeklyMetricRunCount:
+			out.RunCount = value
+		case weeklyMetricFailureCount:
+			out.FailureCount = value
+		case weeklyMetricFailedCIInfraRuns:
+			out.FailedCIInfraRunCount = value
+		case weeklyMetricFailedProvisionRun:
+			out.FailedProvisionRunCount = value
+		case weeklyMetricFailedE2ERun:
+			out.FailedE2ERunCount = value
+		case weeklyMetricPostGoodRunCount:
+			out.PostGoodRunCount = value
+		case weeklyMetricPostGoodFailedE2E:
+			out.PostGoodFailedE2EJobs = value
+		case weeklyMetricPostGoodFailedCI:
+			out.PostGoodFailedCIInfra = value
+		case weeklyMetricPostGoodFailedProv:
+			out.PostGoodFailedProvision = value
+		}
+	}
+	return out
+}
+
+func addCounts(a counts, b counts) counts {
+	return counts{
+		RunCount:                a.RunCount + b.RunCount,
+		FailureCount:            a.FailureCount + b.FailureCount,
+		FailedCIInfraRunCount:   a.FailedCIInfraRunCount + b.FailedCIInfraRunCount,
+		FailedProvisionRunCount: a.FailedProvisionRunCount + b.FailedProvisionRunCount,
+		FailedE2ERunCount:       a.FailedE2ERunCount + b.FailedE2ERunCount,
+		PostGoodRunCount:        a.PostGoodRunCount + b.PostGoodRunCount,
+		PostGoodFailedE2EJobs:   a.PostGoodFailedE2EJobs + b.PostGoodFailedE2EJobs,
+		PostGoodFailedCIInfra:   a.PostGoodFailedCIInfra + b.PostGoodFailedCIInfra,
+		PostGoodFailedProvision: a.PostGoodFailedProvision + b.PostGoodFailedProvision,
+	}
+}
+
+func loadBelowTargetTestsByEnvironment(
+	ctx context.Context,
+	store storecontracts.Store,
+	dates []string,
+	period string,
+	targetPassRate float64,
+	minRuns int,
+	limit int,
+) (map[string][]belowTargetTest, error) {
+	out := make(map[string][]belowTargetTest, len(weeklyReportEnvironments))
+	trimmedPeriod := strings.TrimSpace(period)
+	windowEndDate := ""
+	for i := len(dates) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(dates[i])
+		if candidate == "" {
+			continue
+		}
+		windowEndDate = candidate
+		break
+	}
+	if windowEndDate == "" {
+		return out, nil
+	}
+
+	metricDates, err := store.ListMetricDates(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list metric dates for test metadata date selection: %w", err)
+	}
+	candidateDatesAfter := metadataDatesAfter(metricDates, windowEndDate)
+	candidateDatesBefore := metadataDatesBefore(metricDates, windowEndDate)
+
+	for _, environment := range weeklyReportEnvironments {
+		selectedDate, selectErr := firstMetadataDateForEnvironment(
+			ctx,
+			store,
+			environment,
+			trimmedPeriod,
+			candidateDatesAfter,
+		)
+		if selectErr != nil {
+			return nil, selectErr
+		}
+		if selectedDate == "" {
+			selectedDate, selectErr = firstMetadataDateForEnvironment(
+				ctx,
+				store,
+				environment,
+				trimmedPeriod,
+				candidateDatesBefore,
+			)
+			if selectErr != nil {
+				return nil, selectErr
+			}
+		}
+		if selectedDate == "" {
+			out[environment] = nil
+			continue
+		}
+
+		filtered, _, collectErr := collectBelowTargetTestsForDates(
+			ctx,
+			store,
+			environment,
+			[]string{selectedDate},
+			trimmedPeriod,
+			targetPassRate,
+			minRuns,
+			limit,
+		)
+		if collectErr != nil {
+			return nil, collectErr
+		}
+		out[environment] = filtered
+	}
+	return out, nil
+}
+
+func collectBelowTargetTestsForDates(
+	ctx context.Context,
+	store storecontracts.Store,
+	environment string,
+	dates []string,
+	period string,
+	targetPassRate float64,
+	minRuns int,
+	limit int,
+) ([]belowTargetTest, bool, error) {
+	bestByTestKey := map[string]belowTargetTest{}
+	hadRows := false
+	for _, date := range dates {
+		rows, err := store.ListTestMetadataDailyByDate(ctx, environment, date)
+		if err != nil {
+			return nil, hadRows, fmt.Errorf("list test metadata daily for env=%q date=%q: %w", environment, date, err)
+		}
+		for _, row := range rows {
+			if period != "" && strings.TrimSpace(row.Period) != period {
+				continue
+			}
+			testName := strings.TrimSpace(row.TestName)
+			if testName == "" {
+				continue
+			}
+			hadRows = true
+			testSuite := strings.TrimSpace(row.TestSuite)
+			candidate := belowTargetTest{
+				TestName:  testName,
+				TestSuite: testSuite,
+				Date:      strings.TrimSpace(row.Date),
+				PassRate:  row.CurrentPassPercentage,
+				Runs:      row.CurrentRuns,
+			}
+			key := strings.ToLower(testSuite) + "|" + strings.ToLower(testName)
+			existing, exists := bestByTestKey[key]
+			if !exists || preferBelowTargetTest(candidate, existing) {
+				bestByTestKey[key] = candidate
+			}
+		}
+	}
+
+	filtered := make([]belowTargetTest, 0, len(bestByTestKey))
+	for _, candidate := range bestByTestKey {
+		if candidate.Runs < minRuns || candidate.PassRate >= targetPassRate {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].PassRate != filtered[j].PassRate {
+			return filtered[i].PassRate < filtered[j].PassRate
+		}
+		if filtered[i].Runs != filtered[j].Runs {
+			return filtered[i].Runs > filtered[j].Runs
+		}
+		if filtered[i].TestSuite != filtered[j].TestSuite {
+			return filtered[i].TestSuite < filtered[j].TestSuite
+		}
+		return filtered[i].TestName < filtered[j].TestName
+	})
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, hadRows, nil
+}
+
+func firstMetadataDateForEnvironment(
+	ctx context.Context,
+	store storecontracts.Store,
+	environment string,
+	period string,
+	candidateDates []string,
+) (string, error) {
+	for _, date := range candidateDates {
+		rows, err := store.ListTestMetadataDailyByDate(ctx, environment, date)
+		if err != nil {
+			return "", fmt.Errorf("list test metadata daily for env=%q date=%q: %w", environment, date, err)
+		}
+		for _, row := range rows {
+			if period != "" && strings.TrimSpace(row.Period) != period {
+				continue
+			}
+			if strings.TrimSpace(row.TestName) == "" {
+				continue
+			}
+			return date, nil
+		}
+	}
+	return "", nil
+}
+
+func metadataDatesAfter(metricDates []string, threshold string) []string {
+	trimmedThreshold := strings.TrimSpace(threshold)
+	unique := map[string]struct{}{}
+	for _, date := range metricDates {
+		trimmed := strings.TrimSpace(date)
+		if trimmed == "" {
+			continue
+		}
+		if trimmedThreshold != "" && trimmed <= trimmedThreshold {
+			continue
+		}
+		unique[trimmed] = struct{}{}
+	}
+	return sortedStringSet(unique)
+}
+
+func metadataDatesBefore(metricDates []string, threshold string) []string {
+	trimmedThreshold := strings.TrimSpace(threshold)
+	unique := map[string]struct{}{}
+	for _, date := range metricDates {
+		trimmed := strings.TrimSpace(date)
+		if trimmed == "" {
+			continue
+		}
+		if trimmedThreshold != "" && trimmed >= trimmedThreshold {
+			continue
+		}
+		unique[trimmed] = struct{}{}
+	}
+	out := sortedStringSet(unique)
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+func preferBelowTargetTest(candidate belowTargetTest, existing belowTargetTest) bool {
+	if candidate.Date != existing.Date {
+		return candidate.Date > existing.Date
+	}
+	if candidate.Runs != existing.Runs {
+		return candidate.Runs > existing.Runs
+	}
+	if candidate.PassRate != existing.PassRate {
+		return candidate.PassRate < existing.PassRate
+	}
+	if candidate.TestSuite != existing.TestSuite {
+		return candidate.TestSuite < existing.TestSuite
+	}
+	return candidate.TestName < existing.TestName
+}
+
+func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {
+	if len(snapshot.ClusterSignaturesByEnv) > 0 {
+		return rankTopSignaturesByEnvironmentFromClusters(snapshot, limit, minShare)
+	}
+	return rankTopSignaturesByEnvironmentFromPhrases(snapshot, limit, minShare)
+}
+
+func rankTopSignaturesByEnvironmentFromClusters(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {
+	out := make(map[string][]topSignature, len(weeklyReportEnvironments))
+	for _, environment := range weeklyReportEnvironments {
+		totalSupport := 0
+		clusterRows := snapshot.ClusterSignaturesByEnv[environment]
+		for _, item := range clusterRows {
+			if item.SupportCount > 0 {
+				totalSupport += item.SupportCount
+			}
+		}
+
+		rows := make([]topSignature, 0, len(clusterRows))
+		for _, source := range clusterRows {
+			phrase := strings.TrimSpace(source.Phrase)
+			if phrase == "" {
+				phrase = "(unknown evidence)"
+			}
+			support := source.SupportCount
+			if support <= 0 {
+				continue
+			}
+			otherEnvironments := make([]string, 0, len(weeklyReportEnvironments)-1)
+			for _, candidateEnvironment := range weeklyReportEnvironments {
+				if candidateEnvironment == environment {
+					continue
+				}
+				if snapshot.PhraseSupportByEnv[candidateEnvironment][phrase] <= 0 {
+					continue
+				}
+				otherEnvironments = append(otherEnvironments, strings.ToUpper(candidateEnvironment))
+			}
+			share := 0.0
+			if totalSupport > 0 {
+				share = float64(support) * 100.0 / float64(totalSupport)
+			}
+			if minShare > 0 && share < minShare {
+				continue
+			}
+			references := append([]triagehtml.RunReference(nil), source.References...)
+			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.SignatureRow{
+				Environment:   environment,
+				PostGoodCount: source.PostGoodCount,
+				AlsoSeenIn:    otherEnvironments,
+				References:    references,
+			})
+			linkedChildren := make([]topSignature, 0, len(source.LinkedChildren))
+			for _, child := range source.LinkedChildren {
+				childEnvironment := normalizeReportEnvironment(child.Environment)
+				if childEnvironment == "" {
+					childEnvironment = environment
+				}
+				childPhrase := strings.TrimSpace(child.Phrase)
+				if childPhrase == "" {
+					childPhrase = "(unknown evidence)"
+				}
+				childSupport := child.SupportCount
+				childShare := 0.0
+				if totalSupport > 0 && childSupport > 0 {
+					childShare = float64(childSupport) * 100.0 / float64(totalSupport)
+				}
+				linkedChildren = append(linkedChildren, topSignature{
+					Environment:       childEnvironment,
+					Phrase:            childPhrase,
+					ClusterID:         strings.TrimSpace(child.ClusterID),
+					SearchQuery:       strings.TrimSpace(child.SearchQuery),
+					SupportCount:      childSupport,
+					SupportShare:      childShare,
+					PostGoodCount:     child.PostGoodCount,
+					QualityScore:      child.QualityScore,
+					QualityNoteLabels: append([]string(nil), child.QualityNoteLabels...),
+					ContributingTests: append([]triagehtml.ContributingTest(nil), child.ContributingTests...),
+					References:        append([]triagehtml.RunReference(nil), child.References...),
+					FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[childEnvironment][childPhrase]...),
+				})
+			}
+			rows = append(rows, topSignature{
+				Environment:       environment,
+				Phrase:            phrase,
+				ClusterID:         strings.TrimSpace(source.ClusterID),
+				SearchQuery:       strings.TrimSpace(source.SearchQuery),
+				SupportCount:      support,
+				SupportShare:      share,
+				PostGoodCount:     source.PostGoodCount,
+				BadPRScore:        badPRScore,
+				SeenInOtherEnvs:   otherEnvironments,
+				QualityScore:      source.QualityScore,
+				QualityNoteLabels: append([]string(nil), source.QualityNoteLabels...),
+				ContributingTests: append([]triagehtml.ContributingTest(nil), source.ContributingTests...),
+				References:        references,
+				FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
+				LinkedChildren:    linkedChildren,
+			})
+		}
+		sortTopSignatures(rows)
+		if limit > 0 && len(rows) > limit {
+			rows = rows[:limit]
+		}
+		out[environment] = rows
+	}
+	return out
+}
+
+func rankTopSignaturesByEnvironmentFromPhrases(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {
+	out := make(map[string][]topSignature, len(weeklyReportEnvironments))
+	for _, environment := range weeklyReportEnvironments {
+		supportByPhrase := snapshot.PhraseSupportByEnv[environment]
+		postGoodByPhrase := snapshot.PhrasePostGoodByEnv[environment]
+		totalSupport := 0
+		for _, support := range supportByPhrase {
+			if support > 0 {
+				totalSupport += support
+			}
+		}
+
+		rows := make([]topSignature, 0, len(supportByPhrase))
+		for phrase, support := range supportByPhrase {
+			if support <= 0 {
+				continue
+			}
+			otherEnvironments := make([]string, 0, len(weeklyReportEnvironments)-1)
+			for _, candidateEnvironment := range weeklyReportEnvironments {
+				if candidateEnvironment == environment {
+					continue
+				}
+				if snapshot.PhraseSupportByEnv[candidateEnvironment][phrase] <= 0 {
+					continue
+				}
+				otherEnvironments = append(otherEnvironments, strings.ToUpper(candidateEnvironment))
+			}
+			share := 0.0
+			if totalSupport > 0 {
+				share = float64(support) * 100.0 / float64(totalSupport)
+			}
+			if minShare > 0 && share < minShare {
+				continue
+			}
+			qualityCodes := triagehtml.QualityIssueCodes(strings.TrimSpace(phrase))
+			qualityLabels := make([]string, 0, len(qualityCodes))
+			for _, code := range qualityCodes {
+				qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+			}
+			references := append([]triagehtml.RunReference(nil), snapshot.PhraseReferencesByEnv[environment][phrase]...)
+			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.SignatureRow{
+				Environment:   environment,
+				PostGoodCount: postGoodByPhrase[phrase],
+				AlsoSeenIn:    otherEnvironments,
+				References:    references,
+			})
+			rows = append(rows, topSignature{
+				Environment:       environment,
+				Phrase:            strings.TrimSpace(phrase),
+				ClusterID:         strings.TrimSpace(snapshot.PhraseClusterIDByEnv[environment][phrase]),
+				SearchQuery:       strings.TrimSpace(snapshot.PhraseSearchQueryByEnv[environment][phrase]),
+				SupportCount:      support,
+				SupportShare:      share,
+				PostGoodCount:     postGoodByPhrase[phrase],
+				BadPRScore:        badPRScore,
+				SeenInOtherEnvs:   otherEnvironments,
+				QualityScore:      triagehtml.QualityScore(qualityCodes),
+				QualityNoteLabels: qualityLabels,
+				ContributingTests: append([]triagehtml.ContributingTest(nil), snapshot.PhraseContributingTestsByEnv[environment][phrase]...),
+				References:        references,
+				FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
+			})
+		}
+		sortTopSignatures(rows)
+		if limit > 0 && len(rows) > limit {
+			rows = rows[:limit]
+		}
+		out[environment] = rows
+	}
+	return out
+}
+
+func sortTopSignatures(rows []topSignature) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].BadPRScore != rows[j].BadPRScore {
+			return rows[i].BadPRScore < rows[j].BadPRScore
+		}
+		if rows[i].SupportCount != rows[j].SupportCount {
+			return rows[i].SupportCount > rows[j].SupportCount
+		}
+		if rows[i].PostGoodCount != rows[j].PostGoodCount {
+			return rows[i].PostGoodCount > rows[j].PostGoodCount
+		}
+		return rows[i].Phrase < rows[j].Phrase
+	})
+}
+
+func topSignaturesFromGlobalClusters(rows []semanticcontracts.GlobalClusterRecord) []topSignature {
+	out := make([]topSignature, 0, len(rows))
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		if environment == "" {
+			continue
+		}
+		phrase := strings.TrimSpace(row.CanonicalEvidencePhrase)
+		if phrase == "" {
+			phrase = "(unknown evidence)"
+		}
+		support := row.SupportCount
+		if support < 0 {
+			support = 0
+		}
+		postGood := row.PostGoodCommitCount
+		if postGood < 0 {
+			postGood = 0
+		}
+		qualityCodes := triagehtml.QualityIssueCodes(phrase)
+		qualityLabels := make([]string, 0, len(qualityCodes))
+		for _, code := range qualityCodes {
+			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+		}
+		references := toTriageRunReferences(row.References)
+		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
+			references = append(references, triagehtml.RunReference{
+				RunURL:      sourceRunURL,
+				SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
+			})
+		}
+		out = append(out, topSignature{
+			Environment:       environment,
+			Phrase:            phrase,
+			ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
+			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:      support,
+			PostGoodCount:     postGood,
+			QualityScore:      triagehtml.QualityScore(qualityCodes),
+			QualityNoteLabels: qualityLabels,
+			ContributingTests: triagehtml.OrderedContributingTests(toTriageContributingTests(row.ContributingTests)),
+			References:        references,
+		})
+	}
+	return out
+}
+
+func weeklyLinkedChildrenByMergedClusterKey(
+	globalClusters []semanticcontracts.GlobalClusterRecord,
+	phase3Links []semanticcontracts.Phase3LinkRecord,
+) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
+	if len(globalClusters) == 0 || len(phase3Links) == 0 {
+		return map[string][]semanticcontracts.GlobalClusterRecord{}, nil
+	}
+	phase3ClusterByAnchor := make(map[string]string, len(phase3Links))
+	for _, link := range phase3Links {
+		anchor := weeklyPhase3AnchorKey(link.Environment, link.RunURL, link.RowID)
+		clusterID := strings.TrimSpace(link.IssueID)
+		if anchor == "" || clusterID == "" {
+			continue
+		}
+		phase3ClusterByAnchor[anchor] = clusterID
+	}
+
+	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
+	for _, cluster := range globalClusters {
+		clusterIDs := weeklyPhase3ClusterIDsForGlobalCluster(cluster, phase3ClusterByAnchor)
+		if len(clusterIDs) == 0 {
+			continue
+		}
+		if len(clusterIDs) > 1 {
+			return nil, fmt.Errorf("global cluster %q/%q maps to multiple phase3 IDs: %v", cluster.Environment, cluster.Phase2ClusterID, clusterIDs)
+		}
+		key := weeklyGlobalClusterKey(cluster.Environment, clusterIDs[0])
+		grouped[key] = append(grouped[key], cluster)
+	}
+	for key := range grouped {
+		rows := grouped[key]
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].SupportCount != rows[j].SupportCount {
+				return rows[i].SupportCount > rows[j].SupportCount
+			}
+			if strings.TrimSpace(rows[i].CanonicalEvidencePhrase) != strings.TrimSpace(rows[j].CanonicalEvidencePhrase) {
+				return strings.TrimSpace(rows[i].CanonicalEvidencePhrase) < strings.TrimSpace(rows[j].CanonicalEvidencePhrase)
+			}
+			return strings.TrimSpace(rows[i].Phase2ClusterID) < strings.TrimSpace(rows[j].Phase2ClusterID)
+		})
+		grouped[key] = rows
+	}
+	return grouped, nil
+}
+
+func weeklyPhase3ClusterIDsForGlobalCluster(
+	cluster semanticcontracts.GlobalClusterRecord,
+	phase3ClusterByAnchor map[string]string,
+) []string {
+	seen := map[string]struct{}{}
+	for _, reference := range cluster.References {
+		clusterID := strings.TrimSpace(phase3ClusterByAnchor[weeklyPhase3AnchorKey(
+			cluster.Environment,
+			reference.RunURL,
+			reference.RowID,
+		)])
+		if clusterID == "" {
+			continue
+		}
+		seen[clusterID] = struct{}{}
+	}
+	return sortedStringSet(seen)
+}
+
+func weeklyPhase3AnchorKey(environment string, runURL string, rowID string) string {
+	env := normalizeReportEnvironment(environment)
+	run := strings.TrimSpace(runURL)
+	row := strings.TrimSpace(rowID)
+	if env == "" || run == "" || row == "" {
+		return ""
+	}
+	return env + "|" + run + "|" + row
+}
+
+func weeklyGlobalClusterKey(environment string, clusterID string) string {
+	env := normalizeReportEnvironment(environment)
+	cluster := strings.TrimSpace(clusterID)
+	if env == "" || cluster == "" {
+		return ""
+	}
+	return env + "|" + cluster
+}
+
+func toTriageRunReferences(rows []semanticcontracts.ReferenceRecord) []triagehtml.RunReference {
+	out := make([]triagehtml.RunReference, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.RunReference{
+			RunURL:      strings.TrimSpace(row.RunURL),
+			OccurredAt:  strings.TrimSpace(row.OccurredAt),
+			SignatureID: strings.TrimSpace(row.SignatureID),
+			PRNumber:    row.PRNumber,
+		})
+	}
+	return out
+}
+
+func toTriageContributingTests(rows []semanticcontracts.ContributingTestRecord) []triagehtml.ContributingTest {
+	out := make([]triagehtml.ContributingTest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.ContributingTest{
+			Lane:         strings.TrimSpace(row.Lane),
+			JobName:      strings.TrimSpace(row.JobName),
+			TestName:     strings.TrimSpace(row.TestName),
+			SupportCount: row.SupportCount,
+		})
+	}
+	return out
+}
+
+func mergeTriageContributingTests(existing []triagehtml.ContributingTest, incoming []triagehtml.ContributingTest) []triagehtml.ContributingTest {
+	if len(incoming) == 0 {
+		return existing
+	}
+	type mergeKey struct {
+		lane string
+		job  string
+		test string
+	}
+	merged := make(map[mergeKey]triagehtml.ContributingTest, len(existing)+len(incoming))
+	for _, item := range existing {
+		merged[mergeKey{
+			lane: strings.TrimSpace(item.Lane),
+			job:  strings.TrimSpace(item.JobName),
+			test: strings.TrimSpace(item.TestName),
+		}] = item
+	}
+	for _, item := range incoming {
+		key := mergeKey{
+			lane: strings.TrimSpace(item.Lane),
+			job:  strings.TrimSpace(item.JobName),
+			test: strings.TrimSpace(item.TestName),
+		}
+		existingItem, ok := merged[key]
+		if !ok {
+			merged[key] = item
+			continue
+		}
+		existingItem.SupportCount += item.SupportCount
+		merged[key] = existingItem
+	}
+	out := make([]triagehtml.ContributingTest, 0, len(merged))
+	for _, item := range merged {
+		out = append(out, item)
+	}
+	return triagehtml.OrderedContributingTests(out)
+}
+
+func loadSignatureFullErrorSamplesByEnvironment(
+	dates []string,
+	rawRows []storecontracts.RawFailureRecord,
+	snapshot *semanticSnapshot,
+	limit int,
+) {
+	if snapshot == nil || limit <= 0 || len(dates) == 0 {
+		return
+	}
+	if snapshot.PhraseFullErrorsByEnv == nil {
+		snapshot.PhraseFullErrorsByEnv = map[string]map[string][]string{}
+	}
+	rawByEnvironmentDate := indexRawFailuresByEnvironmentDate(rawRows)
+	for environment, signatureIDsByPhrase := range snapshot.PhraseSignatureIDs {
+		if len(signatureIDsByPhrase) == 0 {
+			continue
+		}
+		signatureToPhrases := map[string][]string{}
+		for phrase, signatureIDs := range signatureIDsByPhrase {
+			for signatureID := range signatureIDs {
+				trimmedSignatureID := strings.TrimSpace(signatureID)
+				if trimmedSignatureID == "" {
+					continue
+				}
+				signatureToPhrases[trimmedSignatureID] = append(signatureToPhrases[trimmedSignatureID], phrase)
+			}
+		}
+		if len(signatureToPhrases) == 0 {
+			continue
+		}
+		if _, ok := snapshot.PhraseFullErrorsByEnv[environment]; !ok {
+			snapshot.PhraseFullErrorsByEnv[environment] = map[string][]string{}
+		}
+		for dateIndex := len(dates) - 1; dateIndex >= 0; dateIndex-- {
+			date := strings.TrimSpace(dates[dateIndex])
+			if date == "" {
+				continue
+			}
+			for _, row := range rawByEnvironmentDate[weeklyEnvironmentDateKey(environment, date)] {
+				signatureID := strings.TrimSpace(row.SignatureID)
+				if signatureID == "" {
+					continue
+				}
+				phrases := signatureToPhrases[signatureID]
+				if len(phrases) == 0 {
+					continue
+				}
+				sample := strings.TrimSpace(row.RawText)
+				if sample == "" {
+					sample = strings.TrimSpace(row.NormalizedText)
+				}
+				if sample == "" {
+					continue
+				}
+				for _, phrase := range phrases {
+					existing := snapshot.PhraseFullErrorsByEnv[environment][phrase]
+					snapshot.PhraseFullErrorsByEnv[environment][phrase] = appendUniqueLimitedSample(existing, sample, limit)
+				}
+			}
+		}
+	}
+}
+
+func indexRawFailuresByEnvironmentDate(rows []storecontracts.RawFailureRecord) map[string][]storecontracts.RawFailureRecord {
+	out := map[string][]storecontracts.RawFailureRecord{}
+	for _, row := range rows {
+		environment := normalizeReportEnvironment(row.Environment)
+		date, ok := dateFromTimestamp(row.OccurredAt)
+		if !ok {
+			continue
+		}
+		key := weeklyEnvironmentDateKey(environment, date)
+		if key == "" {
+			continue
+		}
+		out[key] = append(out[key], row)
+	}
+	for key := range out {
+		rawRows := out[key]
+		sort.Slice(rawRows, func(i, j int) bool {
+			if rawRows[i].OccurredAt != rawRows[j].OccurredAt {
+				return rawRows[i].OccurredAt < rawRows[j].OccurredAt
+			}
+			if rawRows[i].RunURL != rawRows[j].RunURL {
+				return rawRows[i].RunURL < rawRows[j].RunURL
+			}
+			if rawRows[i].RowID != rawRows[j].RowID {
+				return rawRows[i].RowID < rawRows[j].RowID
+			}
+			return rawRows[i].SignatureID < rawRows[j].SignatureID
+		})
+		out[key] = rawRows
+	}
+	return out
+}
+
+func appendUniqueLimitedSample(existing []string, candidate string, limit int) []string {
+	trimmedCandidate := strings.TrimSpace(candidate)
+	if trimmedCandidate == "" {
+		return existing
+	}
+	for _, value := range existing {
+		if value == trimmedCandidate {
+			return existing
+		}
+	}
+	if limit > 0 && len(existing) >= limit {
+		return existing
+	}
+	return append(existing, trimmedCandidate)
+}
+
+func collectPostGoodRunOutcomes(day counts) runOutcomes {
+	out := runOutcomes{}
+
+	ciInfraFailedRuns := day.PostGoodFailedCIInfra
+	provisionFailedRuns := day.PostGoodFailedProvision
+	e2eFailedRuns := day.PostGoodFailedE2EJobs
+	totalFailedRuns := ciInfraFailedRuns + provisionFailedRuns + e2eFailedRuns
+
+	totalRuns := day.PostGoodRunCount
+	if totalRuns < totalFailedRuns {
+		totalRuns = totalFailedRuns
+	}
+	successfulRuns := totalRuns - totalFailedRuns
+	if successfulRuns < 0 {
+		successfulRuns = 0
+	}
+
+	out.TotalRuns = totalRuns
+	out.SuccessfulRuns = successfulRuns
+	out.CIInfraFailedRuns = ciInfraFailedRuns
+	out.ProvisionFailedRuns = provisionFailedRuns
+	out.E2EFailedRuns = e2eFailedRuns
+	return out
+}
+
+func normalizeReportEnvironment(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func weeklyEnvironmentDateKey(environment string, date string) string {
+	normalizedEnvironment := normalizeReportEnvironment(environment)
+	trimmedDate := strings.TrimSpace(date)
+	if normalizedEnvironment == "" || trimmedDate == "" {
+		return ""
+	}
+	return normalizedEnvironment + "|" + trimmedDate
+}
+
+func dateFromTimestamp(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", false
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+		return ts.UTC().Format("2006-01-02"), true
+	}
+	if ts, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return ts.UTC().Format("2006-01-02"), true
+	}
+	return "", false
+}

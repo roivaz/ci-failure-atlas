@@ -238,14 +238,7 @@ func (f *integrationFixture) openWeekStore(t *testing.T, week string) storeWithC
 	return store
 }
 
-type storeWithClose interface {
-	ReplaceMaterializedWeek(context.Context, storecontracts.MaterializedWeek) error
-	UpsertPhase3Issues(context.Context, []semanticcontracts.Phase3IssueRecord) error
-	UpsertPhase3Links(context.Context, []semanticcontracts.Phase3LinkRecord) error
-	UpsertRuns(context.Context, []storecontracts.RunRecord) error
-	UpsertRawFailures(context.Context, []storecontracts.RawFailureRecord) error
-	Close() error
-}
+type storeWithClose = storecontracts.Store
 
 func currentMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{

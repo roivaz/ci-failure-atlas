@@ -16,8 +16,6 @@ import (
 	frontservice "ci-failure-atlas/pkg/frontend/service"
 	triagehtml "ci-failure-atlas/pkg/report/triagehtml"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
-	semhistory "ci-failure-atlas/pkg/semantic/history"
-	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	sourceoptions "ci-failure-atlas/pkg/source/options"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 
@@ -28,13 +26,10 @@ const (
 	defaultHistoryWeeks     = 4
 	selectionInputName      = "cluster_id"
 	unlinkChildInputName    = "unlink_child"
-	metricRunCount          = "run_count"
-	reviewTrendWindowDays   = 7
 	phase3ActionLink        = "link"
 	phase3ActionDisband     = "disband"
 	phase3ActionUnlink      = "unlink"
 	phase3ActionUnlinkChild = "unlink_child"
-	phase3InformationalCode = "phase1_cluster_id_collision"
 	phase3ClusterIDPrefix   = "p3c-"
 )
 
@@ -55,42 +50,8 @@ type handler struct {
 	globalPath          string
 }
 
-type phase3Anchor struct {
-	Environment string
-	RunURL      string
-	RowID       string
-}
-
-func (a phase3Anchor) key() string {
-	environment := normalizeEnvironment(a.Environment)
-	runURL := strings.TrimSpace(a.RunURL)
-	rowID := strings.TrimSpace(a.RowID)
-	if environment == "" || runURL == "" || rowID == "" {
-		return ""
-	}
-	return environment + "|" + runURL + "|" + rowID
-}
-
-type weekSnapshot struct {
-	Weeks                []string
-	Week                 string
-	PreviousWeek         string
-	NextWeek             string
-	Rows                 []triagehtml.SignatureRow
-	OverallJobsByEnv     map[string]int
-	AnchorsByClusterID   map[string][]phase3Anchor
-	LaneKeysByClusterID  map[string][]string
-	AggregatedSelection  map[string]struct{}
-	UnassignedCount      int
-	MissingAnchorCount   int
-	TotalClusters        int
-	AnchoredClusterCount int
-}
-
-type reviewSignalIndex struct {
-	ByPhase1ClusterID map[string]map[string]struct{}
-	BySignatureID     map[string]map[string]struct{}
-}
+type phase3Anchor = frontservice.ReviewPhase3Anchor
+type weekSnapshot = frontservice.ReviewWeekSnapshot
 
 func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	service, err := frontservice.New(frontservice.Options{
@@ -368,373 +329,11 @@ func (h *handler) redirectWithNotice(w http.ResponseWriter, r *http.Request, wee
 }
 
 func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (weekSnapshot, error) {
-	weeks, err := h.discoverSemanticWeeks(ctx)
-	if err != nil {
-		return weekSnapshot{}, err
-	}
-	window, err := h.service.ResolveWeekWindow(ctx, requestedWeek, time.Time{})
-	if err != nil {
-		return weekSnapshot{}, err
-	}
-	week := window.CurrentWeek
-	previousWeek := window.PreviousWeek
-	nextWeek := window.NextWeek
-	store, err := h.openStoreForWeek(week)
-	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("open semantic store for semantic week %q: %w", week, err)
-	}
-	defer func() {
-		_ = store.Close()
-	}()
-
-	weekData, err := semanticquery.LoadWeekData(ctx, store, semanticquery.LoadWeekDataOptions{
-		IncludeRawFailures: true,
-	})
-	if err != nil {
-		return weekSnapshot{}, err
-	}
-	clusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
-	reviewQueue := append([]semanticcontracts.ReviewItemRecord(nil), weekData.ReviewQueue...)
-	links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
-	childAnchorsByClusterID := map[string][]phase3Anchor{}
-	childLaneKeysByClusterID := map[string][]string{}
-	for _, cluster := range clusters {
-		environment := normalizeEnvironment(cluster.Environment)
-		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
-		if clusterID == "" {
-			continue
-		}
-		selectionID := rowSelectionID(environment, clusterID)
-		anchors := anchorsForCluster(environment, cluster.References)
-		laneKeys := laneKeysForContributingTests(cluster.ContributingTests)
-		if selectionID != "" {
-			childAnchorsByClusterID[selectionID] = dedupeAnchors(append(childAnchorsByClusterID[selectionID], anchors...))
-			childLaneKeysByClusterID[selectionID] = mergeLaneKeys(childLaneKeysByClusterID[selectionID], laneKeys)
-		}
-		childAnchorsByClusterID[clusterID] = dedupeAnchors(append(childAnchorsByClusterID[clusterID], anchors...))
-		childLaneKeysByClusterID[clusterID] = mergeLaneKeys(childLaneKeysByClusterID[clusterID], laneKeys)
-	}
-	linkedChildrenBySelectionID, err := linkedChildrenByMergedSelectionID(clusters, links)
-	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("build linked child clusters: %w", err)
-	}
-	clusters = append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
-
-	reviewIndex := buildReviewSignalIndex(reviewQueue)
-	rawTextIndex := semanticquery.RawFailureTextByEnvironmentRow(weekData.RawFailures)
-	phase3ClusterByAnchor := map[string]string{}
-	for _, row := range links {
-		anchor := phase3Anchor{
-			Environment: row.Environment,
-			RunURL:      row.RunURL,
-			RowID:       row.RowID,
-		}
-		key := anchor.key()
-		if key == "" {
-			continue
-		}
-		phase3ClusterID := strings.TrimSpace(row.IssueID)
-		if phase3ClusterID == "" {
-			continue
-		}
-		phase3ClusterByAnchor[key] = phase3ClusterID
-	}
-
-	totalSupportByEnvironment := map[string]int{}
-	phraseEnvironments := map[string]map[string]struct{}{}
-	for _, cluster := range clusters {
-		environment := normalizeEnvironment(cluster.Environment)
-		totalSupportByEnvironment[environment] += cluster.SupportCount
-		phraseKey := strings.ToLower(strings.TrimSpace(cluster.CanonicalEvidencePhrase))
-		if phraseKey == "" {
-			continue
-		}
-		envSet := phraseEnvironments[phraseKey]
-		if envSet == nil {
-			envSet = map[string]struct{}{}
-			phraseEnvironments[phraseKey] = envSet
-		}
-		envSet[environment] = struct{}{}
-	}
-	metricWindowStart := time.Time{}
-	metricWindowEnd := time.Time{}
-	if weekStart, ok := parseSemanticWeek(week); ok {
-		metricWindowStart = weekStart.UTC()
-		metricWindowEnd = weekStart.AddDate(0, 0, 7).UTC()
-	}
-	overallJobsByEnv, err := metricRunTotalsByEnvironment(
-		ctx,
-		store,
-		sortedEnvironmentKeys(totalSupportByEnvironment),
-		metricWindowStart,
-		metricWindowEnd,
-	)
-	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("load overall metric run counts: %w", err)
-	}
-	historyResolver, err := h.buildHistoryResolver(ctx, week)
-	if err != nil {
-		return weekSnapshot{}, fmt.Errorf("build global signature history resolver: %w", err)
-	}
-	trendAnchor := time.Now().UTC()
-	if weekStart, ok := parseSemanticWeek(week); ok {
-		trendAnchor = weekStart.AddDate(0, 0, reviewTrendWindowDays-1).UTC()
-	}
-
-	rows := make([]triagehtml.SignatureRow, 0, len(clusters))
-	anchorsByClusterID := map[string][]phase3Anchor{}
-	for key, anchors := range childAnchorsByClusterID {
-		anchorsByClusterID[key] = append([]phase3Anchor(nil), anchors...)
-	}
-	laneKeysByClusterID := map[string][]string{}
-	for key, laneKeys := range childLaneKeysByClusterID {
-		laneKeysByClusterID[key] = append([]string(nil), laneKeys...)
-	}
-	aggregatedSelections := map[string]struct{}{}
-	unassignedCount := 0
-	missingAnchorCount := 0
-	anchoredClusterCount := 0
-
-	for _, cluster := range clusters {
-		environment := normalizeEnvironment(cluster.Environment)
-		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
-		selectionID := rowSelectionID(environment, clusterID)
-		anchors := anchorsForCluster(environment, cluster.References)
-		if len(anchors) == 0 {
-			missingAnchorCount++
-		} else {
-			anchoredClusterCount++
-		}
-		if selectionID != "" {
-			anchorsByClusterID[selectionID] = dedupeAnchors(append(anchorsByClusterID[selectionID], anchors...))
-		}
-		laneKeys := laneKeysForContributingTests(cluster.ContributingTests)
-		if selectionID != "" {
-			laneKeysByClusterID[selectionID] = mergeLaneKeys(laneKeysByClusterID[selectionID], laneKeys)
-		}
-		// Backward compatibility for callers still posting raw cluster IDs.
-		if clusterID != "" {
-			anchorsByClusterID[clusterID] = dedupeAnchors(append(anchorsByClusterID[clusterID], anchors...))
-			laneKeysByClusterID[clusterID] = mergeLaneKeys(laneKeysByClusterID[clusterID], laneKeys)
-		}
-		phase3ClusterIDs := phase3ClusterIDsForAnchors(anchors, phase3ClusterByAnchor)
-		manualIssueID := ""
-		switch len(phase3ClusterIDs) {
-		case 0:
-			manualIssueID = ""
-		case 1:
-			manualIssueID = phase3ClusterIDs[0]
-		default:
-			return weekSnapshot{}, fmt.Errorf(
-				"phase3 conflict: semantic cluster %s resolves to multiple phase3 cluster IDs (%s); unlink and relink this cluster",
-				clusterID,
-				strings.Join(phase3ClusterIDs, ", "),
-			)
-		}
-
-		if len(phase3ClusterIDs) == 0 {
-			unassignedCount++
-		}
-
-		qualityCodes := triagehtml.QualityIssueCodes(cluster.CanonicalEvidencePhrase)
-		qualityLabels := make([]string, 0, len(qualityCodes))
-		for _, code := range qualityCodes {
-			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
-		}
-		reviewReasons := reviewReasonsForGlobalCluster(cluster, reviewIndex)
-		qualityScore := triagehtml.QualityScore(qualityCodes) + (len(reviewReasons) * 2)
-		alsoSeenIn := environmentsForPhrase(
-			phraseEnvironments[strings.ToLower(strings.TrimSpace(cluster.CanonicalEvidencePhrase))],
-			environment,
-		)
-		primary := primaryContributingTest(cluster.ContributingTests)
-		linkedChildren := buildLinkedChildSignatureRows(
-			manualIssueID,
-			linkedChildrenBySelectionID[selectionID],
-			totalSupportByEnvironment[environment],
-			reviewIndex,
-			rawTextIndex,
-		)
-		isAggregatedRow := strings.TrimSpace(manualIssueID) != "" && len(linkedChildren) > 0
-		if isAggregatedRow {
-			if selectionID != "" {
-				aggregatedSelections[selectionID] = struct{}{}
-			}
-			if clusterID != "" {
-				aggregatedSelections[clusterID] = struct{}{}
-			}
-		}
-		displayReferences := toRunReferences(cluster.References, 0)
-		scoreReferences := []triagehtml.RunReference(nil)
-		trendSparkline := ""
-		trendCounts := []int(nil)
-		trendRange := ""
-		if isAggregatedRow {
-			scoreReferences = toRunReferences(cluster.References, 0)
-			if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(
-				scoreReferences,
-				reviewTrendWindowDays,
-				trendAnchor,
-			); ok {
-				trendSparkline = sparkline
-				trendCounts = append([]int(nil), counts...)
-				trendRange = sparkRange
-			}
-		}
-		historyPresence := semhistory.SignaturePresence{}
-		if historyResolver != nil && isAggregatedRow {
-			historyPresence = historyResolver.PresenceForPhase3Cluster(environment, manualIssueID)
-		}
-		priorLastSeenAt := ""
-		if !historyPresence.PriorLastSeenAt.IsZero() {
-			priorLastSeenAt = historyPresence.PriorLastSeenAt.UTC().Format(time.RFC3339)
-		}
-
-		rows = append(rows, triagehtml.SignatureRow{
-			Environment:         environment,
-			Lane:                strings.TrimSpace(primary.Lane),
-			JobName:             strings.TrimSpace(primary.JobName),
-			TestName:            strings.TrimSpace(primary.TestName),
-			Phrase:              strings.TrimSpace(cluster.CanonicalEvidencePhrase),
-			ClusterID:           clusterID,
-			SearchQuery:         strings.TrimSpace(cluster.SearchQueryPhrase),
-			SupportCount:        cluster.SupportCount,
-			SupportShare:        supportShare(cluster.SupportCount, totalSupportByEnvironment[environment]),
-			PostGoodCount:       cluster.PostGoodCommitCount,
-			AlsoSeenIn:          alsoSeenIn,
-			QualityScore:        qualityScore,
-			QualityNoteLabels:   qualityLabels,
-			ReviewNoteLabels:    reviewReasons,
-			ContributingTests:   toContributingTests(cluster.ContributingTests),
-			FullErrorSamples:    fullErrorSamplesForReferences(environment, cluster.References, rawTextIndex, 0),
-			References:          displayReferences,
-			ScoringReferences:   scoreReferences,
-			TrendSparkline:      trendSparkline,
-			TrendCounts:         trendCounts,
-			TrendRange:          trendRange,
-			PriorWeeksPresent:   historyPresence.PriorWeeksPresent,
-			PriorWeekStarts:     append([]string(nil), historyPresence.PriorWeekStarts...),
-			PriorJobsAffected:   historyPresence.PriorJobsAffected,
-			PriorLastSeenAt:     priorLastSeenAt,
-			ManualIssueID:       manualIssueID,
-			ManualIssueConflict: false,
-			SelectionValue:      selectionID,
-			LinkedChildren:      linkedChildren,
-			SearchIndex: strings.Join([]string{
-				environment,
-				strings.TrimSpace(primary.Lane),
-				strings.TrimSpace(primary.JobName),
-				strings.TrimSpace(primary.TestName),
-				strings.TrimSpace(cluster.CanonicalEvidencePhrase),
-				clusterID,
-				selectionID,
-				strings.Join(qualityLabels, " "),
-				strings.Join(reviewReasons, " "),
-				manualIssueID,
-			}, " "),
-		})
-	}
-
-	return weekSnapshot{
-		Weeks:                weeks,
-		Week:                 week,
-		PreviousWeek:         previousWeek,
-		NextWeek:             nextWeek,
-		Rows:                 rows,
-		OverallJobsByEnv:     overallJobsByEnv,
-		AnchorsByClusterID:   anchorsByClusterID,
-		LaneKeysByClusterID:  laneKeysByClusterID,
-		AggregatedSelection:  aggregatedSelections,
-		UnassignedCount:      unassignedCount,
-		MissingAnchorCount:   missingAnchorCount,
-		TotalClusters:        len(clusters),
-		AnchoredClusterCount: anchoredClusterCount,
-	}, nil
+	return h.service.BuildReviewWeek(ctx, requestedWeek)
 }
 
 func (h *handler) discoverSemanticWeeks(ctx context.Context) ([]string, error) {
 	return h.service.DiscoverSemanticWeeks(ctx)
-}
-
-func (h *handler) buildHistoryResolver(ctx context.Context, week string) (semhistory.GlobalSignatureResolver, error) {
-	return h.service.BuildHistoryResolver(ctx, week)
-}
-
-func sortedEnvironmentKeys(values map[string]int) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(values))
-	for environment := range values {
-		normalized := normalizeEnvironment(environment)
-		if normalized == "" {
-			continue
-		}
-		out = append(out, normalized)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func metricRunTotalsByEnvironment(
-	ctx context.Context,
-	store storecontracts.Store,
-	environments []string,
-	windowStart time.Time,
-	windowEnd time.Time,
-) (map[string]int, error) {
-	totals := map[string]int{}
-	if store == nil {
-		return totals, nil
-	}
-	environmentSet := map[string]struct{}{}
-	for _, environment := range environments {
-		normalized := normalizeEnvironment(environment)
-		if normalized == "" {
-			continue
-		}
-		environmentSet[normalized] = struct{}{}
-	}
-	if len(environmentSet) == 0 {
-		return totals, nil
-	}
-	rows, err := store.ListMetricsDaily(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		environment := normalizeEnvironment(row.Environment)
-		if _, ok := environmentSet[environment]; !ok {
-			continue
-		}
-		if strings.TrimSpace(row.Metric) != metricRunCount {
-			continue
-		}
-		trimmedDate := strings.TrimSpace(row.Date)
-		if !windowStart.IsZero() && !windowEnd.IsZero() {
-			dateValue, ok := parseMetricDate(trimmedDate)
-			if !ok {
-				continue
-			}
-			if dateValue.Before(windowStart) || !dateValue.Before(windowEnd) {
-				continue
-			}
-		}
-		value := int(row.Value)
-		if value <= 0 {
-			continue
-		}
-		totals[environment] += value
-	}
-	return totals, nil
-}
-
-func parseMetricDate(value string) (time.Time, bool) {
-	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
-	if err != nil {
-		return time.Time{}, false
-	}
-	return parsed.UTC(), true
 }
 
 func resolveReconcileWindowWeeks(weeks []string, reconcileWeeks int) []string {
@@ -882,7 +481,7 @@ func (h *handler) collectAnchorsForSignatureMatchKeys(
 func dedupeAnchors(anchors []phase3Anchor) []phase3Anchor {
 	set := map[string]phase3Anchor{}
 	for _, anchor := range anchors {
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -916,7 +515,7 @@ func resolvePhase3ClusterIDForAnchors(ctx context.Context, store storecontracts.
 			RunURL:      row.RunURL,
 			RowID:       row.RowID,
 		}
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -954,7 +553,7 @@ func linkAnchors(ctx context.Context, store storecontracts.Store, phase3ClusterI
 			RunURL:      row.RunURL,
 			RowID:       row.RowID,
 		}
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -965,7 +564,7 @@ func linkAnchors(ctx context.Context, store storecontracts.Store, phase3ClusterI
 		existingClusterByAnchor[key] = phase3Cluster
 	}
 	for _, anchor := range anchors {
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -1008,7 +607,7 @@ func linkAnchors(ctx context.Context, store storecontracts.Store, phase3ClusterI
 	linkRows := make([]semanticcontracts.Phase3LinkRecord, 0, len(anchors))
 	eventRows := make([]semanticcontracts.Phase3EventRecord, 0, len(anchors))
 	for _, anchor := range anchors {
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -1056,7 +655,7 @@ func unlinkAnchors(ctx context.Context, store storecontracts.Store, anchors []ph
 			RunURL:      row.RunURL,
 			RowID:       row.RowID,
 		}
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -1065,7 +664,7 @@ func unlinkAnchors(ctx context.Context, store storecontracts.Store, anchors []ph
 	deleteRows := make([]semanticcontracts.Phase3LinkRecord, 0, len(anchors))
 	eventRows := make([]semanticcontracts.Phase3EventRecord, 0, len(anchors))
 	for _, anchor := range anchors {
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -1286,64 +885,6 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func buildReviewSignalIndex(rows []semanticcontracts.ReviewItemRecord) reviewSignalIndex {
-	index := reviewSignalIndex{
-		ByPhase1ClusterID: map[string]map[string]struct{}{},
-		BySignatureID:     map[string]map[string]struct{}{},
-	}
-	for _, row := range rows {
-		reason := strings.TrimSpace(row.Reason)
-		if reason == "" || strings.EqualFold(reason, phase3InformationalCode) {
-			continue
-		}
-		for _, phase1ID := range row.SourcePhase1ClusterIDs {
-			key := strings.TrimSpace(phase1ID)
-			if key == "" {
-				continue
-			}
-			set := index.ByPhase1ClusterID[key]
-			if set == nil {
-				set = map[string]struct{}{}
-				index.ByPhase1ClusterID[key] = set
-			}
-			set[reason] = struct{}{}
-		}
-		for _, signatureID := range row.MemberSignatureIDs {
-			key := strings.TrimSpace(signatureID)
-			if key == "" {
-				continue
-			}
-			set := index.BySignatureID[key]
-			if set == nil {
-				set = map[string]struct{}{}
-				index.BySignatureID[key] = set
-			}
-			set[reason] = struct{}{}
-		}
-	}
-	return index
-}
-
-func reviewReasonsForGlobalCluster(cluster semanticcontracts.GlobalClusterRecord, index reviewSignalIndex) []string {
-	set := map[string]struct{}{}
-	for _, phase1ID := range cluster.MemberPhase1ClusterIDs {
-		for reason := range index.ByPhase1ClusterID[strings.TrimSpace(phase1ID)] {
-			set[reason] = struct{}{}
-		}
-	}
-	for _, signatureID := range cluster.MemberSignatureIDs {
-		for reason := range index.BySignatureID[strings.TrimSpace(signatureID)] {
-			set[reason] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(set))
-	for reason := range set {
-		out = append(out, reason)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func anchorsForCluster(
 	environment string,
 	references []semanticcontracts.ReferenceRecord,
@@ -1363,7 +904,7 @@ func anchorsForCluster(
 			RunURL:      runURL,
 			RowID:       rowID,
 		}
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -1385,102 +926,10 @@ func anchorsForCluster(
 	return out
 }
 
-func fullErrorSamplesForReferences(
-	environment string,
-	references []semanticcontracts.ReferenceRecord,
-	rawTextByRowKey map[string]string,
-	limit int,
-) []string {
-	if len(references) == 0 {
-		return nil
-	}
-	capacity := len(references)
-	if limit > 0 && limit < capacity {
-		capacity = limit
-	}
-	seen := map[string]struct{}{}
-	samples := make([]string, 0, capacity)
-	for _, reference := range references {
-		rowID := strings.TrimSpace(reference.RowID)
-		if rowID == "" {
-			continue
-		}
-		sample := strings.TrimSpace(rawTextByRowKey[semanticquery.EnvironmentRowKey(environment, rowID)])
-		if sample == "" {
-			continue
-		}
-		if _, exists := seen[sample]; exists {
-			continue
-		}
-		seen[sample] = struct{}{}
-		samples = append(samples, sample)
-		if limit > 0 && len(samples) >= limit {
-			break
-		}
-	}
-	return samples
-}
-
-func toRunReferences(rows []semanticcontracts.ReferenceRecord, limit int) []triagehtml.RunReference {
-	if len(rows) == 0 {
-		return nil
-	}
-	if limit <= 0 || limit > len(rows) {
-		limit = len(rows)
-	}
-	out := make([]triagehtml.RunReference, 0, limit)
-	for _, row := range rows[:limit] {
-		out = append(out, triagehtml.RunReference{
-			RunURL:      strings.TrimSpace(row.RunURL),
-			OccurredAt:  strings.TrimSpace(row.OccurredAt),
-			SignatureID: strings.TrimSpace(row.SignatureID),
-			PRNumber:    row.PRNumber,
-		})
-	}
-	return out
-}
-
-func toContributingTests(rows []semanticcontracts.ContributingTestRecord) []triagehtml.ContributingTest {
-	if len(rows) == 0 {
-		return nil
-	}
-	out := make([]triagehtml.ContributingTest, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, triagehtml.ContributingTest{
-			Lane:         strings.TrimSpace(row.Lane),
-			JobName:      strings.TrimSpace(row.JobName),
-			TestName:     strings.TrimSpace(row.TestName),
-			SupportCount: row.SupportCount,
-		})
-	}
-	return out
-}
-
-func primaryContributingTest(rows []semanticcontracts.ContributingTestRecord) semanticcontracts.ContributingTestRecord {
-	if len(rows) == 0 {
-		return semanticcontracts.ContributingTestRecord{}
-	}
-	best := rows[0]
-	for _, row := range rows[1:] {
-		if row.SupportCount > best.SupportCount {
-			best = row
-			continue
-		}
-		if row.SupportCount == best.SupportCount {
-			currentKey := strings.TrimSpace(row.Lane) + "|" + strings.TrimSpace(row.JobName) + "|" + strings.TrimSpace(row.TestName)
-			bestKey := strings.TrimSpace(best.Lane) + "|" + strings.TrimSpace(best.JobName) + "|" + strings.TrimSpace(best.TestName)
-			if currentKey < bestKey {
-				best = row
-			}
-		}
-	}
-	return best
-}
-
 func phase3ClusterIDsForAnchors(anchors []phase3Anchor, phase3ClusterByAnchor map[string]string) []string {
 	set := map[string]struct{}{}
 	for _, anchor := range anchors {
-		phase3ClusterID := strings.TrimSpace(phase3ClusterByAnchor[anchor.key()])
+		phase3ClusterID := strings.TrimSpace(phase3ClusterByAnchor[anchor.Key()])
 		if phase3ClusterID == "" {
 			continue
 		}
@@ -1492,134 +941,6 @@ func phase3ClusterIDsForAnchors(anchors []phase3Anchor, phase3ClusterByAnchor ma
 	}
 	sort.Strings(out)
 	return out
-}
-
-func linkedChildrenByMergedSelectionID(
-	globalClusters []semanticcontracts.GlobalClusterRecord,
-	phase3Links []semanticcontracts.Phase3LinkRecord,
-) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
-	phase3ClusterByAnchor := map[string]string{}
-	for _, row := range phase3Links {
-		phase3ClusterID := strings.TrimSpace(row.IssueID)
-		if phase3ClusterID == "" {
-			continue
-		}
-		anchor := phase3Anchor{
-			Environment: row.Environment,
-			RunURL:      row.RunURL,
-			RowID:       row.RowID,
-		}
-		key := anchor.key()
-		if key == "" {
-			continue
-		}
-		phase3ClusterByAnchor[key] = phase3ClusterID
-	}
-	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
-	for _, cluster := range globalClusters {
-		environment := normalizeEnvironment(cluster.Environment)
-		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
-		if environment == "" || clusterID == "" {
-			return nil, fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
-		}
-		anchors := anchorsForCluster(environment, cluster.References)
-		phase3ClusterIDs := phase3ClusterIDsForAnchors(anchors, phase3ClusterByAnchor)
-		if len(phase3ClusterIDs) > 1 {
-			return nil, fmt.Errorf(
-				"phase3 conflict: semantic cluster %s resolves to multiple phase3 cluster IDs (%s)",
-				clusterID,
-				strings.Join(phase3ClusterIDs, ", "),
-			)
-		}
-		if len(phase3ClusterIDs) == 0 {
-			continue
-		}
-		selectionID := rowSelectionID(environment, phase3ClusterIDs[0])
-		grouped[selectionID] = append(grouped[selectionID], cluster)
-	}
-	for key := range grouped {
-		rows := grouped[key]
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].SupportCount != rows[j].SupportCount {
-				return rows[i].SupportCount > rows[j].SupportCount
-			}
-			if strings.TrimSpace(rows[i].CanonicalEvidencePhrase) != strings.TrimSpace(rows[j].CanonicalEvidencePhrase) {
-				return strings.TrimSpace(rows[i].CanonicalEvidencePhrase) < strings.TrimSpace(rows[j].CanonicalEvidencePhrase)
-			}
-			return strings.TrimSpace(rows[i].Phase2ClusterID) < strings.TrimSpace(rows[j].Phase2ClusterID)
-		})
-		grouped[key] = rows
-	}
-	return grouped, nil
-}
-
-func buildLinkedChildSignatureRows(
-	manualIssueID string,
-	childClusters []semanticcontracts.GlobalClusterRecord,
-	totalSupportByEnvironment int,
-	reviewIndex reviewSignalIndex,
-	rawTextIndex map[string]string,
-) []triagehtml.SignatureRow {
-	if strings.TrimSpace(manualIssueID) == "" || len(childClusters) == 0 {
-		return nil
-	}
-	out := make([]triagehtml.SignatureRow, 0, len(childClusters))
-	for _, cluster := range childClusters {
-		environment := normalizeEnvironment(cluster.Environment)
-		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
-		qualityCodes := triagehtml.QualityIssueCodes(cluster.CanonicalEvidencePhrase)
-		qualityLabels := make([]string, 0, len(qualityCodes))
-		for _, code := range qualityCodes {
-			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
-		}
-		reviewReasons := reviewReasonsForGlobalCluster(cluster, reviewIndex)
-		qualityScore := triagehtml.QualityScore(qualityCodes) + (len(reviewReasons) * 2)
-		primary := primaryContributingTest(cluster.ContributingTests)
-
-		out = append(out, triagehtml.SignatureRow{
-			Environment:         environment,
-			Lane:                strings.TrimSpace(primary.Lane),
-			JobName:             strings.TrimSpace(primary.JobName),
-			TestName:            strings.TrimSpace(primary.TestName),
-			Phrase:              strings.TrimSpace(cluster.CanonicalEvidencePhrase),
-			ClusterID:           clusterID,
-			SearchQuery:         strings.TrimSpace(cluster.SearchQueryPhrase),
-			SupportCount:        cluster.SupportCount,
-			SupportShare:        supportShare(cluster.SupportCount, totalSupportByEnvironment),
-			PostGoodCount:       cluster.PostGoodCommitCount,
-			QualityScore:        qualityScore,
-			QualityNoteLabels:   qualityLabels,
-			ReviewNoteLabels:    reviewReasons,
-			ContributingTests:   toContributingTests(cluster.ContributingTests),
-			FullErrorSamples:    fullErrorSamplesForReferences(environment, cluster.References, rawTextIndex, 0),
-			References:          toRunReferences(cluster.References, 0),
-			ManualIssueID:       strings.TrimSpace(manualIssueID),
-			ManualIssueConflict: false,
-			SelectionValue:      rowSelectionID(environment, clusterID),
-		})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].SupportCount != out[j].SupportCount {
-			return out[i].SupportCount > out[j].SupportCount
-		}
-		if out[i].PostGoodCount != out[j].PostGoodCount {
-			return out[i].PostGoodCount > out[j].PostGoodCount
-		}
-		if strings.TrimSpace(out[i].Phrase) != strings.TrimSpace(out[j].Phrase) {
-			return strings.TrimSpace(out[i].Phrase) < strings.TrimSpace(out[j].Phrase)
-		}
-		return strings.TrimSpace(out[i].ClusterID) < strings.TrimSpace(out[j].ClusterID)
-	})
-	return out
-}
-
-func rowSelectionID(environment string, clusterID string) string {
-	normalizedEnvironment := normalizeEnvironment(environment)
-	trimmedClusterID := strings.TrimSpace(clusterID)
-	if normalizedEnvironment == "" || trimmedClusterID == "" {
-		return trimmedClusterID
-	}
-	return normalizedEnvironment + "|" + trimmedClusterID
 }
 
 func filterAggregatedSelectionIDs(aggregated map[string]struct{}, selectedClusterIDs []string) []string {
@@ -1670,25 +991,6 @@ func selectedLaneKeys(laneKeysByClusterID map[string][]string, selectedClusterID
 	return out
 }
 
-func mergeLaneKeys(existing []string, incoming []string) []string {
-	set := map[string]struct{}{}
-	for _, laneKey := range existing {
-		set[normalizeLaneKey(laneKey)] = struct{}{}
-	}
-	for _, laneKey := range incoming {
-		set[normalizeLaneKey(laneKey)] = struct{}{}
-	}
-	if len(set) == 0 {
-		set[normalizeLaneKey("")] = struct{}{}
-	}
-	out := make([]string, 0, len(set))
-	for laneKey := range set {
-		out = append(out, laneKey)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func laneKeysForContributingTests(rows []semanticcontracts.ContributingTestRecord) []string {
 	set := map[string]struct{}{}
 	for _, row := range rows {
@@ -1709,7 +1011,7 @@ func selectedAnchors(anchorsByClusterID map[string][]phase3Anchor, selectedClust
 	set := map[string]phase3Anchor{}
 	for _, clusterID := range selectedClusterIDs {
 		for _, anchor := range anchorsByClusterID[strings.TrimSpace(clusterID)] {
-			key := anchor.key()
+			key := anchor.Key()
 			if key == "" {
 				continue
 			}
@@ -1749,7 +1051,7 @@ func newPhase3ClusterID(anchors []phase3Anchor) string {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	keys := make([]string, 0, len(anchors))
 	for _, anchor := range anchors {
-		key := anchor.key()
+		key := anchor.Key()
 		if key == "" {
 			continue
 		}
@@ -1843,23 +1145,6 @@ func normalizeStringSlice(values []string) []string {
 	out := make([]string, 0, len(set))
 	for value := range set {
 		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func environmentsForPhrase(set map[string]struct{}, currentEnvironment string) []string {
-	if len(set) == 0 {
-		return nil
-	}
-	current := normalizeEnvironment(currentEnvironment)
-	out := make([]string, 0, len(set))
-	for environment := range set {
-		normalized := normalizeEnvironment(environment)
-		if normalized == "" || normalized == current {
-			continue
-		}
-		out = append(out, normalized)
 	}
 	sort.Strings(out)
 	return out
