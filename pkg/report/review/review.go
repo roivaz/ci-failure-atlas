@@ -13,14 +13,13 @@ import (
 	"strings"
 	"time"
 
+	frontservice "ci-failure-atlas/pkg/frontend/service"
 	triagehtml "ci-failure-atlas/pkg/report/triagehtml"
-	"ci-failure-atlas/pkg/report/weeknav"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	sourceoptions "ci-failure-atlas/pkg/source/options"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
-	postgresstore "ci-failure-atlas/pkg/store/postgres"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -49,9 +48,8 @@ type HandlerOptions struct {
 }
 
 type handler struct {
-	defaultWeek         string
+	service             *frontservice.Service
 	historyHorizonWeeks int
-	postgresPool        *pgxpool.Pool
 	routePrefix         string
 	weeklyPath          string
 	globalPath          string
@@ -95,23 +93,18 @@ type reviewSignalIndex struct {
 }
 
 func NewHandler(opts HandlerOptions) (http.Handler, error) {
-	historyHorizonWeeks := opts.HistoryHorizonWeeks
-	if historyHorizonWeeks <= 0 {
-		historyHorizonWeeks = defaultHistoryWeeks
-	}
-
-	if opts.PostgresPool == nil {
-		return nil, fmt.Errorf("postgres pool is required")
-	}
-	defaultWeek, err := postgresstore.NormalizeWeek(opts.DefaultWeek)
+	service, err := frontservice.New(frontservice.Options{
+		DefaultWeek:         opts.DefaultWeek,
+		HistoryHorizonWeeks: opts.HistoryHorizonWeeks,
+		PostgresPool:        opts.PostgresPool,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("invalid default week: %w", err)
+		return nil, err
 	}
 
 	h := &handler{
-		defaultWeek:         defaultWeek,
-		historyHorizonWeeks: historyHorizonWeeks,
-		postgresPool:        opts.PostgresPool,
+		service:             service,
+		historyHorizonWeeks: service.HistoryHorizonWeeks(),
 		routePrefix:         normalizeRoutePrefix(opts.RoutePrefix),
 		weeklyPath:          normalizeAbsolutePath(opts.WeeklyPath),
 		globalPath:          normalizeAbsolutePath(opts.GlobalPath),
@@ -125,17 +118,7 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 }
 
 func (h *handler) openStoreForWeek(week string) (storecontracts.Store, error) {
-	week = strings.TrimSpace(week)
-	if week == "" {
-		return nil, fmt.Errorf("week is required")
-	}
-	store, err := postgresstore.New(h.postgresPool, postgresstore.Options{
-		Week: week,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open postgres store for week %q: %w", week, err)
-	}
-	return store, nil
+	return h.service.OpenStoreForWeek(week)
 }
 
 func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -320,12 +303,16 @@ func (h *handler) handleAPIWeeks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	currentWeek, previousWeek, nextWeek, _ := resolveWeekWindow(weeks, strings.TrimSpace(r.URL.Query().Get("week")), h.defaultWeek)
+	window, err := h.service.ResolveWeekWindow(r.Context(), strings.TrimSpace(r.URL.Query().Get("week")), time.Time{})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"weeks":         weeks,
-		"current_week":  currentWeek,
-		"previous_week": previousWeek,
-		"next_week":     nextWeek,
+		"current_week":  window.CurrentWeek,
+		"previous_week": window.PreviousWeek,
+		"next_week":     window.NextWeek,
 	})
 }
 
@@ -385,7 +372,13 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 	if err != nil {
 		return weekSnapshot{}, err
 	}
-	week, previousWeek, nextWeek, _ := resolveWeekWindow(weeks, requestedWeek, h.defaultWeek)
+	window, err := h.service.ResolveWeekWindow(ctx, requestedWeek, time.Time{})
+	if err != nil {
+		return weekSnapshot{}, err
+	}
+	week := window.CurrentWeek
+	previousWeek := window.PreviousWeek
+	nextWeek := window.NextWeek
 	store, err := h.openStoreForWeek(week)
 	if err != nil {
 		return weekSnapshot{}, fmt.Errorf("open semantic store for semantic week %q: %w", week, err)
@@ -660,32 +653,11 @@ func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (w
 }
 
 func (h *handler) discoverSemanticWeeks(ctx context.Context) ([]string, error) {
-	weeks, err := postgresstore.ListWeeks(ctx, h.postgresPool)
-	if err != nil {
-		return nil, fmt.Errorf("list semantic weeks from postgres: %w", err)
-	}
-	if len(weeks) == 0 {
-		return nil, fmt.Errorf("no semantic weeks found in postgres store")
-	}
-	return weeks, nil
+	return h.service.DiscoverSemanticWeeks(ctx)
 }
 
 func (h *handler) buildHistoryResolver(ctx context.Context, week string) (semhistory.GlobalSignatureResolver, error) {
-	buildOptions := semhistory.BuildOptions{
-		CurrentWeek:                  strings.TrimSpace(week),
-		GlobalSignatureLookbackWeeks: h.historyHorizonWeeks,
-	}
-	buildOptions.ListWeeks = func(ctx context.Context) ([]string, error) {
-		return postgresstore.ListWeeks(ctx, h.postgresPool)
-	}
-	buildOptions.OpenStore = func(_ context.Context, week string) (storecontracts.Store, error) {
-		return h.openStoreForWeek(week)
-	}
-	return semhistory.BuildGlobalSignatureResolver(ctx, buildOptions)
-}
-
-func resolveWeekWindow(weeks []string, requestedWeek string, defaultWeek string) (string, string, string, int) {
-	return weeknav.ResolveWindow(weeks, requestedWeek, defaultWeek, time.Now().UTC())
+	return h.service.BuildHistoryResolver(ctx, week)
 }
 
 func sortedEnvironmentKeys(values map[string]int) []string {
