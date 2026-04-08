@@ -186,6 +186,9 @@ func triageReportMetricRunTotalsByEnvironment(
 	if len(normalizedEnvironments) == 0 {
 		return totals, nil
 	}
+	if metricDates := metricDateLabelsFromWindow(windowStart, windowEnd); len(metricDates) > 0 {
+		return sumMetricByEnvironmentForDates(ctx, store, "run_count", normalizedEnvironments, metricDates)
+	}
 	environmentSet := make(map[string]struct{}, len(normalizedEnvironments))
 	for _, environment := range normalizedEnvironments {
 		environmentSet[environment] = struct{}{}

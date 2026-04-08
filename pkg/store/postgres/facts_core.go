@@ -130,41 +130,32 @@ func (s *Store) listRunKeysImpl(ctx context.Context) ([]string, error) {
 }
 
 func (s *Store) listRunDatesImpl(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT environment, run_url, occurred_at FROM cfa_runs`)
+	rows, err := s.pool.Query(ctx, `
+SELECT DISTINCT cfa_parse_rfc3339_utc_date(occurred_at)::TEXT AS occurred_date
+FROM cfa_runs
+WHERE cfa_parse_rfc3339_utc_date(occurred_at) IS NOT NULL
+ORDER BY occurred_date
+`)
 	if err != nil {
 		return nil, fmt.Errorf("query run dates: %w", err)
 	}
 	defer rows.Close()
 
-	dates := map[string]struct{}{}
+	out := make([]string, 0)
 	for rows.Next() {
-		var environment, runURL, occurredAt string
-		if err := rows.Scan(&environment, &runURL, &occurredAt); err != nil {
+		var occurredDate string
+		if err := rows.Scan(&occurredDate); err != nil {
 			return nil, fmt.Errorf("scan run date row: %w", err)
 		}
-		normalized := normalizeRunRecord(storecontracts.RunRecord{
-			Environment: environment,
-			RunURL:      runURL,
-			OccurredAt:  occurredAt,
-		})
-		if normalized.Environment == "" || normalized.RunURL == "" {
+		trimmedDate := strings.TrimSpace(occurredDate)
+		if trimmedDate == "" {
 			continue
 		}
-		date, ok := dateFromTimestamp(normalized.OccurredAt)
-		if !ok {
-			continue
-		}
-		dates[date] = struct{}{}
+		out = append(out, trimmedDate)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate run dates: %w", err)
 	}
-
-	out := make([]string, 0, len(dates))
-	for date := range dates {
-		out = append(out, date)
-	}
-	sort.Strings(out)
 	return out, nil
 }
 
@@ -182,7 +173,9 @@ func (s *Store) listRunsByDateImpl(ctx context.Context, environment string, date
 SELECT environment, run_url, job_name, pr_number, pr_state, pr_sha, final_merged_sha, merged_pr, post_good_commit, failed, occurred_at
 FROM cfa_runs
 WHERE environment = $1
-`, lookupEnv)
+  AND cfa_parse_rfc3339_utc_date(occurred_at) = $2::DATE
+ORDER BY occurred_at, run_url
+`, lookupEnv, lookupDate)
 	if err != nil {
 		return nil, fmt.Errorf("query runs by date: %w", err)
 	}
@@ -207,13 +200,6 @@ WHERE environment = $1
 			return nil, fmt.Errorf("scan run row by date: %w", err)
 		}
 		normalized := normalizeRunRecord(row)
-		if normalized.Environment != lookupEnv {
-			continue
-		}
-		runDate, ok := dateFromTimestamp(normalized.OccurredAt)
-		if !ok || runDate != lookupDate {
-			continue
-		}
 		if normalized.RunURL == "" {
 			continue
 		}
@@ -222,12 +208,6 @@ WHERE environment = $1
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate runs by date: %w", err)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].OccurredAt != out[j].OccurredAt {
-			return out[i].OccurredAt < out[j].OccurredAt
-		}
-		return out[i].RunURL < out[j].RunURL
-	})
 	return out, nil
 }
 
@@ -734,7 +714,9 @@ func (s *Store) listRawFailuresByDateImpl(ctx context.Context, environment strin
 SELECT environment, row_id, run_url, non_artifact_backed, test_name, test_suite, signature_id, occurred_at, raw_text, normalized_text
 FROM cfa_raw_failures
 WHERE environment = $1
-`, lookupEnv)
+  AND cfa_parse_rfc3339_utc_date(occurred_at) = $2::DATE
+ORDER BY occurred_at, run_url, row_id, signature_id
+`, lookupEnv, lookupDate)
 	if err != nil {
 		return nil, fmt.Errorf("query raw failures by date: %w", err)
 	}
@@ -758,13 +740,6 @@ WHERE environment = $1
 			return nil, fmt.Errorf("scan raw failure by date row: %w", err)
 		}
 		normalized := normalizeRawFailureRecord(row)
-		if normalized.Environment != lookupEnv {
-			continue
-		}
-		rowDate, ok := dateFromTimestamp(normalized.OccurredAt)
-		if !ok || rowDate != lookupDate {
-			continue
-		}
 		if normalized.RowID == "" || normalized.RunURL == "" || normalized.SignatureID == "" {
 			continue
 		}
@@ -773,18 +748,6 @@ WHERE environment = $1
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate raw failures by date: %w", err)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].OccurredAt != out[j].OccurredAt {
-			return out[i].OccurredAt < out[j].OccurredAt
-		}
-		if out[i].RunURL != out[j].RunURL {
-			return out[i].RunURL < out[j].RunURL
-		}
-		if out[i].RowID != out[j].RowID {
-			return out[i].RowID < out[j].RowID
-		}
-		return out[i].SignatureID < out[j].SignatureID
-	})
 	return out, nil
 }
 

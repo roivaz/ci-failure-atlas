@@ -132,11 +132,23 @@ type MetricsStore interface {
 	ListMetricsDaily(ctx context.Context) ([]MetricDailyRecord, error)
 	ListMetricsDailyByDate(ctx context.Context, environment string, date string) ([]MetricDailyRecord, error)
 	ListMetricDates(ctx context.Context) ([]string, error)
+	ListMetricsDailyForDates(ctx context.Context, environments []string, dates []string) ([]MetricDailyRecord, error)
+	SumMetricByEnvironmentForDates(ctx context.Context, metric string, environments []string, dates []string) (map[string]float64, error)
 }
 
 type TestMetadataDailyStore interface {
 	UpsertTestMetadataDaily(ctx context.Context, rows []TestMetadataDailyRecord) error
 	ListTestMetadataDailyByDate(ctx context.Context, environment string, date string) ([]TestMetadataDailyRecord, error)
+	ListTestMetadataDatesByEnvironment(ctx context.Context, environment string, period string) ([]string, error)
+	ListBelowTargetTestMetadataByDate(ctx context.Context, environment string, date string, period string, targetPassRate float64, minRuns int, limit int) ([]TestMetadataDailyRecord, error)
+}
+
+type SemanticWeekSummary struct {
+	TestClusterCountsByEnv   map[string]int
+	ReviewQueueCountsByEnv   map[string]int
+	GlobalClusterCountsByEnv map[string]int
+	GlobalSupportTotalsByEnv map[string]int
+	AvailableEnvironments    []string
 }
 
 type CheckpointStore interface {
@@ -157,6 +169,7 @@ type MaterializedWeek struct {
 type SemanticStore interface {
 	ReplaceMaterializedWeek(ctx context.Context, week MaterializedWeek) error
 	ListGlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error)
+	GetSemanticWeekSummary(ctx context.Context) (SemanticWeekSummary, error)
 
 	ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error)
 

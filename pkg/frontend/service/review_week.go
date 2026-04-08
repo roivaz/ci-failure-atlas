@@ -736,6 +736,14 @@ func reviewMetricRunTotalsByEnvironment(
 	if len(environmentSet) == 0 {
 		return totals, nil
 	}
+	normalizedEnvironments := make([]string, 0, len(environmentSet))
+	for environment := range environmentSet {
+		normalizedEnvironments = append(normalizedEnvironments, environment)
+	}
+	sort.Strings(normalizedEnvironments)
+	if metricDates := metricDateLabelsFromWindow(windowStart, windowEnd); len(metricDates) > 0 {
+		return sumMetricByEnvironmentForDates(ctx, store, reviewMetricRunCount, normalizedEnvironments, metricDates)
+	}
 	rows, err := store.ListMetricsDaily(ctx)
 	if err != nil {
 		return nil, err

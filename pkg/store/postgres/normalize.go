@@ -22,6 +22,29 @@ func normalizeSemanticEnvironment(value string) string {
 	return normalized
 }
 
+func normalizeEnvironmentSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	set := map[string]struct{}{}
+	for _, value := range values {
+		normalized := normalizeEnvironment(value)
+		if normalized == "" {
+			continue
+		}
+		set[normalized] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func normalizeDate(value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -138,16 +161,20 @@ func normalizeMetricDailyRecord(row storecontracts.MetricDailyRecord) storecontr
 	}
 }
 
-func normalizeTestMetadataDailyRecord(row storecontracts.TestMetadataDailyRecord) storecontracts.TestMetadataDailyRecord {
-	period := strings.TrimSpace(row.Period)
+func normalizeTestMetadataPeriod(value string) string {
+	period := strings.TrimSpace(value)
 	if period == "" {
-		period = "default"
+		return "default"
 	}
+	return period
+}
+
+func normalizeTestMetadataDailyRecord(row storecontracts.TestMetadataDailyRecord) storecontracts.TestMetadataDailyRecord {
 	return storecontracts.TestMetadataDailyRecord{
 		Environment:            normalizeEnvironment(row.Environment),
 		Date:                   strings.TrimSpace(row.Date),
 		Release:                strings.TrimSpace(row.Release),
-		Period:                 period,
+		Period:                 normalizeTestMetadataPeriod(row.Period),
 		TestName:               strings.TrimSpace(row.TestName),
 		TestSuite:              strings.TrimSpace(row.TestSuite),
 		CurrentPassPercentage:  row.CurrentPassPercentage,
@@ -245,6 +272,32 @@ func normalizeStringSlice(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func normalizeDateSlice(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	set := map[string]struct{}{}
+	for _, value := range values {
+		normalized, err := normalizeDate(value)
+		if err != nil {
+			return nil, err
+		}
+		if normalized == "" {
+			continue
+		}
+		set[normalized] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func normalizeContributingTests(rows []semanticcontracts.ContributingTestRecord) []semanticcontracts.ContributingTestRecord {
@@ -452,4 +505,3 @@ func phase3EventKey(row semanticcontracts.Phase3EventRecord) string {
 	}
 	return eventID
 }
-

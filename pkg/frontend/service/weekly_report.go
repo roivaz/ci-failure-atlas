@@ -298,34 +298,15 @@ func loadMetricsDailyByEnvironmentDate(
 	environments []string,
 	dates []string,
 ) (map[string][]storecontracts.MetricDailyRecord, error) {
-	rows, err := store.ListMetricsDaily(ctx)
+	rows, err := loadMetricsDailyForDates(ctx, store, environments, dates)
 	if err != nil {
-		return nil, fmt.Errorf("list metrics daily: %w", err)
+		return nil, fmt.Errorf("list metrics daily for dates: %w", err)
 	}
-	environmentSet := map[string]struct{}{}
-	for _, environment := range environments {
-		normalized := normalizeReportEnvironment(environment)
-		if normalized == "" {
-			continue
-		}
-		environmentSet[normalized] = struct{}{}
-	}
-	dateSet := map[string]struct{}{}
-	for _, date := range dates {
-		trimmed := strings.TrimSpace(date)
-		if trimmed == "" {
-			continue
-		}
-		dateSet[trimmed] = struct{}{}
-	}
-	out := make(map[string][]storecontracts.MetricDailyRecord, len(environmentSet)*len(dateSet))
+	out := make(map[string][]storecontracts.MetricDailyRecord)
 	for _, row := range rows {
 		environment := normalizeReportEnvironment(row.Environment)
-		if _, ok := environmentSet[environment]; !ok {
-			continue
-		}
 		date := strings.TrimSpace(row.Date)
-		if _, ok := dateSet[date]; !ok {
+		if environment == "" || date == "" {
 			continue
 		}
 		key := weeklyEnvironmentDateKey(environment, date)
@@ -619,149 +600,64 @@ func loadBelowTargetTestsByEnvironment(
 		return out, nil
 	}
 
-	metricDates, err := store.ListMetricDates(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list metric dates for test metadata date selection: %w", err)
-	}
-	candidateDatesAfter := metadataDatesAfter(metricDates, windowEndDate)
-	candidateDatesBefore := metadataDatesBefore(metricDates, windowEndDate)
-
 	for _, environment := range weeklyReportEnvironments {
-		selectedDate, selectErr := firstMetadataDateForEnvironment(
-			ctx,
-			store,
-			environment,
-			trimmedPeriod,
-			candidateDatesAfter,
-		)
-		if selectErr != nil {
-			return nil, selectErr
+		availableDates, err := store.ListTestMetadataDatesByEnvironment(ctx, environment, trimmedPeriod)
+		if err != nil {
+			return nil, fmt.Errorf("list test metadata dates for env=%q period=%q: %w", environment, trimmedPeriod, err)
 		}
-		if selectedDate == "" {
-			selectedDate, selectErr = firstMetadataDateForEnvironment(
-				ctx,
-				store,
-				environment,
-				trimmedPeriod,
-				candidateDatesBefore,
-			)
-			if selectErr != nil {
-				return nil, selectErr
-			}
-		}
+		selectedDate := preferredMetadataDateForWindow(windowEndDate, availableDates)
 		if selectedDate == "" {
 			out[environment] = nil
 			continue
 		}
-
-		filtered, _, collectErr := collectBelowTargetTestsForDates(
+		rows, err := store.ListBelowTargetTestMetadataByDate(
 			ctx,
-			store,
 			environment,
-			[]string{selectedDate},
+			selectedDate,
 			trimmedPeriod,
 			targetPassRate,
 			minRuns,
 			limit,
 		)
-		if collectErr != nil {
-			return nil, collectErr
+		if err != nil {
+			return nil, fmt.Errorf("list below-target test metadata for env=%q date=%q: %w", environment, selectedDate, err)
 		}
-		out[environment] = filtered
+		out[environment] = belowTargetTestsFromMetadataRows(rows)
 	}
 	return out, nil
 }
 
-func collectBelowTargetTestsForDates(
-	ctx context.Context,
-	store storecontracts.Store,
-	environment string,
-	dates []string,
-	period string,
-	targetPassRate float64,
-	minRuns int,
-	limit int,
-) ([]belowTargetTest, bool, error) {
-	bestByTestKey := map[string]belowTargetTest{}
-	hadRows := false
-	for _, date := range dates {
-		rows, err := store.ListTestMetadataDailyByDate(ctx, environment, date)
-		if err != nil {
-			return nil, hadRows, fmt.Errorf("list test metadata daily for env=%q date=%q: %w", environment, date, err)
-		}
-		for _, row := range rows {
-			if period != "" && strings.TrimSpace(row.Period) != period {
-				continue
-			}
-			testName := strings.TrimSpace(row.TestName)
-			if testName == "" {
-				continue
-			}
-			hadRows = true
-			testSuite := strings.TrimSpace(row.TestSuite)
-			candidate := belowTargetTest{
-				TestName:  testName,
-				TestSuite: testSuite,
-				Date:      strings.TrimSpace(row.Date),
-				PassRate:  row.CurrentPassPercentage,
-				Runs:      row.CurrentRuns,
-			}
-			key := strings.ToLower(testSuite) + "|" + strings.ToLower(testName)
-			existing, exists := bestByTestKey[key]
-			if !exists || preferBelowTargetTest(candidate, existing) {
-				bestByTestKey[key] = candidate
-			}
-		}
+func belowTargetTestsFromMetadataRows(rows []storecontracts.TestMetadataDailyRecord) []belowTargetTest {
+	if len(rows) == 0 {
+		return nil
 	}
-
-	filtered := make([]belowTargetTest, 0, len(bestByTestKey))
-	for _, candidate := range bestByTestKey {
-		if candidate.Runs < minRuns || candidate.PassRate >= targetPassRate {
+	out := make([]belowTargetTest, 0, len(rows))
+	for _, row := range rows {
+		testName := strings.TrimSpace(row.TestName)
+		if testName == "" {
 			continue
 		}
-		filtered = append(filtered, candidate)
+		out = append(out, belowTargetTest{
+			TestName:  testName,
+			TestSuite: strings.TrimSpace(row.TestSuite),
+			Date:      strings.TrimSpace(row.Date),
+			PassRate:  row.CurrentPassPercentage,
+			Runs:      row.CurrentRuns,
+		})
 	}
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].PassRate != filtered[j].PassRate {
-			return filtered[i].PassRate < filtered[j].PassRate
-		}
-		if filtered[i].Runs != filtered[j].Runs {
-			return filtered[i].Runs > filtered[j].Runs
-		}
-		if filtered[i].TestSuite != filtered[j].TestSuite {
-			return filtered[i].TestSuite < filtered[j].TestSuite
-		}
-		return filtered[i].TestName < filtered[j].TestName
-	})
-	if limit > 0 && len(filtered) > limit {
-		filtered = filtered[:limit]
-	}
-	return filtered, hadRows, nil
+	return out
 }
 
-func firstMetadataDateForEnvironment(
-	ctx context.Context,
-	store storecontracts.Store,
-	environment string,
-	period string,
-	candidateDates []string,
-) (string, error) {
-	for _, date := range candidateDates {
-		rows, err := store.ListTestMetadataDailyByDate(ctx, environment, date)
-		if err != nil {
-			return "", fmt.Errorf("list test metadata daily for env=%q date=%q: %w", environment, date, err)
-		}
-		for _, row := range rows {
-			if period != "" && strings.TrimSpace(row.Period) != period {
-				continue
-			}
-			if strings.TrimSpace(row.TestName) == "" {
-				continue
-			}
-			return date, nil
-		}
+func preferredMetadataDateForWindow(windowEndDate string, availableDates []string) string {
+	candidateDatesAfter := metadataDatesAfter(availableDates, windowEndDate)
+	if len(candidateDatesAfter) > 0 {
+		return candidateDatesAfter[0]
 	}
-	return "", nil
+	candidateDatesBefore := metadataDatesBefore(availableDates, windowEndDate)
+	if len(candidateDatesBefore) > 0 {
+		return candidateDatesBefore[0]
+	}
+	return ""
 }
 
 func metadataDatesAfter(metricDates []string, threshold string) []string {
@@ -798,22 +694,6 @@ func metadataDatesBefore(metricDates []string, threshold string) []string {
 		out[i], out[j] = out[j], out[i]
 	}
 	return out
-}
-
-func preferBelowTargetTest(candidate belowTargetTest, existing belowTargetTest) bool {
-	if candidate.Date != existing.Date {
-		return candidate.Date > existing.Date
-	}
-	if candidate.Runs != existing.Runs {
-		return candidate.Runs > existing.Runs
-	}
-	if candidate.PassRate != existing.PassRate {
-		return candidate.PassRate < existing.PassRate
-	}
-	if candidate.TestSuite != existing.TestSuite {
-		return candidate.TestSuite < existing.TestSuite
-	}
-	return candidate.TestName < existing.TestName
 }
 
 func rankTopSignaturesByEnvironment(snapshot semanticSnapshot, limit int, minShare float64) map[string][]topSignature {

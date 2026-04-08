@@ -191,6 +191,20 @@ func (s *Store) ListMetricDates(ctx context.Context) ([]string, error) {
 	return s.listMetricDatesImpl(ctx)
 }
 
+func (s *Store) ListMetricsDailyForDates(ctx context.Context, environments []string, dates []string) ([]storecontracts.MetricDailyRecord, error) {
+	if err := requireContext(ctx); err != nil {
+		return nil, err
+	}
+	return s.listMetricsDailyForDatesImpl(ctx, environments, dates)
+}
+
+func (s *Store) SumMetricByEnvironmentForDates(ctx context.Context, metric string, environments []string, dates []string) (map[string]float64, error) {
+	if err := requireContext(ctx); err != nil {
+		return nil, err
+	}
+	return s.sumMetricByEnvironmentForDatesImpl(ctx, metric, environments, dates)
+}
+
 func (s *Store) UpsertTestMetadataDaily(ctx context.Context, rows []storecontracts.TestMetadataDailyRecord) error {
 	if err := requireContext(ctx); err != nil {
 		return err
@@ -203,6 +217,20 @@ func (s *Store) ListTestMetadataDailyByDate(ctx context.Context, environment str
 		return nil, err
 	}
 	return s.listTestMetadataDailyByDateImpl(ctx, environment, date)
+}
+
+func (s *Store) ListTestMetadataDatesByEnvironment(ctx context.Context, environment string, period string) ([]string, error) {
+	if err := requireContext(ctx); err != nil {
+		return nil, err
+	}
+	return s.listTestMetadataDatesByEnvironmentImpl(ctx, environment, period)
+}
+
+func (s *Store) ListBelowTargetTestMetadataByDate(ctx context.Context, environment string, date string, period string, targetPassRate float64, minRuns int, limit int) ([]storecontracts.TestMetadataDailyRecord, error) {
+	if err := requireContext(ctx); err != nil {
+		return nil, err
+	}
+	return s.listBelowTargetTestMetadataByDateImpl(ctx, environment, date, period, targetPassRate, minRuns, limit)
 }
 
 func (s *Store) UpsertCheckpoints(ctx context.Context, rows []storecontracts.CheckpointRecord) error {
@@ -254,6 +282,13 @@ func (s *Store) ListReviewQueue(ctx context.Context) ([]semanticcontracts.Review
 	return s.listReviewQueueImpl(ctx)
 }
 
+func (s *Store) GetSemanticWeekSummary(ctx context.Context) (storecontracts.SemanticWeekSummary, error) {
+	if err := requireContext(ctx); err != nil {
+		return storecontracts.SemanticWeekSummary{}, err
+	}
+	return s.getSemanticWeekSummaryImpl(ctx)
+}
+
 func (s *Store) UpsertPhase3Issues(ctx context.Context, rows []semanticcontracts.Phase3IssueRecord) error {
 	if err := requireContext(ctx); err != nil {
 		return err
@@ -302,7 +337,6 @@ func (s *Store) ListPhase3Events(ctx context.Context, limit int) ([]semanticcont
 	}
 	return s.listPhase3EventsImpl(ctx, limit)
 }
-
 
 func requireContext(ctx context.Context) error {
 	if ctx == nil {

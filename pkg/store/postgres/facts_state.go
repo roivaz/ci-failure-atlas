@@ -62,7 +62,11 @@ DO UPDATE SET value = EXCLUDED.value
 }
 
 func (s *Store) listMetricsDailyImpl(ctx context.Context) ([]storecontracts.MetricDailyRecord, error) {
-	rows, err := s.pool.Query(ctx, `SELECT environment, date, metric, value FROM cfa_metrics_daily`)
+	rows, err := s.pool.Query(ctx, `
+SELECT environment, date, metric, value
+FROM cfa_metrics_daily
+ORDER BY environment, date, metric
+`)
 	if err != nil {
 		return nil, fmt.Errorf("query metrics daily: %w", err)
 	}
@@ -83,15 +87,6 @@ func (s *Store) listMetricsDailyImpl(ctx context.Context) ([]storecontracts.Metr
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate metrics daily rows: %w", err)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Environment != out[j].Environment {
-			return out[i].Environment < out[j].Environment
-		}
-		if out[i].Date != out[j].Date {
-			return out[i].Date < out[j].Date
-		}
-		return out[i].Metric < out[j].Metric
-	})
 	return out, nil
 }
 
@@ -109,6 +104,7 @@ func (s *Store) listMetricsDailyByDateImpl(ctx context.Context, environment stri
 SELECT environment, date, metric, value
 FROM cfa_metrics_daily
 WHERE environment = $1 AND date = $2
+ORDER BY metric
 `, lookupEnv, lookupDate)
 	if err != nil {
 		return nil, fmt.Errorf("query metrics daily by date: %w", err)
@@ -133,20 +129,22 @@ WHERE environment = $1 AND date = $2
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate metrics daily by date rows: %w", err)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Metric < out[j].Metric
-	})
 	return out, nil
 }
 
 func (s *Store) listMetricDatesImpl(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT date FROM cfa_metrics_daily`)
+	rows, err := s.pool.Query(ctx, `
+SELECT DISTINCT date
+FROM cfa_metrics_daily
+WHERE BTRIM(date) <> ''
+ORDER BY date
+`)
 	if err != nil {
 		return nil, fmt.Errorf("query metric dates: %w", err)
 	}
 	defer rows.Close()
 
-	set := map[string]struct{}{}
+	out := make([]string, 0)
 	for rows.Next() {
 		var date string
 		if err := rows.Scan(&date); err != nil {
@@ -156,17 +154,95 @@ func (s *Store) listMetricDatesImpl(ctx context.Context) ([]string, error) {
 		if trimmed == "" {
 			continue
 		}
-		set[trimmed] = struct{}{}
+		out = append(out, trimmed)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate metric date rows: %w", err)
 	}
+	return out, nil
+}
 
-	out := make([]string, 0, len(set))
-	for date := range set {
-		out = append(out, date)
+func (s *Store) listMetricsDailyForDatesImpl(ctx context.Context, environments []string, dates []string) ([]storecontracts.MetricDailyRecord, error) {
+	normalizedEnvironments := normalizeEnvironmentSlice(environments)
+	normalizedDates, err := normalizeDateSlice(dates)
+	if err != nil {
+		return nil, fmt.Errorf("normalize metric dates: %w", err)
 	}
-	sort.Strings(out)
+	if len(normalizedEnvironments) == 0 || len(normalizedDates) == 0 {
+		return nil, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+SELECT environment, date, metric, value
+FROM cfa_metrics_daily
+WHERE environment = ANY($1) AND date = ANY($2)
+ORDER BY environment, date, metric
+`, normalizedEnvironments, normalizedDates)
+	if err != nil {
+		return nil, fmt.Errorf("query metrics daily for dates: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]storecontracts.MetricDailyRecord, 0)
+	for rows.Next() {
+		var row storecontracts.MetricDailyRecord
+		if err := rows.Scan(&row.Environment, &row.Date, &row.Metric, &row.Value); err != nil {
+			return nil, fmt.Errorf("scan metric daily for dates row: %w", err)
+		}
+		normalized := normalizeMetricDailyRecord(row)
+		if normalized.Environment == "" || normalized.Date == "" || normalized.Metric == "" {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate metrics daily for dates rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) sumMetricByEnvironmentForDatesImpl(ctx context.Context, metric string, environments []string, dates []string) (map[string]float64, error) {
+	trimmedMetric := strings.TrimSpace(metric)
+	if trimmedMetric == "" {
+		return map[string]float64{}, nil
+	}
+	normalizedEnvironments := normalizeEnvironmentSlice(environments)
+	normalizedDates, err := normalizeDateSlice(dates)
+	if err != nil {
+		return nil, fmt.Errorf("normalize metric dates: %w", err)
+	}
+	if len(normalizedEnvironments) == 0 || len(normalizedDates) == 0 {
+		return map[string]float64{}, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+SELECT environment, SUM(value)
+FROM cfa_metrics_daily
+WHERE metric = $1 AND environment = ANY($2) AND date = ANY($3)
+GROUP BY environment
+ORDER BY environment
+`, trimmedMetric, normalizedEnvironments, normalizedDates)
+	if err != nil {
+		return nil, fmt.Errorf("query metric sums by environment for dates: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]float64{}
+	for rows.Next() {
+		var environment string
+		var value float64
+		if err := rows.Scan(&environment, &value); err != nil {
+			return nil, fmt.Errorf("scan metric sum row: %w", err)
+		}
+		normalizedEnvironment := normalizeEnvironment(environment)
+		if normalizedEnvironment == "" {
+			continue
+		}
+		out[normalizedEnvironment] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate metric sum rows: %w", err)
+	}
 	return out, nil
 }
 
@@ -295,6 +371,116 @@ WHERE environment = $1 AND date = $2
 		}
 		return out[i].TestName < out[j].TestName
 	})
+	return out, nil
+}
+
+func (s *Store) listTestMetadataDatesByEnvironmentImpl(ctx context.Context, environment string, period string) ([]string, error) {
+	lookupEnv := normalizeEnvironment(environment)
+	if lookupEnv == "" {
+		return nil, fmt.Errorf("test metadata date lookup requires environment")
+	}
+	lookupPeriod := normalizeTestMetadataPeriod(period)
+
+	rows, err := s.pool.Query(ctx, `
+SELECT DISTINCT date
+FROM cfa_test_metadata_daily
+WHERE environment = $1
+  AND period = $2
+  AND BTRIM(test_name) <> ''
+ORDER BY date
+`, lookupEnv, lookupPeriod)
+	if err != nil {
+		return nil, fmt.Errorf("query test metadata dates by environment: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0)
+	for rows.Next() {
+		var date string
+		if err := rows.Scan(&date); err != nil {
+			return nil, fmt.Errorf("scan test metadata date row: %w", err)
+		}
+		trimmedDate := strings.TrimSpace(date)
+		if trimmedDate == "" {
+			continue
+		}
+		out = append(out, trimmedDate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate test metadata date rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) listBelowTargetTestMetadataByDateImpl(
+	ctx context.Context,
+	environment string,
+	date string,
+	period string,
+	targetPassRate float64,
+	minRuns int,
+	limit int,
+) ([]storecontracts.TestMetadataDailyRecord, error) {
+	lookupEnv := normalizeEnvironment(environment)
+	if lookupEnv == "" {
+		return nil, fmt.Errorf("below-target test metadata lookup requires environment")
+	}
+	lookupDate, err := normalizeDate(date)
+	if err != nil {
+		return nil, fmt.Errorf("below-target test metadata lookup requires valid date (YYYY-MM-DD): %w", err)
+	}
+	lookupPeriod := normalizeTestMetadataPeriod(period)
+
+	query := `
+SELECT environment, date, release, period, test_name, test_suite, current_pass_percentage, current_runs, previous_pass_percentage, previous_runs, net_improvement, ingested_at
+FROM cfa_test_metadata_daily
+WHERE environment = $1
+  AND date = $2
+  AND period = $3
+  AND current_runs >= $4
+  AND current_pass_percentage < $5
+  AND BTRIM(test_name) <> ''
+ORDER BY current_pass_percentage ASC, current_runs DESC, test_suite ASC, test_name ASC`
+	args := []any{lookupEnv, lookupDate, lookupPeriod, minRuns, targetPassRate}
+	if limit > 0 {
+		query += "\nLIMIT $6"
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query below-target test metadata by date: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]storecontracts.TestMetadataDailyRecord, 0)
+	for rows.Next() {
+		var row storecontracts.TestMetadataDailyRecord
+		if err := rows.Scan(
+			&row.Environment,
+			&row.Date,
+			&row.Release,
+			&row.Period,
+			&row.TestName,
+			&row.TestSuite,
+			&row.CurrentPassPercentage,
+			&row.CurrentRuns,
+			&row.PreviousPassPercentage,
+			&row.PreviousRuns,
+			&row.NetImprovement,
+			&row.IngestedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan below-target test metadata row: %w", err)
+		}
+		normalized := normalizeTestMetadataDailyRecord(row)
+		if normalized.Environment == "" || normalized.Date == "" || normalized.TestName == "" {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate below-target test metadata rows: %w", err)
+	}
 	return out, nil
 }
 

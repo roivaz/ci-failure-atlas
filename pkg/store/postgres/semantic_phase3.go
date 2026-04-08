@@ -54,6 +54,7 @@ func (s *Store) listGlobalClustersImpl(ctx context.Context) ([]semanticcontracts
 SELECT payload
 FROM cfa_sem_global_clusters
 WHERE semantic_subdir = $1
+ORDER BY support_count DESC, contributing_tests_count DESC, environment, phase2_cluster_id
 `, weekScope(s.week))
 	if err != nil {
 		return nil, fmt.Errorf("query global clusters: %w", err)
@@ -79,18 +80,6 @@ WHERE semantic_subdir = $1
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate global clusters: %w", err)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].SupportCount != out[j].SupportCount {
-			return out[i].SupportCount > out[j].SupportCount
-		}
-		if out[i].ContributingTestsCount != out[j].ContributingTestsCount {
-			return out[i].ContributingTestsCount > out[j].ContributingTestsCount
-		}
-		if out[i].Environment != out[j].Environment {
-			return out[i].Environment < out[j].Environment
-		}
-		return out[i].Phase2ClusterID < out[j].Phase2ClusterID
-	})
 	return out, nil
 }
 
@@ -173,6 +162,7 @@ func (s *Store) listReviewQueueImpl(ctx context.Context) ([]semanticcontracts.Re
 SELECT payload
 FROM cfa_sem_review_queue
 WHERE semantic_subdir = $1
+ORDER BY environment, phase, reason, review_item_id
 `, weekScope(s.week))
 	if err != nil {
 		return nil, fmt.Errorf("query review queue: %w", err)
@@ -198,19 +188,125 @@ WHERE semantic_subdir = $1
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate review queue rows: %w", err)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Environment != out[j].Environment {
-			return out[i].Environment < out[j].Environment
-		}
-		if out[i].Phase != out[j].Phase {
-			return out[i].Phase < out[j].Phase
-		}
-		if out[i].Reason != out[j].Reason {
-			return out[i].Reason < out[j].Reason
-		}
-		return out[i].ReviewItemID < out[j].ReviewItemID
-	})
 	return out, nil
+}
+
+func (s *Store) getSemanticWeekSummaryImpl(ctx context.Context) (storecontracts.SemanticWeekSummary, error) {
+	currentWeek := weekScope(s.week)
+	summary := storecontracts.SemanticWeekSummary{
+		TestClusterCountsByEnv:   map[string]int{},
+		ReviewQueueCountsByEnv:   map[string]int{},
+		GlobalClusterCountsByEnv: map[string]int{},
+		GlobalSupportTotalsByEnv: map[string]int{},
+		AvailableEnvironments:    []string{},
+	}
+
+	globalRows, err := s.pool.Query(ctx, `
+SELECT environment, COUNT(*), COALESCE(SUM(support_count), 0)
+FROM cfa_sem_global_clusters
+WHERE semantic_subdir = $1
+GROUP BY environment
+ORDER BY environment
+`, currentWeek)
+	if err != nil {
+		return storecontracts.SemanticWeekSummary{}, fmt.Errorf("query semantic global summary: %w", err)
+	}
+	for globalRows.Next() {
+		var environment string
+		var clusterCount, supportTotal int64
+		if err := globalRows.Scan(&environment, &clusterCount, &supportTotal); err != nil {
+			globalRows.Close()
+			return storecontracts.SemanticWeekSummary{}, fmt.Errorf("scan semantic global summary row: %w", err)
+		}
+		normalizedEnvironment := normalizeSemanticEnvironment(environment)
+		summary.GlobalClusterCountsByEnv[normalizedEnvironment] = int(clusterCount)
+		summary.GlobalSupportTotalsByEnv[normalizedEnvironment] = int(supportTotal)
+		summary.TestClusterCountsByEnv[normalizedEnvironment] = 0
+	}
+	if err := globalRows.Err(); err != nil {
+		globalRows.Close()
+		return storecontracts.SemanticWeekSummary{}, fmt.Errorf("iterate semantic global summary rows: %w", err)
+	}
+	globalRows.Close()
+
+	testClusterRows, err := s.pool.Query(ctx, `
+SELECT environment, COUNT(DISTINCT phase1_cluster_id)
+FROM (
+  SELECT
+    environment,
+    BTRIM(phase1_ids.value) AS phase1_cluster_id
+  FROM cfa_sem_global_clusters
+  CROSS JOIN LATERAL jsonb_array_elements_text(
+    CASE
+      WHEN jsonb_typeof(payload -> 'member_phase1_cluster_ids') = 'array' THEN payload -> 'member_phase1_cluster_ids'
+      ELSE '[]'::jsonb
+    END
+  ) AS phase1_ids(value)
+  WHERE semantic_subdir = $1
+) expanded
+WHERE phase1_cluster_id <> ''
+GROUP BY environment
+ORDER BY environment
+`, currentWeek)
+	if err != nil {
+		return storecontracts.SemanticWeekSummary{}, fmt.Errorf("query semantic test cluster summary: %w", err)
+	}
+	for testClusterRows.Next() {
+		var environment string
+		var testClusterCount int64
+		if err := testClusterRows.Scan(&environment, &testClusterCount); err != nil {
+			testClusterRows.Close()
+			return storecontracts.SemanticWeekSummary{}, fmt.Errorf("scan semantic test cluster summary row: %w", err)
+		}
+		normalizedEnvironment := normalizeSemanticEnvironment(environment)
+		summary.TestClusterCountsByEnv[normalizedEnvironment] = int(testClusterCount)
+	}
+	if err := testClusterRows.Err(); err != nil {
+		testClusterRows.Close()
+		return storecontracts.SemanticWeekSummary{}, fmt.Errorf("iterate semantic test cluster summary rows: %w", err)
+	}
+	testClusterRows.Close()
+
+	reviewRows, err := s.pool.Query(ctx, `
+SELECT environment, COUNT(*)
+FROM cfa_sem_review_queue
+WHERE semantic_subdir = $1
+GROUP BY environment
+ORDER BY environment
+`, currentWeek)
+	if err != nil {
+		return storecontracts.SemanticWeekSummary{}, fmt.Errorf("query semantic review summary: %w", err)
+	}
+	for reviewRows.Next() {
+		var environment string
+		var reviewCount int64
+		if err := reviewRows.Scan(&environment, &reviewCount); err != nil {
+			reviewRows.Close()
+			return storecontracts.SemanticWeekSummary{}, fmt.Errorf("scan semantic review summary row: %w", err)
+		}
+		normalizedEnvironment := normalizeSemanticEnvironment(environment)
+		summary.ReviewQueueCountsByEnv[normalizedEnvironment] = int(reviewCount)
+	}
+	if err := reviewRows.Err(); err != nil {
+		reviewRows.Close()
+		return storecontracts.SemanticWeekSummary{}, fmt.Errorf("iterate semantic review summary rows: %w", err)
+	}
+	reviewRows.Close()
+
+	availableEnvironmentSet := map[string]struct{}{}
+	for environment := range summary.GlobalClusterCountsByEnv {
+		availableEnvironmentSet[environment] = struct{}{}
+	}
+	for environment := range summary.ReviewQueueCountsByEnv {
+		availableEnvironmentSet[environment] = struct{}{}
+	}
+	summary.AvailableEnvironments = make([]string, 0, len(availableEnvironmentSet))
+	for environment := range availableEnvironmentSet {
+		summary.AvailableEnvironments = append(summary.AvailableEnvironments, environment)
+	}
+	sort.Strings(summary.AvailableEnvironments)
+
+	return summary, nil
 }
 
 func (s *Store) upsertPhase3IssuesImpl(ctx context.Context, rows []semanticcontracts.Phase3IssueRecord) error {
