@@ -24,7 +24,7 @@ The runtime has three main planes:
    - Phase1 and phase2 execute in memory; persisted outputs are the user-facing week datasets.
 
 3. **Product surfaces**
-   - `cfa app` serves weekly/global/review views from PostgreSQL.
+   - `cfa app` serves weekly/triage/review views from PostgreSQL.
    - `cfa app export-site` renders static HTML from the same PostgreSQL-backed data as a compatibility/export path.
 
 ## Semantic Pipeline
@@ -38,7 +38,7 @@ The semantic workflow is still logically split into three phases:
 
 2. **Phase2: global merge**
    - Merge test-scoped clusters into global failure signatures.
-   - Produce the global signature rows used by weekly/global triage and review flows.
+   - Produce the signature rows used by weekly/triage and review flows.
 
 3. **Phase3: human linking and reconciliation**
    - Operators link semantically equivalent signatures in the review UI.
@@ -90,7 +90,7 @@ In practice:
 `cfa app` is the primary operator surface:
 
 - weekly report view
-- global signature triage view
+- signature triage view
 - Phase3 review/linking workflow
 - cross-week history lookups based on stored semantic weeks
 
@@ -101,7 +101,7 @@ In practice:
 Its role is now narrow:
 
 - read already-materialized PostgreSQL data
-- render weekly/global/archive HTML
+- render weekly/triage/archive HTML
 - hand off publishing to Azure CLI or another external script
 
 It is not the architectural center of the system and it is not responsible for running semantic materialization.

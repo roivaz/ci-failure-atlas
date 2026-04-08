@@ -15,16 +15,16 @@ import (
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 )
 
-const globalReportFullErrorExamplesLimit = 3
+const triageReportFullErrorExamplesLimit = 3
 
-type GlobalReportBuildOptions struct {
+type TriageReportBuildOptions struct {
 	Week                string
 	Environments        []string
 	HistoryHorizonWeeks int
 	HistoryResolver     semhistory.GlobalSignatureResolver
 }
 
-type GlobalReportReference struct {
+type TriageReportReference struct {
 	RunURL         string `json:"run_url"`
 	OccurredAt     string `json:"occurred_at"`
 	SignatureID    string `json:"signature_id"`
@@ -32,14 +32,14 @@ type GlobalReportReference struct {
 	PostGoodCommit bool   `json:"post_good_commit"`
 }
 
-type GlobalReportContributingTest struct {
+type TriageReportContributingTest struct {
 	Lane         string `json:"lane"`
 	JobName      string `json:"job_name"`
 	TestName     string `json:"test_name"`
 	SupportCount int    `json:"support_count"`
 }
 
-type GlobalReportCluster struct {
+type TriageReportCluster struct {
 	Environment             string                         `json:"environment"`
 	SchemaVersion           string                         `json:"schema_version"`
 	Phase2ClusterID         string                         `json:"phase2_cluster_id"`
@@ -49,16 +49,16 @@ type GlobalReportCluster struct {
 	SeenPostGoodCommit      bool                           `json:"seen_post_good_commit"`
 	PostGoodCommitCount     int                            `json:"post_good_commit_count"`
 	ContributingTestsCount  int                            `json:"contributing_tests_count"`
-	ContributingTests       []GlobalReportContributingTest `json:"contributing_tests"`
+	ContributingTests       []TriageReportContributingTest `json:"contributing_tests"`
 	MemberPhase1ClusterIDs  []string                       `json:"member_phase1_cluster_ids"`
 	MemberSignatureIDs      []string                       `json:"member_signature_ids"`
-	References              []GlobalReportReference        `json:"references"`
+	References              []TriageReportReference        `json:"references"`
 	FullErrorSamples        []string                       `json:"full_error_samples,omitempty"`
-	LinkedChildren          []GlobalReportCluster          `json:"linked_children,omitempty"`
+	LinkedChildren          []TriageReportCluster          `json:"linked_children,omitempty"`
 }
 
-type GlobalReportData struct {
-	GlobalClusters                 []GlobalReportCluster
+type TriageReportData struct {
+	TriageClusters                 []TriageReportCluster
 	TargetEnvironments             []string
 	OverallJobsByEnvironment       map[string]int
 	WindowStartRaw                 string
@@ -69,39 +69,39 @@ type GlobalReportData struct {
 	ReviewItemCountsByEnvironment  map[string]int
 }
 
-func BuildGlobalReportData(ctx context.Context, store storecontracts.Store, opts GlobalReportBuildOptions) (GlobalReportData, error) {
+func BuildTriageReportData(ctx context.Context, store storecontracts.Store, opts TriageReportBuildOptions) (TriageReportData, error) {
 	if store == nil {
-		return GlobalReportData{}, fmt.Errorf("store is required")
+		return TriageReportData{}, fmt.Errorf("store is required")
 	}
 
 	weekData, err := semanticquery.LoadWeekData(ctx, store, semanticquery.LoadWeekDataOptions{
 		IncludeRawFailures: true,
 	})
 	if err != nil {
-		return GlobalReportData{}, err
+		return TriageReportData{}, err
 	}
 
-	sourceGlobalRows := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	sourceClusterRows := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
 	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
-	globalRows := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
-	linkedChildrenByClusterKey, err := globalReportLinkedChildrenByMergedClusterKey(sourceGlobalRows, phase3Links)
+	materializedClusterRows := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
+	linkedChildrenByClusterKey, err := triageReportLinkedChildrenByMergedClusterKey(sourceClusterRows, phase3Links)
 	if err != nil {
-		return GlobalReportData{}, fmt.Errorf("build linked child clusters: %w", err)
+		return TriageReportData{}, fmt.Errorf("build linked child clusters: %w", err)
 	}
 
-	reportGlobalRows := toGlobalReportClusters(globalRows)
-	reportLinkedChildrenByClusterKey := toGlobalReportClusterGroupMap(linkedChildrenByClusterKey)
-	rawFailuresByRun := globalReportIndexRawFailuresByEnvironmentRun(weekData.RawFailures)
-	reportLinkedChildrenByClusterKey = globalReportAttachFullErrorSamplesByGroup(
+	reportRows := toTriageReportClusters(materializedClusterRows)
+	reportLinkedChildrenByClusterKey := toTriageReportClusterGroupMap(linkedChildrenByClusterKey)
+	rawFailuresByRun := triageReportIndexRawFailuresByEnvironmentRun(weekData.RawFailures)
+	reportLinkedChildrenByClusterKey = triageReportAttachFullErrorSamplesByGroup(
 		reportLinkedChildrenByClusterKey,
-		globalReportFullErrorExamplesLimit,
+		triageReportFullErrorExamplesLimit,
 		rawFailuresByRun,
 	)
 
 	targetEnvironments := semanticquery.ResolveTargetEnvironments(opts.Environments, weekData)
-	metricWindowStart, metricWindowEnd := globalReportMetricWindowBounds(opts.Week)
-	windowStartRaw, windowEndRaw := globalReportMetricWindowStrings(metricWindowStart, metricWindowEnd)
-	overallJobsByEnvironment, err := globalReportMetricRunTotalsByEnvironment(
+	metricWindowStart, metricWindowEnd := triageReportMetricWindowBounds(opts.Week)
+	windowStartRaw, windowEndRaw := triageReportMetricWindowStrings(metricWindowStart, metricWindowEnd)
+	overallJobsByEnvironment, err := triageReportMetricRunTotalsByEnvironment(
 		ctx,
 		store,
 		targetEnvironments,
@@ -109,7 +109,7 @@ func BuildGlobalReportData(ctx context.Context, store storecontracts.Store, opts
 		metricWindowEnd,
 	)
 	if err != nil {
-		return GlobalReportData{}, fmt.Errorf("load overall metric run counts: %w", err)
+		return TriageReportData{}, fmt.Errorf("load overall metric run counts: %w", err)
 	}
 
 	historyResolver := opts.HistoryResolver
@@ -123,15 +123,15 @@ func BuildGlobalReportData(ctx context.Context, store storecontracts.Store, opts
 			GlobalSignatureLookbackWeeks: lookbackWeeks,
 		})
 		if err != nil {
-			return GlobalReportData{}, fmt.Errorf("build global signature history resolver: %w", err)
+			return TriageReportData{}, fmt.Errorf("build triage history resolver: %w", err)
 		}
 	}
 
-	htmlGlobalRows := globalReportAttachFullErrorSamples(reportGlobalRows, globalReportFullErrorExamplesLimit, rawFailuresByRun)
-	htmlGlobalRows = globalReportAttachLinkedChildren(htmlGlobalRows, reportLinkedChildrenByClusterKey)
+	triageRows := triageReportAttachFullErrorSamples(reportRows, triageReportFullErrorExamplesLimit, rawFailuresByRun)
+	triageRows = triageReportAttachLinkedChildren(triageRows, reportLinkedChildrenByClusterKey)
 
-	return GlobalReportData{
-		GlobalClusters:                 htmlGlobalRows,
+	return TriageReportData{
+		TriageClusters:                 triageRows,
 		TargetEnvironments:             append([]string(nil), targetEnvironments...),
 		OverallJobsByEnvironment:       cloneIntMap(overallJobsByEnvironment),
 		WindowStartRaw:                 windowStartRaw,
@@ -154,7 +154,7 @@ func cloneIntMap(source map[string]int) map[string]int {
 	return out
 }
 
-func globalReportMetricWindowBounds(week string) (time.Time, time.Time) {
+func triageReportMetricWindowBounds(week string) (time.Time, time.Time) {
 	normalizedWeek, err := postgresstore.NormalizeWeek(week)
 	if err != nil || normalizedWeek == "" {
 		return time.Time{}, time.Time{}
@@ -167,14 +167,14 @@ func globalReportMetricWindowBounds(week string) (time.Time, time.Time) {
 	return start, start.AddDate(0, 0, 7)
 }
 
-func globalReportMetricWindowStrings(start time.Time, end time.Time) (string, string) {
+func triageReportMetricWindowStrings(start time.Time, end time.Time) (string, string) {
 	if start.IsZero() || end.IsZero() || !start.Before(end) {
 		return "", ""
 	}
 	return start.Format(time.RFC3339), end.Format(time.RFC3339)
 }
 
-func globalReportMetricRunTotalsByEnvironment(
+func triageReportMetricRunTotalsByEnvironment(
 	ctx context.Context,
 	store storecontracts.Store,
 	environments []string,
@@ -203,7 +203,7 @@ func globalReportMetricRunTotalsByEnvironment(
 			continue
 		}
 		if !windowStart.IsZero() && !windowEnd.IsZero() {
-			dateValue, ok := globalReportParseMetricDate(row.Date)
+			dateValue, ok := triageReportParseMetricDate(row.Date)
 			if !ok {
 				continue
 			}
@@ -220,7 +220,7 @@ func globalReportMetricRunTotalsByEnvironment(
 	return totals, nil
 }
 
-func globalReportParseMetricDate(value string) (time.Time, bool) {
+func triageReportParseMetricDate(value string) (time.Time, bool) {
 	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
 	if err != nil {
 		return time.Time{}, false
@@ -228,8 +228,8 @@ func globalReportParseMetricDate(value string) (time.Time, bool) {
 	return parsed.UTC(), true
 }
 
-func globalReportLinkedChildrenByMergedClusterKey(
-	globalClusters []semanticcontracts.GlobalClusterRecord,
+func triageReportLinkedChildrenByMergedClusterKey(
+	sourceClusters []semanticcontracts.GlobalClusterRecord,
 	phase3Links []semanticcontracts.Phase3LinkRecord,
 ) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
 	phase3ClusterByAnchor := map[string]string{}
@@ -246,13 +246,13 @@ func globalReportLinkedChildrenByMergedClusterKey(
 	}
 
 	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
-	for _, cluster := range globalClusters {
+	for _, cluster := range sourceClusters {
 		environment := normalizeEnvironment(cluster.Environment)
 		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
 		if environment == "" || clusterID == "" {
-			return nil, fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
+			return nil, fmt.Errorf("phase2 cluster record missing environment and/or phase2_cluster_id")
 		}
-		phase3ClusterIDs := globalReportPhase3ClusterIDsForGlobalCluster(cluster, phase3ClusterByAnchor)
+		phase3ClusterIDs := triageReportPhase3ClusterIDsForCluster(cluster, phase3ClusterByAnchor)
 		if len(phase3ClusterIDs) > 1 {
 			return nil, fmt.Errorf(
 				"phase3 conflict: semantic cluster %s resolves to multiple phase3 cluster IDs (%s)",
@@ -263,7 +263,7 @@ func globalReportLinkedChildrenByMergedClusterKey(
 		if len(phase3ClusterIDs) == 0 {
 			continue
 		}
-		groupKey := globalReportClusterKey(environment, phase3ClusterIDs[0])
+		groupKey := triageReportClusterKey(environment, phase3ClusterIDs[0])
 		grouped[groupKey] = append(grouped[groupKey], cluster)
 	}
 
@@ -283,7 +283,7 @@ func globalReportLinkedChildrenByMergedClusterKey(
 	return grouped, nil
 }
 
-func globalReportPhase3ClusterIDsForGlobalCluster(
+func triageReportPhase3ClusterIDsForCluster(
 	cluster semanticcontracts.GlobalClusterRecord,
 	phase3ClusterByAnchor map[string]string,
 ) []string {
@@ -303,7 +303,7 @@ func globalReportPhase3ClusterIDsForGlobalCluster(
 	return sortedStringSet(set)
 }
 
-func globalReportClusterKey(environment string, clusterID string) string {
+func triageReportClusterKey(environment string, clusterID string) string {
 	normalizedEnvironment := normalizeEnvironment(environment)
 	trimmedClusterID := strings.TrimSpace(clusterID)
 	if normalizedEnvironment == "" || trimmedClusterID == "" {
@@ -312,21 +312,21 @@ func globalReportClusterKey(environment string, clusterID string) string {
 	return normalizedEnvironment + "|" + trimmedClusterID
 }
 
-func toGlobalReportClusterGroupMap(groups map[string][]semanticcontracts.GlobalClusterRecord) map[string][]GlobalReportCluster {
+func toTriageReportClusterGroupMap(groups map[string][]semanticcontracts.GlobalClusterRecord) map[string][]TriageReportCluster {
 	if len(groups) == 0 {
 		return nil
 	}
-	out := make(map[string][]GlobalReportCluster, len(groups))
+	out := make(map[string][]TriageReportCluster, len(groups))
 	for key, rows := range groups {
-		out[key] = toGlobalReportClusters(rows)
+		out[key] = toTriageReportClusters(rows)
 	}
 	return out
 }
 
-func toGlobalReportClusters(rows []semanticcontracts.GlobalClusterRecord) []GlobalReportCluster {
-	out := make([]GlobalReportCluster, 0, len(rows))
+func toTriageReportClusters(rows []semanticcontracts.GlobalClusterRecord) []TriageReportCluster {
+	out := make([]TriageReportCluster, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, GlobalReportCluster{
+		out = append(out, TriageReportCluster{
 			Environment:             normalizeEnvironment(row.Environment),
 			SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
 			Phase2ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
@@ -336,19 +336,19 @@ func toGlobalReportClusters(rows []semanticcontracts.GlobalClusterRecord) []Glob
 			SeenPostGoodCommit:      row.SeenPostGoodCommit,
 			PostGoodCommitCount:     row.PostGoodCommitCount,
 			ContributingTestsCount:  row.ContributingTestsCount,
-			ContributingTests:       toGlobalReportContributingTests(row.ContributingTests),
+			ContributingTests:       toTriageReportContributingTests(row.ContributingTests),
 			MemberPhase1ClusterIDs:  append([]string(nil), row.MemberPhase1ClusterIDs...),
 			MemberSignatureIDs:      append([]string(nil), row.MemberSignatureIDs...),
-			References:              toGlobalReportReferences(row.References),
+			References:              toTriageReportReferences(row.References),
 		})
 	}
 	return out
 }
 
-func toGlobalReportContributingTests(rows []semanticcontracts.ContributingTestRecord) []GlobalReportContributingTest {
-	out := make([]GlobalReportContributingTest, 0, len(rows))
+func toTriageReportContributingTests(rows []semanticcontracts.ContributingTestRecord) []TriageReportContributingTest {
+	out := make([]TriageReportContributingTest, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, GlobalReportContributingTest{
+		out = append(out, TriageReportContributingTest{
 			Lane:         strings.TrimSpace(row.Lane),
 			JobName:      strings.TrimSpace(row.JobName),
 			TestName:     strings.TrimSpace(row.TestName),
@@ -358,10 +358,10 @@ func toGlobalReportContributingTests(rows []semanticcontracts.ContributingTestRe
 	return out
 }
 
-func toGlobalReportReferences(rows []semanticcontracts.ReferenceRecord) []GlobalReportReference {
-	out := make([]GlobalReportReference, 0, len(rows))
+func toTriageReportReferences(rows []semanticcontracts.ReferenceRecord) []TriageReportReference {
+	out := make([]TriageReportReference, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, GlobalReportReference{
+		out = append(out, TriageReportReference{
 			RunURL:         strings.TrimSpace(row.RunURL),
 			OccurredAt:     strings.TrimSpace(row.OccurredAt),
 			SignatureID:    strings.TrimSpace(row.SignatureID),
@@ -372,7 +372,7 @@ func toGlobalReportReferences(rows []semanticcontracts.ReferenceRecord) []Global
 	return out
 }
 
-func globalReportIndexRawFailuresByEnvironmentRun(rows []storecontracts.RawFailureRecord) map[string][]storecontracts.RawFailureRecord {
+func triageReportIndexRawFailuresByEnvironmentRun(rows []storecontracts.RawFailureRecord) map[string][]storecontracts.RawFailureRecord {
 	byRun := map[string][]storecontracts.RawFailureRecord{}
 	for _, row := range rows {
 		environment := normalizeEnvironment(row.Environment)
@@ -399,15 +399,15 @@ func globalReportIndexRawFailuresByEnvironmentRun(rows []storecontracts.RawFailu
 	return byRun
 }
 
-func globalReportAttachFullErrorSamples(
-	clusters []GlobalReportCluster,
+func triageReportAttachFullErrorSamples(
+	clusters []TriageReportCluster,
 	limit int,
 	runFailuresByRun map[string][]storecontracts.RawFailureRecord,
-) []GlobalReportCluster {
+) []TriageReportCluster {
 	if len(clusters) == 0 || limit <= 0 {
-		return append([]GlobalReportCluster(nil), clusters...)
+		return append([]TriageReportCluster(nil), clusters...)
 	}
-	out := append([]GlobalReportCluster(nil), clusters...)
+	out := append([]TriageReportCluster(nil), clusters...)
 	for index := range out {
 		cluster := out[index]
 		signatureIDs := map[string]struct{}{}
@@ -427,7 +427,7 @@ func globalReportAttachFullErrorSamples(
 		}
 
 		samples := make([]string, 0, limit)
-		orderedRefs := append([]GlobalReportReference(nil), cluster.References...)
+		orderedRefs := append([]TriageReportReference(nil), cluster.References...)
 		sort.Slice(orderedRefs, func(i, j int) bool {
 			ti, okI := triagehtml.ParseReferenceTimestamp(orderedRefs[i].OccurredAt)
 			tj, okJ := triagehtml.ParseReferenceTimestamp(orderedRefs[j].OccurredAt)
@@ -464,7 +464,7 @@ func globalReportAttachFullErrorSamples(
 				if sample == "" {
 					sample = strings.TrimSpace(runRow.NormalizedText)
 				}
-				samples = globalReportAppendUniqueLimitedSample(samples, sample, limit)
+				samples = triageReportAppendUniqueLimitedSample(samples, sample, limit)
 			}
 		}
 		out[index].FullErrorSamples = samples
@@ -472,46 +472,46 @@ func globalReportAttachFullErrorSamples(
 	return out
 }
 
-func globalReportAttachFullErrorSamplesByGroup(
-	groups map[string][]GlobalReportCluster,
+func triageReportAttachFullErrorSamplesByGroup(
+	groups map[string][]TriageReportCluster,
 	limit int,
 	runFailuresByRun map[string][]storecontracts.RawFailureRecord,
-) map[string][]GlobalReportCluster {
+) map[string][]TriageReportCluster {
 	if len(groups) == 0 {
 		return nil
 	}
-	out := make(map[string][]GlobalReportCluster, len(groups))
+	out := make(map[string][]TriageReportCluster, len(groups))
 	keys := make([]string, 0, len(groups))
 	for key := range groups {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		out[key] = globalReportAttachFullErrorSamples(groups[key], limit, runFailuresByRun)
+		out[key] = triageReportAttachFullErrorSamples(groups[key], limit, runFailuresByRun)
 	}
 	return out
 }
 
-func globalReportAttachLinkedChildren(
-	rows []GlobalReportCluster,
-	linkedChildrenByClusterKey map[string][]GlobalReportCluster,
-) []GlobalReportCluster {
+func triageReportAttachLinkedChildren(
+	rows []TriageReportCluster,
+	linkedChildrenByClusterKey map[string][]TriageReportCluster,
+) []TriageReportCluster {
 	if len(rows) == 0 || len(linkedChildrenByClusterKey) == 0 {
 		return rows
 	}
-	out := append([]GlobalReportCluster(nil), rows...)
+	out := append([]TriageReportCluster(nil), rows...)
 	for index := range out {
-		key := globalReportClusterKey(out[index].Environment, out[index].Phase2ClusterID)
+		key := triageReportClusterKey(out[index].Environment, out[index].Phase2ClusterID)
 		children := linkedChildrenByClusterKey[key]
 		if len(children) == 0 {
 			continue
 		}
-		out[index].LinkedChildren = append([]GlobalReportCluster(nil), children...)
+		out[index].LinkedChildren = append([]TriageReportCluster(nil), children...)
 	}
 	return out
 }
 
-func globalReportAppendUniqueLimitedSample(existing []string, candidate string, limit int) []string {
+func triageReportAppendUniqueLimitedSample(existing []string, candidate string, limit int) []string {
 	trimmedCandidate := strings.TrimSpace(candidate)
 	if trimmedCandidate == "" {
 		return existing

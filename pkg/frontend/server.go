@@ -45,7 +45,7 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 		PostgresPool:        opts.PostgresPool,
 		RoutePrefix:         "/review",
 		WeeklyPath:          "/weekly",
-		GlobalPath:          "/global",
+		TriagePath:          "/triage",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create review handler: %w", err)
@@ -57,7 +57,8 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.handleRoot)
 	mux.HandleFunc("/api/triage/daily", h.handleAPIDailyTriage)
-	mux.HandleFunc("/global", h.handleGlobalPage)
+	mux.HandleFunc("/triage", h.handleTriagePage)
+	mux.HandleFunc("/global", h.handleLegacyGlobalRedirect)
 	mux.HandleFunc("/weekly", h.handleWeeklyPage)
 	mux.HandleFunc("/review", h.handleReviewRoot)
 	mux.Handle("/review/", http.StripPrefix("/review", reviewHandler))
@@ -72,7 +73,7 @@ func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, viewHref("/weekly", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusFound)
 }
 
-func (h *handler) handleGlobalPage(w http.ResponseWriter, r *http.Request) {
+func (h *handler) handleTriagePage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -82,13 +83,21 @@ func (h *handler) handleGlobalPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	reportHTML, err := h.generateGlobalReport(r.Context(), window)
+	reportHTML, err := h.generateTriageReport(r.Context(), window)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("generate global report: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("generate triage report: %v", err), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(reportHTML))
+}
+
+func (h *handler) handleLegacyGlobalRedirect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	http.Redirect(w, r, viewHref("/triage", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusMovedPermanently)
 }
 
 func (h *handler) handleWeeklyPage(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +148,7 @@ func (h *handler) handleAPIDailyTriage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (h *handler) generateGlobalReport(ctx context.Context, window frontservice.WeekWindow) (string, error) {
+func (h *handler) generateTriageReport(ctx context.Context, window frontservice.WeekWindow) (string, error) {
 	week := strings.TrimSpace(window.CurrentWeek)
 	store, err := h.service.OpenStoreForWeek(week)
 	if err != nil {
@@ -151,7 +160,7 @@ func (h *handler) generateGlobalReport(ctx context.Context, window frontservice.
 
 	historyResolver, err := h.service.BuildHistoryResolver(ctx, week)
 	if err != nil {
-		return "", fmt.Errorf("build global history resolver: %w", err)
+		return "", fmt.Errorf("build triage history resolver: %w", err)
 	}
 
 	opts := reportsummary.DefaultOptions()
@@ -162,13 +171,13 @@ func (h *handler) generateGlobalReport(ctx context.Context, window frontservice.
 	opts.HistoryResolver = historyResolver
 	opts.Chrome = triagehtml.ReportChromeOptions{
 		CurrentWeek:  week,
-		CurrentView:  triagehtml.ReportViewGlobal,
+		CurrentView:  triagehtml.ReportViewTriage,
 		PreviousWeek: strings.TrimSpace(window.PreviousWeek),
-		PreviousHref: navigationHref("/global", window.PreviousWeek),
+		PreviousHref: navigationHref("/triage", window.PreviousWeek),
 		NextWeek:     strings.TrimSpace(window.NextWeek),
-		NextHref:     navigationHref("/global", window.NextWeek),
+		NextHref:     navigationHref("/triage", window.NextWeek),
 		WeeklyHref:   viewHref("/weekly", week),
-		GlobalHref:   viewHref("/global", week),
+		TriageHref:   viewHref("/triage", week),
 	}
 	return reportsummary.GenerateHTML(ctx, store, opts)
 }
@@ -213,7 +222,7 @@ func (h *handler) generateWeeklyReport(ctx context.Context, window frontservice.
 		NextWeek:     strings.TrimSpace(window.NextWeek),
 		NextHref:     navigationHref("/weekly", window.NextWeek),
 		WeeklyHref:   viewHref("/weekly", week),
-		GlobalHref:   viewHref("/global", week),
+		TriageHref:   viewHref("/triage", week),
 	}
 	return reportweekly.GenerateHTMLWithComparison(ctx, store, previousStore, opts)
 }

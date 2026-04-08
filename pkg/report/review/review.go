@@ -39,7 +39,7 @@ type HandlerOptions struct {
 	PostgresPool        *pgxpool.Pool
 	RoutePrefix         string
 	WeeklyPath          string
-	GlobalPath          string
+	TriagePath          string
 }
 
 type handler struct {
@@ -47,11 +47,94 @@ type handler struct {
 	historyHorizonWeeks int
 	routePrefix         string
 	weeklyPath          string
-	globalPath          string
+	triagePath          string
 }
 
 type phase3Anchor = frontservice.ReviewPhase3Anchor
 type weekSnapshot = frontservice.ReviewWeekSnapshot
+
+type apiWeekRunReference struct {
+	RunURL      string `json:"run_url"`
+	OccurredAt  string `json:"occurred_at"`
+	SignatureID string `json:"signature_id"`
+	PRNumber    int    `json:"pr_number"`
+}
+
+type apiWeekContributingTest struct {
+	Lane         string `json:"lane"`
+	JobName      string `json:"job_name"`
+	TestName     string `json:"test_name"`
+	SupportCount int    `json:"support_count"`
+}
+
+type apiWeekRow struct {
+	Environment         string                    `json:"environment"`
+	Lane                string                    `json:"lane"`
+	JobName             string                    `json:"job_name"`
+	TestName            string                    `json:"test_name"`
+	TestSuite           string                    `json:"test_suite"`
+	Phrase              string                    `json:"phrase"`
+	ClusterID           string                    `json:"cluster_id"`
+	SelectionID         string                    `json:"selection_id"`
+	SearchQuery         string                    `json:"search_query"`
+	SupportCount        int                       `json:"support_count"`
+	TrendSparkline      string                    `json:"trend_sparkline"`
+	TrendCounts         []int                     `json:"trend_counts,omitempty"`
+	TrendRange          string                    `json:"trend_range"`
+	SupportShare        float64                   `json:"support_share"`
+	PostGoodCount       int                       `json:"post_good_count"`
+	AlsoSeenIn          []string                  `json:"also_seen_in,omitempty"`
+	QualityScore        int                       `json:"quality_score"`
+	QualityFlags        []string                  `json:"quality_flags,omitempty"`
+	ReviewFlags         []string                  `json:"review_flags,omitempty"`
+	ContributingTests   []apiWeekContributingTest `json:"contributing_tests,omitempty"`
+	FullErrorSamples    []string                  `json:"full_error_samples,omitempty"`
+	References          []apiWeekRunReference     `json:"references,omitempty"`
+	ScoringReferences   []apiWeekRunReference     `json:"scoring_references,omitempty"`
+	PriorWeeksPresent   int                       `json:"prior_weeks_present"`
+	PriorWeekStarts     []string                  `json:"prior_week_starts,omitempty"`
+	PriorJobsAffected   int                       `json:"prior_jobs_affected"`
+	PriorLastSeenAt     string                    `json:"prior_last_seen_at"`
+	Phase3ClusterID     string                    `json:"phase3_cluster_id"`
+	ManualIssueConflict bool                      `json:"manual_issue_conflict"`
+	IsLinked            bool                      `json:"is_linked"`
+	LinkedChildren      []apiWeekRow              `json:"linked_children,omitempty"`
+}
+
+type apiWeekResponse struct {
+	Week                 string         `json:"week"`
+	PreviousWeek         string         `json:"previous_week"`
+	NextWeek             string         `json:"next_week"`
+	TotalClusters        int            `json:"total_clusters"`
+	AnchoredClusters     int            `json:"anchored_clusters"`
+	MissingAnchorCount   int            `json:"missing_anchor_count"`
+	UnassignedQueueCount int            `json:"unassigned_queue_count"`
+	OverallJobsByEnv     map[string]int `json:"overall_jobs_by_environment"`
+	Rows                 []apiWeekRow   `json:"rows"`
+}
+
+type actionResponse struct {
+	OK                     bool     `json:"ok"`
+	Week                   string   `json:"week,omitempty"`
+	Action                 string   `json:"action,omitempty"`
+	Notice                 string   `json:"notice,omitempty"`
+	RedirectURL            string   `json:"redirect_url,omitempty"`
+	SelectedClusterIDs     []string `json:"selected_cluster_ids,omitempty"`
+	Phase3ClusterID        string   `json:"phase3_cluster_id,omitempty"`
+	Created                bool     `json:"created,omitempty"`
+	SelectedAnchorCount    int      `json:"selected_anchor_count,omitempty"`
+	CrossWeekAnchorCount   int      `json:"cross_week_anchor_count,omitempty"`
+	TotalAnchorCount       int      `json:"total_anchor_count,omitempty"`
+	UnlinkedAnchorCount    int      `json:"unlinked_anchor_count,omitempty"`
+	AggregatedClusterCount int      `json:"aggregated_cluster_count,omitempty"`
+}
+
+type actionErrorResponse struct {
+	Error       string `json:"error"`
+	Week        string `json:"week,omitempty"`
+	Action      string `json:"action,omitempty"`
+	RedirectURL string `json:"redirect_url,omitempty"`
+}
 
 func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	service, err := frontservice.New(frontservice.Options{
@@ -68,7 +151,7 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 		historyHorizonWeeks: service.HistoryHorizonWeeks(),
 		routePrefix:         normalizeRoutePrefix(opts.RoutePrefix),
 		weeklyPath:          normalizeAbsolutePath(opts.WeeklyPath),
-		globalPath:          normalizeAbsolutePath(opts.GlobalPath),
+		triagePath:          normalizeAbsolutePath(opts.TriagePath),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.handleRoot)
@@ -100,17 +183,21 @@ func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		if h.prefersJSONResponse(r) {
+			writeJSON(w, http.StatusMethodNotAllowed, actionErrorResponse{Error: "method not allowed"})
+			return
+		}
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.redirectWithNotice(w, r, "", "invalid form payload")
+		h.respondActionError(w, r, http.StatusBadRequest, "", "", "invalid form payload")
 		return
 	}
 	requestedWeek := strings.TrimSpace(r.FormValue("week"))
 	snapshot, err := h.loadWeekSnapshot(r.Context(), requestedWeek)
 	if err != nil {
-		h.redirectWithNotice(w, r, requestedWeek, err.Error())
+		h.respondActionError(w, r, http.StatusBadRequest, requestedWeek, "", err.Error())
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(r.FormValue("action")))
@@ -122,18 +209,18 @@ func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 	if len(selectedClusterIDs) == 0 {
 		switch action {
 		case phase3ActionDisband:
-			h.redirectWithNotice(w, r, snapshot.Week, "select at least one aggregated phase3 cluster to disband")
+			h.respondActionError(w, r, http.StatusBadRequest, snapshot.Week, action, "select at least one aggregated phase3 cluster to disband")
 		case phase3ActionUnlinkChild:
-			h.redirectWithNotice(w, r, snapshot.Week, "select a linked signature to remove from the cluster")
+			h.respondActionError(w, r, http.StatusBadRequest, snapshot.Week, action, "select a linked signature to remove from the cluster")
 		default:
-			h.redirectWithNotice(w, r, snapshot.Week, "select at least one cluster")
+			h.respondActionError(w, r, http.StatusBadRequest, snapshot.Week, action, "select at least one cluster")
 		}
 		return
 	}
 
 	store, err := h.openStoreForWeek(snapshot.Week)
 	if err != nil {
-		h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("open semantic store: %v", err))
+		h.respondActionError(w, r, http.StatusInternalServerError, snapshot.Week, action, fmt.Sprintf("open semantic store: %v", err))
 		return
 	}
 	defer func() {
@@ -144,15 +231,17 @@ func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 	case phase3ActionLink:
 		anchors := selectedAnchors(snapshot.AnchorsByClusterID, selectedClusterIDs)
 		if len(anchors) == 0 {
-			h.redirectWithNotice(w, r, snapshot.Week, "selected clusters do not have row_id anchors yet; rerun semantic workflow and refresh")
+			h.respondActionError(w, r, http.StatusBadRequest, snapshot.Week, action, "selected clusters do not have row_id anchors yet; rerun semantic workflow and refresh")
 			return
 		}
 		selectedLanes := selectedLaneKeys(snapshot.LaneKeysByClusterID, selectedClusterIDs)
 		if len(selectedLanes) > 1 {
-			h.redirectWithNotice(
+			h.respondActionError(
 				w,
 				r,
+				http.StatusBadRequest,
 				snapshot.Week,
+				action,
 				fmt.Sprintf(
 					"selected clusters span multiple lanes (%s); linking across lanes is not allowed",
 					strings.Join(selectedLanes, ", "),
@@ -164,92 +253,106 @@ func (h *handler) handleLinksAction(w http.ResponseWriter, r *http.Request) {
 		windowWeeks := resolveReconcileWindowWeeks(snapshot.Weeks, h.historyHorizonWeeks)
 		windowAnchors, err := h.collectAnchorsForSignatureMatchKeys(r.Context(), windowWeeks, matchKeys)
 		if err != nil {
-			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("link selected: %v", err))
+			h.respondActionError(w, r, http.StatusInternalServerError, snapshot.Week, action, fmt.Sprintf("link selected: %v", err))
 			return
 		}
 		expandedAnchors := dedupeAnchors(append(append([]phase3Anchor{}, anchors...), windowAnchors...))
 
 		phase3ClusterID, created, err := resolvePhase3ClusterIDForAnchors(r.Context(), store, expandedAnchors)
 		if err != nil {
-			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("link selected: %v", err))
+			h.respondActionError(w, r, http.StatusInternalServerError, snapshot.Week, action, fmt.Sprintf("link selected: %v", err))
 			return
 		}
 		if err := linkAnchors(r.Context(), store, phase3ClusterID, expandedAnchors); err != nil {
-			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("link selected: %v", err))
+			h.respondActionError(w, r, http.StatusInternalServerError, snapshot.Week, action, fmt.Sprintf("link selected: %v", err))
 			return
 		}
 		crossWeekCount := len(expandedAnchors) - len(anchors)
 		if crossWeekCount < 0 {
 			crossWeekCount = 0
 		}
+		notice := fmt.Sprintf(
+			"linked %d anchors (%d selected + %d cross-week) into existing phase3 cluster %s",
+			len(expandedAnchors),
+			len(anchors),
+			crossWeekCount,
+			phase3ClusterID,
+		)
 		if created {
-			h.redirectWithNotice(
-				w,
-				r,
-				snapshot.Week,
-				fmt.Sprintf(
-					"linked %d anchors (%d selected + %d cross-week) using new phase3 cluster %s",
-					len(expandedAnchors),
-					len(anchors),
-					crossWeekCount,
-					phase3ClusterID,
-				),
-			)
-			return
-		}
-		h.redirectWithNotice(
-			w,
-			r,
-			snapshot.Week,
-			fmt.Sprintf(
-				"linked %d anchors (%d selected + %d cross-week) into existing phase3 cluster %s",
+			notice = fmt.Sprintf(
+				"linked %d anchors (%d selected + %d cross-week) using new phase3 cluster %s",
 				len(expandedAnchors),
 				len(anchors),
 				crossWeekCount,
 				phase3ClusterID,
-			),
-		)
+			)
+		}
+		h.respondActionSuccess(w, r, actionResponse{
+			Week:                 snapshot.Week,
+			Action:               action,
+			Notice:               notice,
+			SelectedClusterIDs:   append([]string(nil), selectedClusterIDs...),
+			Phase3ClusterID:      phase3ClusterID,
+			Created:              created,
+			SelectedAnchorCount:  len(anchors),
+			CrossWeekAnchorCount: crossWeekCount,
+			TotalAnchorCount:     len(expandedAnchors),
+		})
 		return
 	case phase3ActionDisband:
 		aggregatedSelections := filterAggregatedSelectionIDs(snapshot.AggregatedSelection, selectedClusterIDs)
 		if len(aggregatedSelections) == 0 {
-			h.redirectWithNotice(w, r, snapshot.Week, "disband cluster only works on aggregated phase3 rows")
+			h.respondActionError(w, r, http.StatusBadRequest, snapshot.Week, action, "disband cluster only works on aggregated phase3 rows")
 			return
 		}
 		anchors := selectedAnchors(snapshot.AnchorsByClusterID, aggregatedSelections)
 		if len(anchors) == 0 {
-			h.redirectWithNotice(w, r, snapshot.Week, "selected aggregated clusters do not have row_id anchors yet; rerun semantic workflow and refresh")
+			h.respondActionError(w, r, http.StatusBadRequest, snapshot.Week, action, "selected aggregated clusters do not have row_id anchors yet; rerun semantic workflow and refresh")
 			return
 		}
 		if err := unlinkAnchors(r.Context(), store, anchors); err != nil {
-			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("disband cluster: %v", err))
+			h.respondActionError(w, r, http.StatusInternalServerError, snapshot.Week, action, fmt.Sprintf("disband cluster: %v", err))
 			return
 		}
-		h.redirectWithNotice(
-			w,
-			r,
-			snapshot.Week,
-			fmt.Sprintf("disbanded %d aggregated cluster(s) and unlinked %d anchors", len(aggregatedSelections), len(anchors)),
-		)
+		h.respondActionSuccess(w, r, actionResponse{
+			Week:                   snapshot.Week,
+			Action:                 action,
+			Notice:                 fmt.Sprintf("disbanded %d aggregated cluster(s) and unlinked %d anchors", len(aggregatedSelections), len(anchors)),
+			SelectedClusterIDs:     append([]string(nil), aggregatedSelections...),
+			AggregatedClusterCount: len(aggregatedSelections),
+			UnlinkedAnchorCount:    len(anchors),
+		})
 		return
 	case phase3ActionUnlinkChild, phase3ActionUnlink:
 		anchors := selectedAnchors(snapshot.AnchorsByClusterID, selectedClusterIDs)
 		if len(anchors) == 0 {
-			h.redirectWithNotice(w, r, snapshot.Week, "selected signatures do not have row_id anchors yet; rerun semantic workflow and refresh")
+			h.respondActionError(w, r, http.StatusBadRequest, snapshot.Week, action, "selected signatures do not have row_id anchors yet; rerun semantic workflow and refresh")
 			return
 		}
 		if err := unlinkAnchors(r.Context(), store, anchors); err != nil {
-			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("unlink selected: %v", err))
+			h.respondActionError(w, r, http.StatusInternalServerError, snapshot.Week, action, fmt.Sprintf("unlink selected: %v", err))
 			return
 		}
 		if action == phase3ActionUnlinkChild {
-			h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("removed linked signature and unlinked %d anchors", len(anchors)))
+			h.respondActionSuccess(w, r, actionResponse{
+				Week:                snapshot.Week,
+				Action:              action,
+				Notice:              fmt.Sprintf("removed linked signature and unlinked %d anchors", len(anchors)),
+				SelectedClusterIDs:  append([]string(nil), selectedClusterIDs...),
+				UnlinkedAnchorCount: len(anchors),
+			})
 			return
 		}
-		h.redirectWithNotice(w, r, snapshot.Week, fmt.Sprintf("unlinked %d anchors", len(anchors)))
+		h.respondActionSuccess(w, r, actionResponse{
+			Week:                snapshot.Week,
+			Action:              action,
+			Notice:              fmt.Sprintf("unlinked %d anchors", len(anchors)),
+			SelectedClusterIDs:  append([]string(nil), selectedClusterIDs...),
+			UnlinkedAnchorCount: len(anchors),
+		})
 		return
 	default:
-		h.redirectWithNotice(w, r, snapshot.Week, "unsupported action")
+		h.respondActionError(w, r, http.StatusBadRequest, snapshot.Week, action, "unsupported action")
 		return
 	}
 }
@@ -287,33 +390,76 @@ func (h *handler) handleAPIWeek(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	rows := make([]map[string]any, 0, len(snapshot.Rows))
-	for _, row := range snapshot.Rows {
-		rows = append(rows, map[string]any{
-			"environment":       row.Environment,
-			"cluster_id":        row.ClusterID,
-			"selection_id":      row.SelectionValue,
-			"phrase":            row.Phrase,
-			"support_count":     row.SupportCount,
-			"phase3_cluster_id": row.ManualIssueID,
-			"quality_score":     row.QualityScore,
-			"quality_flags":     row.QualityNoteLabels,
-			"review_flags":      row.ReviewNoteLabels,
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"week":                   snapshot.Week,
-		"previous_week":          snapshot.PreviousWeek,
-		"next_week":              snapshot.NextWeek,
-		"total_clusters":         snapshot.TotalClusters,
-		"anchored_clusters":      snapshot.AnchoredClusterCount,
-		"missing_anchor_count":   snapshot.MissingAnchorCount,
-		"unassigned_queue_count": snapshot.UnassignedCount,
-		"rows":                   rows,
+	writeJSON(w, http.StatusOK, apiWeekResponse{
+		Week:                 snapshot.Week,
+		PreviousWeek:         snapshot.PreviousWeek,
+		NextWeek:             snapshot.NextWeek,
+		TotalClusters:        snapshot.TotalClusters,
+		AnchoredClusters:     snapshot.AnchoredClusterCount,
+		MissingAnchorCount:   snapshot.MissingAnchorCount,
+		UnassignedQueueCount: snapshot.UnassignedCount,
+		OverallJobsByEnv:     reviewCloneIntMap(snapshot.OverallJobsByEnv),
+		Rows:                 reviewAPIRows(snapshot.Rows),
 	})
 }
 
 func (h *handler) redirectWithNotice(w http.ResponseWriter, r *http.Request, week string, notice string) {
+	http.Redirect(w, r, h.noticeRedirectURL(week, notice), http.StatusSeeOther)
+}
+
+func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (weekSnapshot, error) {
+	return h.service.BuildReviewWeek(ctx, requestedWeek)
+}
+
+func (h *handler) discoverSemanticWeeks(ctx context.Context) ([]string, error) {
+	return h.service.DiscoverSemanticWeeks(ctx)
+}
+
+func (h *handler) respondActionSuccess(w http.ResponseWriter, r *http.Request, payload actionResponse) {
+	payload.OK = true
+	payload.Week = strings.TrimSpace(payload.Week)
+	payload.Action = strings.TrimSpace(payload.Action)
+	payload.Notice = strings.TrimSpace(payload.Notice)
+	payload.RedirectURL = h.noticeRedirectURL(payload.Week, payload.Notice)
+	if h.prefersJSONResponse(r) {
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+	h.redirectWithNotice(w, r, payload.Week, payload.Notice)
+}
+
+func (h *handler) respondActionError(
+	w http.ResponseWriter,
+	r *http.Request,
+	statusCode int,
+	week string,
+	action string,
+	message string,
+) {
+	trimmedWeek := strings.TrimSpace(week)
+	trimmedAction := strings.TrimSpace(action)
+	trimmedMessage := strings.TrimSpace(message)
+	if h.prefersJSONResponse(r) {
+		writeJSON(w, statusCode, actionErrorResponse{
+			Error:       trimmedMessage,
+			Week:        trimmedWeek,
+			Action:      trimmedAction,
+			RedirectURL: h.noticeRedirectURL(trimmedWeek, trimmedMessage),
+		})
+		return
+	}
+	h.redirectWithNotice(w, r, trimmedWeek, trimmedMessage)
+}
+
+func (h *handler) prefersJSONResponse(r *http.Request) bool {
+	accept := strings.ToLower(strings.TrimSpace(r.Header.Get("Accept")))
+	if strings.Contains(accept, "text/html") || strings.Contains(accept, "application/xhtml+xml") {
+		return false
+	}
+	return true
+}
+
+func (h *handler) noticeRedirectURL(week string, notice string) string {
 	q := url.Values{}
 	if strings.TrimSpace(week) != "" {
 		q.Set("week", strings.TrimSpace(week))
@@ -325,15 +471,97 @@ func (h *handler) redirectWithNotice(w http.ResponseWriter, r *http.Request, wee
 	if encoded := q.Encode(); encoded != "" {
 		target += "?" + encoded
 	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	return target
 }
 
-func (h *handler) loadWeekSnapshot(ctx context.Context, requestedWeek string) (weekSnapshot, error) {
-	return h.service.BuildReviewWeek(ctx, requestedWeek)
+func reviewAPIRows(rows []triagehtml.SignatureRow) []apiWeekRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]apiWeekRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, reviewAPIRow(row))
+	}
+	return out
 }
 
-func (h *handler) discoverSemanticWeeks(ctx context.Context) ([]string, error) {
-	return h.service.DiscoverSemanticWeeks(ctx)
+func reviewAPIRow(row triagehtml.SignatureRow) apiWeekRow {
+	return apiWeekRow{
+		Environment:         row.Environment,
+		Lane:                row.Lane,
+		JobName:             row.JobName,
+		TestName:            row.TestName,
+		TestSuite:           row.TestSuite,
+		Phrase:              row.Phrase,
+		ClusterID:           row.ClusterID,
+		SelectionID:         row.SelectionValue,
+		SearchQuery:         row.SearchQuery,
+		SupportCount:        row.SupportCount,
+		TrendSparkline:      row.TrendSparkline,
+		TrendCounts:         append([]int(nil), row.TrendCounts...),
+		TrendRange:          row.TrendRange,
+		SupportShare:        row.SupportShare,
+		PostGoodCount:       row.PostGoodCount,
+		AlsoSeenIn:          append([]string(nil), row.AlsoSeenIn...),
+		QualityScore:        row.QualityScore,
+		QualityFlags:        append([]string(nil), row.QualityNoteLabels...),
+		ReviewFlags:         append([]string(nil), row.ReviewNoteLabels...),
+		ContributingTests:   reviewAPIContributingTests(row.ContributingTests),
+		FullErrorSamples:    append([]string(nil), row.FullErrorSamples...),
+		References:          reviewAPIRunReferences(row.References),
+		ScoringReferences:   reviewAPIRunReferences(row.ScoringReferences),
+		PriorWeeksPresent:   row.PriorWeeksPresent,
+		PriorWeekStarts:     append([]string(nil), row.PriorWeekStarts...),
+		PriorJobsAffected:   row.PriorJobsAffected,
+		PriorLastSeenAt:     row.PriorLastSeenAt,
+		Phase3ClusterID:     row.ManualIssueID,
+		ManualIssueConflict: row.ManualIssueConflict,
+		IsLinked:            strings.TrimSpace(row.ManualIssueID) != "",
+		LinkedChildren:      reviewAPIRows(row.LinkedChildren),
+	}
+}
+
+func reviewAPIContributingTests(rows []triagehtml.ContributingTest) []apiWeekContributingTest {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]apiWeekContributingTest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, apiWeekContributingTest{
+			Lane:         row.Lane,
+			JobName:      row.JobName,
+			TestName:     row.TestName,
+			SupportCount: row.SupportCount,
+		})
+	}
+	return out
+}
+
+func reviewAPIRunReferences(rows []triagehtml.RunReference) []apiWeekRunReference {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]apiWeekRunReference, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, apiWeekRunReference{
+			RunURL:      row.RunURL,
+			OccurredAt:  row.OccurredAt,
+			SignatureID: row.SignatureID,
+			PRNumber:    row.PRNumber,
+		})
+	}
+	return out
+}
+
+func reviewCloneIntMap(source map[string]int) map[string]int {
+	if len(source) == 0 {
+		return map[string]int{}
+	}
+	out := make(map[string]int, len(source))
+	for key, value := range source {
+		out[key] = value
+	}
+	return out
 }
 
 func resolveReconcileWindowWeeks(weeks []string, reconcileWeeks int) []string {
@@ -456,7 +684,7 @@ func (h *handler) collectAnchorsForSignatureMatchKeys(
 		clusters, listErr := store.ListGlobalClusters(ctx)
 		_ = store.Close()
 		if listErr != nil {
-			return nil, fmt.Errorf("list global clusters for reconcile week %q: %w", week, listErr)
+			return nil, fmt.Errorf("list phase2 clusters for reconcile week %q: %w", week, listErr)
 		}
 		for _, cluster := range clusters {
 			environment := normalizeEnvironment(cluster.Environment)
@@ -713,7 +941,7 @@ func (h *handler) renderPage(snapshot weekSnapshot, notice string) string {
 		NextWeek:     snapshot.NextWeek,
 		NextHref:     nextHref,
 		WeeklyHref:   h.viewHref(h.weeklyPath, snapshot.Week),
-		GlobalHref:   h.viewHref(h.globalPath, snapshot.Week),
+		TriageHref:   h.viewHref(h.triagePath, snapshot.Week),
 	})
 
 	var b strings.Builder

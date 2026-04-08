@@ -15,12 +15,12 @@ import (
 var triageEnvironmentOrder = sourceoptions.SupportedEnvironments()
 
 const (
-	globalTrendWindowDays = 7
-	globalLoadedRowsLimit = 50
+	triageTrendWindowDays = 7
+	triageLoadedRowsLimit = 50
 )
 
-func buildGlobalTriageHTML(
-	globalClusters []globalCluster,
+func buildTriageReportHTML(
+	triageClusters []triageCluster,
 	top int,
 	minPercent float64,
 	generatedAt time.Time,
@@ -31,11 +31,11 @@ func buildGlobalTriageHTML(
 	historyResolver semhistory.GlobalSignatureResolver,
 	chrome triagehtml.ReportChromeOptions,
 ) string {
-	byEnvironment := map[string][]globalCluster{}
+	byEnvironment := map[string][]triageCluster{}
 	totalSupportByEnvironment := map[string]int{}
 	phraseEnvironments := map[string]map[string]struct{}{}
 	totalSupport := 0
-	windowStart, windowEnd, hasWindow := resolvedGlobalWindow(globalClusters, configuredWindowStart, configuredWindowEnd)
+	windowStart, windowEnd, hasWindow := resolvedTriageWindow(triageClusters, configuredWindowStart, configuredWindowEnd)
 	trendAnchor := generatedAt.UTC()
 	if trendAnchor.IsZero() {
 		trendAnchor = time.Now().UTC()
@@ -44,7 +44,7 @@ func buildGlobalTriageHTML(
 		trendAnchor = windowEnd
 	}
 
-	for _, row := range globalClusters {
+	for _, row := range triageClusters {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
 			environment = "unknown"
@@ -76,7 +76,7 @@ func buildGlobalTriageHTML(
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Global Signature Triage Report</title>\n")
+	b.WriteString("  <title>CI Signature Triage Report</title>\n")
 	b.WriteString(triagehtml.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
@@ -97,7 +97,7 @@ func buildGlobalTriageHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(triagehtml.ReportChromeHTML(chrome))
-	b.WriteString("  <h1>CI Global Signature Triage Report</h1>\n")
+	b.WriteString("  <h1>CI Signature Triage Report</h1>\n")
 	if hasWindow {
 		windowDays := inclusiveWindowDays(windowStart, windowEnd)
 		b.WriteString(fmt.Sprintf(
@@ -108,16 +108,16 @@ func buildGlobalTriageHTML(
 		))
 	}
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated: <strong>%s</strong></p>\n", html.EscapeString(generatedAt.Format(time.RFC3339))))
-	b.WriteString("  <p class=\"meta\">Global signatures grouped by environment for engineering triage. Includes lightweight quality scoring and cross-environment overlap hints.</p>\n")
+	b.WriteString("  <p class=\"meta\">Failure signatures grouped by environment for engineering triage. Includes lightweight quality scoring and cross-environment overlap hints.</p>\n")
 	b.WriteString("  <div class=\"cards\">\n")
 	b.WriteString(triageCardHTML("Environments in scope", fmt.Sprintf("%d", len(environments))))
-	b.WriteString(triageCardHTML("Global signatures", fmt.Sprintf("%d", len(globalClusters))))
+	b.WriteString(triageCardHTML("Signatures in triage", fmt.Sprintf("%d", len(triageClusters))))
 	b.WriteString(triageCardHTML("Total signature support", fmt.Sprintf("%d", totalSupport)))
-	b.WriteString(triageCardHTML("Triage threshold", fmt.Sprintf("visible %d, loaded %d, min %.2f%%", top, globalLoadedRowsLimit, minPercent)))
+	b.WriteString(triageCardHTML("Triage threshold", fmt.Sprintf("visible %d, loaded %d, min %.2f%%", top, triageLoadedRowsLimit, minPercent)))
 	b.WriteString("  </div>\n")
 
 	for _, environment := range environments {
-		clusters := append([]globalCluster(nil), byEnvironment[environment]...)
+		clusters := append([]triageCluster(nil), byEnvironment[environment]...)
 		sort.Slice(clusters, func(i, j int) bool {
 			if clusters[i].SupportCount != clusters[j].SupportCount {
 				return clusters[i].SupportCount > clusters[j].SupportCount
@@ -129,7 +129,7 @@ func buildGlobalTriageHTML(
 		})
 
 		totalEnvironmentSupport := totalSupportByEnvironment[environment]
-		filtered := make([]globalCluster, 0, len(clusters))
+		filtered := make([]triageCluster, 0, len(clusters))
 		for _, row := range clusters {
 			share := pct(row.SupportCount, totalEnvironmentSupport)
 			if minPercent > 0 && share < minPercent {
@@ -152,10 +152,10 @@ func buildGlobalTriageHTML(
 				phrase = "(unknown evidence)"
 			}
 			otherEnvironments := alsoSeenInOtherEnvironments(phraseEnvironments[phrase], environment)
-			qualityCodes := globalQualityIssueCodes(phrase)
+			qualityCodes := triageQualityIssueCodes(phrase)
 			qualityLabels := make([]string, 0, len(qualityCodes))
 			for _, code := range qualityCodes {
-				qualityLabels = append(qualityLabels, globalQualityIssueLabel(code))
+				qualityLabels = append(qualityLabels, triageQualityIssueLabel(code))
 			}
 			runReferences := toTriageRunReferences(row.References)
 			triageRow := triagehtml.SignatureRow{
@@ -167,7 +167,7 @@ func buildGlobalTriageHTML(
 				SupportShare:      pct(row.SupportCount, totalEnvironmentSupport),
 				PostGoodCount:     row.PostGoodCommitCount,
 				AlsoSeenIn:        append([]string(nil), otherEnvironments...),
-				QualityScore:      globalQualityScore(qualityCodes),
+				QualityScore:      triageQualityScore(qualityCodes),
 				QualityNoteLabels: qualityLabels,
 				ContributingTests: toTriageContributingTests(row.ContributingTests),
 				FullErrorSamples:  append([]string(nil), row.FullErrorSamples...),
@@ -197,7 +197,7 @@ func buildGlobalTriageHTML(
 					triageRow.PriorLastSeenAt = presence.PriorLastSeenAt.UTC().Format(time.RFC3339)
 				}
 			}
-			if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(runReferences, globalTrendWindowDays, trendAnchor); ok {
+			if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(runReferences, triageTrendWindowDays, trendAnchor); ok {
 				triageRow.TrendSparkline = sparkline
 				triageRow.TrendCounts = append([]int(nil), counts...)
 				triageRow.TrendRange = sparkRange
@@ -205,8 +205,8 @@ func buildGlobalTriageHTML(
 			triageRows = append(triageRows, triageRow)
 		}
 		loadedRows := len(triageRows)
-		if loadedRows > globalLoadedRowsLimit {
-			loadedRows = globalLoadedRowsLimit
+		if loadedRows > triageLoadedRowsLimit {
+			loadedRows = triageLoadedRowsLimit
 		}
 		initialVisible := top
 		if initialVisible < 0 {
@@ -221,7 +221,7 @@ func buildGlobalTriageHTML(
 			GitHubRepoOwner:    sourceoptions.DefaultGitHubRepoOwner(),
 			GitHubRepoName:     sourceoptions.DefaultGitHubRepoName(),
 			ImpactTotalJobs:    overallJobsByEnvironment[environment],
-			LoadedRowsLimit:    globalLoadedRowsLimit,
+			LoadedRowsLimit:    triageLoadedRowsLimit,
 			InitialVisibleRows: top,
 		}))
 		b.WriteString("  </section>\n")
@@ -241,7 +241,7 @@ func triageCardHTML(label string, value string) string {
 	)
 }
 
-func orderedTriageEnvironments(byEnvironment map[string][]globalCluster, targetEnvironments []string) []string {
+func orderedTriageEnvironments(byEnvironment map[string][]triageCluster, targetEnvironments []string) []string {
 	present := map[string]struct{}{}
 	for env := range byEnvironment {
 		present[normalizeReportEnvironment(env)] = struct{}{}
@@ -287,7 +287,7 @@ func alsoSeenInOtherEnvironments(seenByEnvironment map[string]struct{}, currentE
 	return out
 }
 
-func toTriageContributingTests(items []contributingTest) []triagehtml.ContributingTest {
+func toTriageContributingTests(items []triageContributingTest) []triagehtml.ContributingTest {
 	out := make([]triagehtml.ContributingTest, 0, len(items))
 	for _, item := range items {
 		out = append(out, triagehtml.ContributingTest{
@@ -300,7 +300,7 @@ func toTriageContributingTests(items []contributingTest) []triagehtml.Contributi
 	return out
 }
 
-func toTriageRunReferences(rows []reference) []triagehtml.RunReference {
+func toTriageRunReferences(rows []triageReference) []triagehtml.RunReference {
 	out := make([]triagehtml.RunReference, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, triagehtml.RunReference{
@@ -314,7 +314,7 @@ func toTriageRunReferences(rows []reference) []triagehtml.RunReference {
 }
 
 func toLinkedChildSignatureRows(
-	children []globalCluster,
+	children []triageCluster,
 	totalEnvironmentSupport int,
 	phraseEnvironments map[string]map[string]struct{},
 	environment string,
@@ -328,10 +328,10 @@ func toLinkedChildSignatureRows(
 		if phrase == "" {
 			phrase = "(unknown evidence)"
 		}
-		qualityCodes := globalQualityIssueCodes(phrase)
+		qualityCodes := triageQualityIssueCodes(phrase)
 		qualityLabels := make([]string, 0, len(qualityCodes))
 		for _, code := range qualityCodes {
-			qualityLabels = append(qualityLabels, globalQualityIssueLabel(code))
+			qualityLabels = append(qualityLabels, triageQualityIssueLabel(code))
 		}
 		out = append(out, triagehtml.SignatureRow{
 			Environment:       normalizeReportEnvironment(child.Environment),
@@ -342,7 +342,7 @@ func toLinkedChildSignatureRows(
 			SupportShare:      pct(child.SupportCount, totalEnvironmentSupport),
 			PostGoodCount:     child.PostGoodCommitCount,
 			AlsoSeenIn:        alsoSeenInOtherEnvironments(phraseEnvironments[phrase], environment),
-			QualityScore:      globalQualityScore(qualityCodes),
+			QualityScore:      triageQualityScore(qualityCodes),
 			QualityNoteLabels: qualityLabels,
 			ContributingTests: toTriageContributingTests(child.ContributingTests),
 			FullErrorSamples:  append([]string(nil), child.FullErrorSamples...),
@@ -364,14 +364,14 @@ func toLinkedChildSignatureRows(
 	return out
 }
 
-func resolvedGlobalWindow(rows []globalCluster, configuredStart string, configuredEnd string) (time.Time, time.Time, bool) {
+func resolvedTriageWindow(rows []triageCluster, configuredStart string, configuredEnd string) (time.Time, time.Time, bool) {
 	if strings.TrimSpace(configuredStart) != "" && strings.TrimSpace(configuredEnd) != "" {
 		start, end, ok := configuredReportWindowDisplayBounds(configuredStart, configuredEnd)
 		if ok {
 			return start, end, true
 		}
 	}
-	return observedGlobalWindow(rows)
+	return observedTriageWindow(rows)
 }
 
 func configuredReportWindowDisplayBounds(configuredStart string, configuredEnd string) (time.Time, time.Time, bool) {
@@ -390,7 +390,7 @@ func configuredReportWindowDisplayBounds(configuredStart string, configuredEnd s
 	return start.UTC(), endInclusive.UTC(), true
 }
 
-func observedGlobalWindow(rows []globalCluster) (time.Time, time.Time, bool) {
+func observedTriageWindow(rows []triageCluster) (time.Time, time.Time, bool) {
 	var minTS time.Time
 	var maxTS time.Time
 	for _, row := range rows {
@@ -440,15 +440,15 @@ func parseReferenceTimestamp(value string) (time.Time, bool) {
 	return triagehtml.ParseReferenceTimestamp(value)
 }
 
-func globalQualityIssueCodes(phrase string) []string {
+func triageQualityIssueCodes(phrase string) []string {
 	return triagehtml.QualityIssueCodes(phrase)
 }
 
-func globalQualityScore(issueCodes []string) int {
+func triageQualityScore(issueCodes []string) int {
 	return triagehtml.QualityScore(issueCodes)
 }
 
-func globalQualityIssueLabel(code string) string {
+func triageQualityIssueLabel(code string) string {
 	return triagehtml.QualityIssueLabel(code)
 }
 

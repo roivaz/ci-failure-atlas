@@ -26,7 +26,7 @@ import (
 
 const (
 	weeklyReportFile        = "weekly-metrics.html"
-	globalReportFile        = "global-signature-triage.html"
+	triageReportFile        = "triage-report.html"
 	indexFileName           = "index.html"
 	defaultSiteRoot         = "site"
 	defaultHistoryWeeks     = 4
@@ -463,7 +463,7 @@ func generateSiteReportsForWeek(
 
 	summaryStart := time.Now()
 	summaryOpts := reportsummary.DefaultOptions()
-	summaryOpts.OutputPath = filepath.Join(siteWeekDirectory, globalReportFile)
+	summaryOpts.OutputPath = filepath.Join(siteWeekDirectory, triageReportFile)
 	summaryOpts.Format = "html"
 	summaryOpts.Top = 25
 	summaryOpts.Week = semanticSubdirectory
@@ -473,10 +473,10 @@ func generateSiteReportsForWeek(
 		semanticSubdirectory,
 		previousWeekSubdirectory,
 		nextWeekSubdirectory,
-		triagehtml.ReportViewGlobal,
+		triagehtml.ReportViewTriage,
 	)
 	if err := reportsummary.Generate(ctx, currentStore, summaryOpts); err != nil {
-		return fmt.Errorf("generate global triage HTML for week %q: %w", semanticSubdirectory, err)
+		return fmt.Errorf("generate triage HTML for week %q: %w", semanticSubdirectory, err)
 	}
 	summaryElapsed := time.Since(summaryStart)
 
@@ -499,8 +499,8 @@ func buildReportChromeOptions(
 	currentView triagehtml.ReportView,
 ) triagehtml.ReportChromeOptions {
 	reportFileName := weeklyReportFile
-	if currentView == triagehtml.ReportViewGlobal {
-		reportFileName = globalReportFile
+	if currentView == triagehtml.ReportViewTriage {
+		reportFileName = triageReportFile
 	}
 	previousHref := ""
 	trimmedPreviousWeekSubdirectory := strings.TrimSpace(previousWeekSubdirectory)
@@ -520,7 +520,7 @@ func buildReportChromeOptions(
 		NextWeek:     trimmedNextWeekSubdirectory,
 		NextHref:     nextHref,
 		WeeklyHref:   weeklyReportFile,
-		GlobalHref:   globalReportFile,
+		TriageHref:   triageReportFile,
 		ArchiveHref:  "../archive/",
 	}
 }
@@ -545,11 +545,11 @@ func discoverWeekDirectories(siteRoot string) ([]WeekDirectory, error) {
 		if weeklyErr != nil {
 			return nil, weeklyErr
 		}
-		hasGlobal, globalErr := isRegularFile(filepath.Join(dirPath, globalReportFile))
-		if globalErr != nil {
-			return nil, globalErr
+		hasTriage, triageErr := isRegularFile(filepath.Join(dirPath, triageReportFile))
+		if triageErr != nil {
+			return nil, triageErr
 		}
-		if !hasWeekly || !hasGlobal {
+		if !hasWeekly || !hasTriage {
 			continue
 		}
 		weeks = append(weeks, WeekDirectory{
@@ -709,7 +709,7 @@ func renderWeekIndexHTML(week string, generatedAt time.Time) string {
 	b.WriteString(fmt.Sprintf("  <h1>CI Reports - %s</h1>\n", html.EscapeString(week)))
 	b.WriteString("  <ul>\n")
 	b.WriteString(fmt.Sprintf("    <li><a href=\"%s\">Weekly CI status</a></li>\n", weeklyReportFile))
-	b.WriteString(fmt.Sprintf("    <li><a href=\"%s\">Global signature triage</a></li>\n", globalReportFile))
+	b.WriteString(fmt.Sprintf("    <li><a href=\"%s\">Triage report</a></li>\n", triageReportFile))
 	b.WriteString("  </ul>\n")
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated: %s</p>\n", html.EscapeString(generatedAt.Format(time.RFC3339))))
 	b.WriteString("  <p><a href=\"../archive/\">Back to archive</a></p>\n")
@@ -737,8 +737,8 @@ func writeLatestDirectory(siteRoot string, weeks []WeekDirectory) error {
 	if err := copyFile(filepath.Join(latestWeek.Path, weeklyReportFile), filepath.Join(latestDirectoryPath, weeklyReportFile)); err != nil {
 		return fmt.Errorf("write latest weekly report: %w", err)
 	}
-	if err := copyFile(filepath.Join(latestWeek.Path, globalReportFile), filepath.Join(latestDirectoryPath, globalReportFile)); err != nil {
-		return fmt.Errorf("write latest global report: %w", err)
+	if err := copyFile(filepath.Join(latestWeek.Path, triageReportFile), filepath.Join(latestDirectoryPath, triageReportFile)); err != nil {
+		return fmt.Errorf("write latest triage report: %w", err)
 	}
 	return nil
 }
@@ -772,8 +772,8 @@ func buildUploadRequests(buildResult BuildResult) ([]BlobUploadRequest, func(), 
 				TargetPath: filepath.ToSlash(filepath.Join(week.Name, weeklyReportFile)),
 			},
 			BlobUploadRequest{
-				SourcePath: filepath.Join(week.Path, globalReportFile),
-				TargetPath: filepath.ToSlash(filepath.Join(week.Name, globalReportFile)),
+				SourcePath: filepath.Join(week.Path, triageReportFile),
+				TargetPath: filepath.ToSlash(filepath.Join(week.Name, triageReportFile)),
 			},
 			BlobUploadRequest{
 				SourcePath:  filepath.Join(week.Path, indexFileName),
@@ -794,8 +794,8 @@ func buildUploadRequests(buildResult BuildResult) ([]BlobUploadRequest, func(), 
 			TargetPath: filepath.ToSlash(filepath.Join("latest", weeklyReportFile)),
 		},
 		BlobUploadRequest{
-			SourcePath: filepath.Join(latest.Path, globalReportFile),
-			TargetPath: filepath.ToSlash(filepath.Join("latest", globalReportFile)),
+			SourcePath: filepath.Join(latest.Path, triageReportFile),
+			TargetPath: filepath.ToSlash(filepath.Join("latest", triageReportFile)),
 		},
 		BlobUploadRequest{
 			SourcePath:  latestIndexPath,
@@ -857,7 +857,7 @@ func renderLatestIndexHTML(latestWeek string) string {
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Latest week directory: <strong>%s</strong></p>\n", html.EscapeString(latestWeek)))
 	b.WriteString("  <ul>\n")
 	b.WriteString(fmt.Sprintf("    <li><a href=\"%s\">Weekly CI status</a></li>\n", weeklyReportFile))
-	b.WriteString(fmt.Sprintf("    <li><a href=\"%s\">Global signature triage</a></li>\n", globalReportFile))
+	b.WriteString(fmt.Sprintf("    <li><a href=\"%s\">Triage report</a></li>\n", triageReportFile))
 	b.WriteString("  </ul>\n")
 	b.WriteString("  <p><a href=\"../archive/\">Back to archive</a></p>\n")
 	b.WriteString(triagehtml.ThemeToggleScriptTag())

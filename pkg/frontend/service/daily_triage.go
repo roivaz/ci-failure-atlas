@@ -130,7 +130,7 @@ func (s *Service) BuildDailyTriage(ctx context.Context, query DailyTriageQuery) 
 	}
 	historyResolver, err := s.BuildHistoryResolver(ctx, resolvedWeek)
 	if err != nil {
-		return DailyTriageResponse{}, fmt.Errorf("build global history resolver: %w", err)
+		return DailyTriageResponse{}, fmt.Errorf("build signature history resolver: %w", err)
 	}
 
 	weekContext := buildDailyWeekContext(weekData, phase3Issues)

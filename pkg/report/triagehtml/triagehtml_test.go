@@ -442,7 +442,7 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 		NextWeek:     "",
 		NextHref:     "",
 		WeeklyHref:   "weekly-metrics.html",
-		GlobalHref:   "global-signature-triage.html",
+		TriageHref:   "triage-report.html",
 		ArchiveHref:  "../archive/",
 	})
 	for _, snippet := range []string{
@@ -450,7 +450,7 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 		"href=\"../2026-03-01/weekly-metrics.html\"",
 		"Week 2026-03-08",
 		"class=\"report-view-link active\" href=\"weekly-metrics.html\"",
-		"href=\"global-signature-triage.html\"",
+		"href=\"triage-report.html\"",
 		">Weekly Report</a>",
 		">Triage Report</a>",
 		"href=\"../archive/\"",

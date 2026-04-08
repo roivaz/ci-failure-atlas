@@ -95,7 +95,7 @@ type ReportView string
 
 const (
 	ReportViewWeekly ReportView = "weekly"
-	ReportViewGlobal ReportView = "global"
+	ReportViewTriage ReportView = "triage"
 )
 
 type ReportChromeOptions struct {
@@ -106,7 +106,7 @@ type ReportChromeOptions struct {
 	NextWeek     string
 	NextHref     string
 	WeeklyHref   string
-	GlobalHref   string
+	TriageHref   string
 	ArchiveHref  string
 }
 
@@ -270,8 +270,8 @@ func ReportChromeHTML(options ReportChromeOptions) string {
 	if strings.TrimSpace(normalized.WeeklyHref) != "" {
 		b.WriteString(renderReportChromeViewLink(normalized.WeeklyHref, "Weekly Report", normalized.CurrentView == ReportViewWeekly))
 	}
-	if strings.TrimSpace(normalized.GlobalHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.GlobalHref, "Triage Report", normalized.CurrentView == ReportViewGlobal))
+	if strings.TrimSpace(normalized.TriageHref) != "" {
+		b.WriteString(renderReportChromeViewLink(normalized.TriageHref, "Triage Report", normalized.CurrentView == ReportViewTriage))
 	}
 	if strings.TrimSpace(normalized.ArchiveHref) != "" {
 		b.WriteString(renderReportChromeViewLink(normalized.ArchiveHref, "Archive", false))
@@ -376,10 +376,10 @@ func normalizedReportChromeOptions(options ReportChromeOptions) ReportChromeOpti
 	options.NextWeek = strings.TrimSpace(options.NextWeek)
 	options.NextHref = strings.TrimSpace(options.NextHref)
 	options.WeeklyHref = strings.TrimSpace(options.WeeklyHref)
-	options.GlobalHref = strings.TrimSpace(options.GlobalHref)
+	options.TriageHref = strings.TrimSpace(options.TriageHref)
 	options.ArchiveHref = strings.TrimSpace(options.ArchiveHref)
 	switch options.CurrentView {
-	case ReportViewWeekly, ReportViewGlobal:
+	case ReportViewWeekly, ReportViewTriage:
 	default:
 		options.CurrentView = ""
 	}
@@ -391,7 +391,7 @@ func hasReportChromeNavigation(options ReportChromeOptions) bool {
 		options.PreviousHref != "" ||
 		options.NextHref != "" ||
 		options.WeeklyHref != "" ||
-		options.GlobalHref != "" ||
+		options.TriageHref != "" ||
 		options.ArchiveHref != ""
 }
 

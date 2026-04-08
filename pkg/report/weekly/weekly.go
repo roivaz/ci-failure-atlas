@@ -206,9 +206,9 @@ func buildHTML(
 	chrome triagehtml.ReportChromeOptions,
 ) string {
 	var b strings.Builder
-	globalTriageBaseHref := strings.TrimSpace(chrome.GlobalHref)
-	if globalTriageBaseHref == "" {
-		globalTriageBaseHref = "global-signature-triage.html"
+	triageBaseHref := strings.TrimSpace(chrome.TriageHref)
+	if triageBaseHref == "" {
+		triageBaseHref = "triage-report.html"
 	}
 	b.WriteString("<!doctype html>\n")
 	b.WriteString("<html lang=\"en\">\n")
@@ -560,9 +560,9 @@ func buildHTML(
 			weeklySignatureMinImpactPct,
 			weeklySignatureVisibleRows,
 		))
-		if triageReportHref := globalTriageEnvironmentHref(globalTriageBaseHref, environment); triageReportHref != "" {
+		if triageReportHref := triageReportEnvironmentHref(triageBaseHref, environment); triageReportHref != "" {
 			b.WriteString(fmt.Sprintf(
-				"      <p class=\"panel-note\"><a href=\"%s\">Jump to Global signature triage for this week</a></p>\n",
+				"      <p class=\"panel-note\"><a href=\"%s\">Jump to Triage report for this week</a></p>\n",
 				html.EscapeString(triageReportHref),
 			))
 		}
@@ -1097,7 +1097,7 @@ func cleanInline(input string, max int) string {
 	return string(runes[:max-1]) + "..."
 }
 
-func globalTriageEnvironmentHref(baseHref string, environment string) string {
+func triageReportEnvironmentHref(baseHref string, environment string) string {
 	trimmedBase := strings.TrimSpace(baseHref)
 	if trimmedBase == "" {
 		return ""

@@ -1,6 +1,6 @@
 # CI Failure Atlas
 
-CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing weekly/global/review views.
+CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing weekly/triage/review views.
 
 The app+DB runtime is now the primary architecture. Static-site export still exists as an intentional compatibility path while hosted operation is being designed.
 
@@ -8,7 +8,7 @@ The app+DB runtime is now the primary architecture. Static-site export still exi
 
 - `cfa run` continuously ingests Sippy, Prow, and GitHub data and derives normalized facts into PostgreSQL.
 - `cfa semantic materialize` builds one semantic week from those facts and replaces that stored week in PostgreSQL.
-- `cfa app` serves the unified weekly, global, and review UI from PostgreSQL.
+- `cfa app` serves the unified weekly, triage, and review UI from PostgreSQL.
 - `cfa app export-site` renders static HTML from existing PostgreSQL data only; it does not run semantic materialization.
 
 Local development defaults to embedded PostgreSQL with initialization and migrations enabled. Remote PostgreSQL is supported through the usual `--storage.postgres.*` flags.
@@ -55,7 +55,7 @@ go run cmd/main.go app \
   --history.weeks 4
 ```
 
-Open `http://127.0.0.1:8082/` for the weekly/global app or `http://127.0.0.1:8082/review/` for Phase3 review/linking.
+Open `http://127.0.0.1:8082/` for the weekly/triage app or `http://127.0.0.1:8082/review/` for Phase3 review/linking.
 
 ### 4. Export static HTML
 

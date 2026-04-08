@@ -157,7 +157,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 
 	historyResolver, err := s.BuildHistoryResolver(ctx, week)
 	if err != nil {
-		return ReviewWeekSnapshot{}, fmt.Errorf("build global signature history resolver: %w", err)
+		return ReviewWeekSnapshot{}, fmt.Errorf("build signature history resolver: %w", err)
 	}
 	trendAnchor := time.Now().UTC()
 	if weekStart, ok := reviewParseSemanticWeek(week); ok {
@@ -224,7 +224,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 		for _, code := range qualityCodes {
 			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
 		}
-		reviewReasons := reviewReasonsForGlobalCluster(cluster, reviewIndex)
+		reviewReasons := reviewReasonsForCluster(cluster, reviewIndex)
 		qualityScore := triagehtml.QualityScore(qualityCodes) + (len(reviewReasons) * 2)
 		alsoSeenIn := reviewEnvironmentsForPhrase(
 			phraseEnvironments[normalizePhrase(cluster.CanonicalEvidencePhrase)],
@@ -375,7 +375,7 @@ func buildReviewSignalIndex(rows []semanticcontracts.ReviewItemRecord) reviewSig
 	return index
 }
 
-func reviewReasonsForGlobalCluster(cluster semanticcontracts.GlobalClusterRecord, index reviewSignalIndex) []string {
+func reviewReasonsForCluster(cluster semanticcontracts.GlobalClusterRecord, index reviewSignalIndex) []string {
 	set := map[string]struct{}{}
 	for _, phase1ID := range cluster.MemberPhase1ClusterIDs {
 		for reason := range index.ByPhase1ClusterID[strings.TrimSpace(phase1ID)] {
@@ -537,7 +537,7 @@ func reviewPhase3ClusterIDsForAnchors(anchors []ReviewPhase3Anchor, phase3Cluste
 }
 
 func reviewLinkedChildrenByMergedSelectionID(
-	globalClusters []semanticcontracts.GlobalClusterRecord,
+	clusters []semanticcontracts.GlobalClusterRecord,
 	phase3Links []semanticcontracts.Phase3LinkRecord,
 ) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
 	phase3ClusterByAnchor := map[string]string{}
@@ -554,11 +554,11 @@ func reviewLinkedChildrenByMergedSelectionID(
 	}
 
 	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
-	for _, cluster := range globalClusters {
+	for _, cluster := range clusters {
 		environment := normalizeEnvironment(cluster.Environment)
 		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
 		if environment == "" || clusterID == "" {
-			return nil, fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
+			return nil, fmt.Errorf("phase2 cluster record missing environment and/or phase2_cluster_id")
 		}
 		anchors := reviewAnchorsForCluster(environment, cluster.References)
 		phase3ClusterIDs := reviewPhase3ClusterIDsForAnchors(anchors, phase3ClusterByAnchor)
@@ -611,7 +611,7 @@ func reviewBuildLinkedChildSignatureRows(
 		for _, code := range qualityCodes {
 			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
 		}
-		reviewReasons := reviewReasonsForGlobalCluster(cluster, reviewIndex)
+		reviewReasons := reviewReasonsForCluster(cluster, reviewIndex)
 		qualityScore := triagehtml.QualityScore(qualityCodes) + (len(reviewReasons) * 2)
 		primary := primaryContributingTest(cluster.ContributingTests)
 

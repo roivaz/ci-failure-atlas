@@ -19,7 +19,7 @@ import (
 )
 
 type Options struct {
-	GlobalPath          string
+	TriagePath          string
 	TestPath            string
 	ReviewPath          string
 	OutputPath          string
@@ -40,7 +40,7 @@ const (
 
 func DefaultOptions() Options {
 	return Options{
-		OutputPath:          "data/reports/global-signature-triage.html",
+		OutputPath:          "data/reports/triage-report.html",
 		Format:              reportFormatHTML,
 		Top:                 10,
 		MinPercent:          1.0,
@@ -49,9 +49,9 @@ func DefaultOptions() Options {
 	}
 }
 
-type reference = frontservice.GlobalReportReference
-type contributingTest = frontservice.GlobalReportContributingTest
-type globalCluster = frontservice.GlobalReportCluster
+type triageReference = frontservice.TriageReportReference
+type triageContributingTest = frontservice.TriageReportContributingTest
+type triageCluster = frontservice.TriageReportCluster
 
 func Run(ctx context.Context, args []string) error {
 	_ = ctx
@@ -70,7 +70,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 
 	logger := loggerFromContext(ctx).WithValues("component", "report.summary")
 
-	data, err := frontservice.BuildGlobalReportData(ctx, store, frontservice.GlobalReportBuildOptions{
+	data, err := frontservice.BuildTriageReportData(ctx, store, frontservice.TriageReportBuildOptions{
 		Week:                validated.Week,
 		Environments:        validated.Environments,
 		HistoryHorizonWeeks: validated.HistoryHorizonWeeks,
@@ -81,8 +81,8 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 	}
 
 	var report string
-	report = buildGlobalTriageHTML(
-		data.GlobalClusters,
+	report = buildTriageReportHTML(
+		data.TriageClusters,
 		validated.Top,
 		validated.MinPercent,
 		data.GeneratedAt,
@@ -99,9 +99,9 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 			targetEnvs = []string{"unknown"}
 		}
 		for _, environment := range targetEnvs {
-			filteredGlobalRows := filterGlobalClustersByEnvironment(data.GlobalClusters, environment)
-			report := buildGlobalTriageHTML(
-				filteredGlobalRows,
+			filteredTriageRows := filterTriageClustersByEnvironment(data.TriageClusters, environment)
+			report := buildTriageReportHTML(
+				filteredTriageRows,
 				validated.Top,
 				validated.MinPercent,
 				data.GeneratedAt,
@@ -121,7 +121,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 				"output", outputPath,
 				"format", reportFormatHTML,
 				"environment", environment,
-				"globalClusters", len(filteredGlobalRows),
+				"triageClusters", len(filteredTriageRows),
 				"testClusters", data.TestClusterCountsByEnvironment[environment],
 				"reviewItems", data.ReviewItemCountsByEnvironment[environment],
 				"top", validated.Top,
@@ -131,15 +131,15 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		return nil
 	}
 
-	filteredGlobalRows := data.GlobalClusters
+	filteredTriageRows := data.TriageClusters
 	if len(validated.Environments) > 0 {
 		envSet := make(map[string]struct{}, len(validated.Environments))
 		for _, environment := range validated.Environments {
 			envSet[normalizeReportEnvironment(environment)] = struct{}{}
 		}
-		filteredGlobalRows = filterGlobalClustersByEnvironmentSet(data.GlobalClusters, envSet)
-		report = buildGlobalTriageHTML(
-			filteredGlobalRows,
+		filteredTriageRows = filterTriageClustersByEnvironmentSet(data.TriageClusters, envSet)
+		report = buildTriageReportHTML(
+			filteredTriageRows,
 			validated.Top,
 			validated.MinPercent,
 			data.GeneratedAt,
@@ -158,7 +158,7 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 		"Wrote triage summary report.",
 		"output", validated.OutputPath,
 		"format", reportFormatHTML,
-		"globalClusters", len(filteredGlobalRows),
+		"triageClusters", len(filteredTriageRows),
 		"testClusters", totalCountForEnvironments(data.TestClusterCountsByEnvironment, validated.Environments),
 		"reviewItems", totalCountForEnvironments(data.ReviewItemCountsByEnvironment, validated.Environments),
 		"top", validated.Top,
@@ -292,16 +292,16 @@ func outputPathForEnvironment(outputPath, environment string) string {
 	return baseWithoutExt + "." + env + ext
 }
 
-func filterGlobalClustersByEnvironment(rows []globalCluster, environment string) []globalCluster {
+func filterTriageClustersByEnvironment(rows []triageCluster, environment string) []triageCluster {
 	envSet := map[string]struct{}{normalizeReportEnvironment(environment): {}}
-	return filterGlobalClustersByEnvironmentSet(rows, envSet)
+	return filterTriageClustersByEnvironmentSet(rows, envSet)
 }
 
-func filterGlobalClustersByEnvironmentSet(rows []globalCluster, envSet map[string]struct{}) []globalCluster {
+func filterTriageClustersByEnvironmentSet(rows []triageCluster, envSet map[string]struct{}) []triageCluster {
 	if len(envSet) == 0 {
-		return append([]globalCluster(nil), rows...)
+		return append([]triageCluster(nil), rows...)
 	}
-	out := make([]globalCluster, 0, len(rows))
+	out := make([]triageCluster, 0, len(rows))
 	for _, row := range rows {
 		environment := normalizeReportEnvironment(row.Environment)
 		if _, ok := envSet[environment]; !ok {

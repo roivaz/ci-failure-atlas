@@ -75,7 +75,7 @@ func TestBuildReviewWeekUsesServiceReadModel(t *testing.T) {
 	}
 }
 
-func TestBuildGlobalReportDataProjectsSamplesAndCounts(t *testing.T) {
+func TestBuildTriageReportDataProjectsSamplesAndCounts(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -92,26 +92,26 @@ func TestBuildGlobalReportDataProjectsSamplesAndCounts(t *testing.T) {
 		t.Fatalf("seed metrics daily: %v", err)
 	}
 
-	data, err := BuildGlobalReportData(ctx, store, GlobalReportBuildOptions{
+	data, err := BuildTriageReportData(ctx, store, TriageReportBuildOptions{
 		Week:         "2026-03-15",
 		Environments: []string{"dev"},
 	})
 	if err != nil {
-		t.Fatalf("build global report data: %v", err)
+		t.Fatalf("build triage report data: %v", err)
 	}
 
-	if got, want := len(data.GlobalClusters), 1; got != want {
-		t.Fatalf("unexpected global cluster count: got=%d want=%d", got, want)
+	if got, want := len(data.TriageClusters), 1; got != want {
+		t.Fatalf("unexpected triage cluster count: got=%d want=%d", got, want)
 	}
 	if got, want := data.TargetEnvironments[0], "dev"; got != want {
 		t.Fatalf("unexpected target environment: got=%q want=%q", got, want)
 	}
-	cluster := data.GlobalClusters[0]
+	cluster := data.TriageClusters[0]
 	if got, want := cluster.Environment, "dev"; got != want {
 		t.Fatalf("unexpected cluster environment: got=%q want=%q", got, want)
 	}
 	if len(cluster.FullErrorSamples) == 0 {
-		t.Fatalf("expected global cluster to include full error samples")
+		t.Fatalf("expected triage cluster to include full error samples")
 	}
 	if got, want := data.OverallJobsByEnvironment["dev"], 7; got != want {
 		t.Fatalf("unexpected overall jobs: got=%d want=%d", got, want)
@@ -173,7 +173,7 @@ func TestBuildWeeklyReportDataBuildsCurrentAndPreviousReadModels(t *testing.T) {
 	if got, want := data.TestsBelowTargetByEnv["dev"][0].TestName, "should oauth"; got != want {
 		t.Fatalf("unexpected below-target test name: got=%q want=%q", got, want)
 	}
-	if got, want := data.PreviousSemantic.ByEnvironment["dev"].GlobalClusters, 1; got != want {
+	if got, want := data.PreviousSemantic.ByEnvironment["dev"].TriageClusters, 1; got != want {
 		t.Fatalf("unexpected previous semantic cluster count: got=%d want=%d", got, want)
 	}
 }

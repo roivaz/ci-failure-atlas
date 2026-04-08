@@ -85,7 +85,7 @@ type WeeklyEnvReport struct {
 type envReport = WeeklyEnvReport
 
 type WeeklySemanticEnvSummary struct {
-	GlobalClusters int
+	TriageClusters int
 	TestClusters   int
 	ReviewItems    int
 	TopPhrase      string
@@ -233,7 +233,7 @@ func BuildWeeklyReportData(
 			GlobalSignatureLookbackWeeks: lookbackWeeks,
 		})
 		if err != nil {
-			return WeeklyReportData{}, fmt.Errorf("build global signature history resolver: %w", err)
+			return WeeklyReportData{}, fmt.Errorf("build signature history resolver: %w", err)
 		}
 	}
 
@@ -356,20 +356,20 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		PhraseFullErrorsByEnv:            map[string]map[string][]string{},
 	}
 
-	sourceGlobalClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	sourceClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
 	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
-	linkedChildrenByMergedClusterKey, err := weeklyLinkedChildrenByMergedClusterKey(sourceGlobalClusters, phase3Links)
+	linkedChildrenByMergedClusterKey, err := weeklyLinkedChildrenByMergedClusterKey(sourceClusters, phase3Links)
 	if err != nil {
 		return out, err
 	}
-	globalClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
-	for _, row := range globalClusters {
+	materializedClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
+	for _, row := range materializedClusters {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
 			continue
 		}
 		summary := out.ByEnvironment[environment]
-		summary.GlobalClusters++
+		summary.TriageClusters++
 
 		phrase := strings.TrimSpace(row.CanonicalEvidencePhrase)
 		if phrase == "" {
@@ -473,9 +473,9 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
 		}
 		linkedChildren := []topSignature(nil)
-		linkedChildrenRaw := linkedChildrenByMergedClusterKey[weeklyGlobalClusterKey(environment, row.Phase2ClusterID)]
+		linkedChildrenRaw := linkedChildrenByMergedClusterKey[weeklyClusterGroupKey(environment, row.Phase2ClusterID)]
 		if len(linkedChildrenRaw) > 0 {
-			linkedChildren = topSignaturesFromGlobalClusters(linkedChildrenRaw)
+			linkedChildren = topSignaturesFromTriageClusters(linkedChildrenRaw)
 		}
 		rowReferences := toTriageRunReferences(row.References)
 		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
@@ -499,7 +499,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		})
 	}
 
-	for _, row := range sourceGlobalClusters {
+	for _, row := range sourceClusters {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
 			continue
@@ -1012,7 +1012,7 @@ func sortTopSignatures(rows []topSignature) {
 	})
 }
 
-func topSignaturesFromGlobalClusters(rows []semanticcontracts.GlobalClusterRecord) []topSignature {
+func topSignaturesFromTriageClusters(rows []semanticcontracts.GlobalClusterRecord) []topSignature {
 	out := make([]topSignature, 0, len(rows))
 	for _, row := range rows {
 		environment := normalizeReportEnvironment(row.Environment)
@@ -1060,10 +1060,10 @@ func topSignaturesFromGlobalClusters(rows []semanticcontracts.GlobalClusterRecor
 }
 
 func weeklyLinkedChildrenByMergedClusterKey(
-	globalClusters []semanticcontracts.GlobalClusterRecord,
+	clusters []semanticcontracts.GlobalClusterRecord,
 	phase3Links []semanticcontracts.Phase3LinkRecord,
 ) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
-	if len(globalClusters) == 0 || len(phase3Links) == 0 {
+	if len(clusters) == 0 || len(phase3Links) == 0 {
 		return map[string][]semanticcontracts.GlobalClusterRecord{}, nil
 	}
 	phase3ClusterByAnchor := make(map[string]string, len(phase3Links))
@@ -1077,15 +1077,15 @@ func weeklyLinkedChildrenByMergedClusterKey(
 	}
 
 	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
-	for _, cluster := range globalClusters {
-		clusterIDs := weeklyPhase3ClusterIDsForGlobalCluster(cluster, phase3ClusterByAnchor)
+	for _, cluster := range clusters {
+		clusterIDs := weeklyPhase3ClusterIDsForCluster(cluster, phase3ClusterByAnchor)
 		if len(clusterIDs) == 0 {
 			continue
 		}
 		if len(clusterIDs) > 1 {
-			return nil, fmt.Errorf("global cluster %q/%q maps to multiple phase3 IDs: %v", cluster.Environment, cluster.Phase2ClusterID, clusterIDs)
+			return nil, fmt.Errorf("phase2 cluster %q/%q maps to multiple phase3 IDs: %v", cluster.Environment, cluster.Phase2ClusterID, clusterIDs)
 		}
-		key := weeklyGlobalClusterKey(cluster.Environment, clusterIDs[0])
+		key := weeklyClusterGroupKey(cluster.Environment, clusterIDs[0])
 		grouped[key] = append(grouped[key], cluster)
 	}
 	for key := range grouped {
@@ -1104,7 +1104,7 @@ func weeklyLinkedChildrenByMergedClusterKey(
 	return grouped, nil
 }
 
-func weeklyPhase3ClusterIDsForGlobalCluster(
+func weeklyPhase3ClusterIDsForCluster(
 	cluster semanticcontracts.GlobalClusterRecord,
 	phase3ClusterByAnchor map[string]string,
 ) []string {
@@ -1133,7 +1133,7 @@ func weeklyPhase3AnchorKey(environment string, runURL string, rowID string) stri
 	return env + "|" + run + "|" + row
 }
 
-func weeklyGlobalClusterKey(environment string, clusterID string) string {
+func weeklyClusterGroupKey(environment string, clusterID string) string {
 	env := normalizeReportEnvironment(environment)
 	cluster := strings.TrimSpace(clusterID)
 	if env == "" || cluster == "" {
