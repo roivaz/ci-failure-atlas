@@ -6,6 +6,12 @@ GO_PACKAGES ?= ./...
 RUN_ARGS ?=
 BINARY ?= bin/cfa
 COVER_PROFILE ?= .work/coverage.out
+DOCKER ?= docker
+DOCKERFILE ?= Dockerfile
+IMAGE_REPOSITORY ?= quay.io/roivaz/cfa
+IMAGE_TAG ?= latest
+IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
+IMAGE_SOURCES := $(shell find cmd pkg -type f) go.mod go.sum
 
 APP_LISTEN ?= 127.0.0.1:8082
 APP_WEEK ?=
@@ -39,7 +45,7 @@ AZ_STATIC_WEBSITE_ENABLED ?= true
 AZ_STATIC_INDEX_DOCUMENT ?= index.html
 AZ_STATIC_ERROR_DOCUMENT ?= 404.html
 
-.PHONY: help fmt fmt-check vet test test-race test-cover build run tidy check clean clean-site distclean semantic-materialize semantic-backfill app export-site site-upload deploy-static-website-storage run-controllers run-once sync-once migrate-legacy-data
+.PHONY: help fmt fmt-check vet test test-race test-cover build image build-and-push show-image run tidy check clean clean-site distclean semantic-materialize semantic-backfill app export-site site-upload deploy-static-website-storage run-controllers run-once sync-once migrate-legacy-data
 
 help:
 	@echo "Go targets:"
@@ -50,6 +56,9 @@ help:
 	@echo "  make test-race"
 	@echo "  make test-cover"
 	@echo "  make build"
+	@echo "  make image IMAGE_TAG=latest"
+	@echo "  make build-and-push IMAGE_TAG=latest"
+	@echo "  make show-image"
 	@echo "  make run RUN_ARGS='app --app.listen 127.0.0.1:8082'"
 	@echo "  make tidy"
 	@echo "  make check"
@@ -79,6 +88,11 @@ help:
 	@echo "  RUN_ARGS=$(RUN_ARGS)"
 	@echo "  BINARY=$(BINARY)"
 	@echo "  COVER_PROFILE=$(COVER_PROFILE)"
+	@echo "  DOCKER=$(DOCKER)"
+	@echo "  DOCKERFILE=$(DOCKERFILE)"
+	@echo "  IMAGE_REPOSITORY=$(IMAGE_REPOSITORY)"
+	@echo "  IMAGE_TAG=$(IMAGE_TAG)"
+	@echo "  IMAGE=$(IMAGE)"
 	@echo "  APP_LISTEN=$(APP_LISTEN)"
 	@echo "  APP_WEEK=$(APP_WEEK)"
 	@echo "  SITE_ROOT=$(SITE_ROOT)"
@@ -143,6 +157,17 @@ build:
 	@mkdir -p "$$(dirname "$(BINARY)")"
 	$(GO) build -o "$(BINARY)" ./cmd
 
+image: $(DOCKERFILE) $(IMAGE_SOURCES)
+	$(DOCKER) build . --file "$(DOCKERFILE)" --tag "$(IMAGE)"
+
+build-and-push: image
+	$(DOCKER) push "$(IMAGE)"
+
+show-image:
+	@echo "Image: $(IMAGE)"
+	@echo "Repository: $(IMAGE_REPOSITORY)"
+	@echo "Tag: $(IMAGE_TAG)"
+
 run:
 	$(CFA) $(RUN_ARGS)
 
@@ -174,7 +199,7 @@ site-export:
 		--site.root "$(SITE_ROOT)" \
 		--history.weeks "$(HISTORY_WEEKS)" $(EXPORT_SITE_ARGS)
 
-site-upload:
+site-upload: site-export
 	@if [[ -z "$(AZ_STORAGE_ACCOUNT)" ]]; then \
 		echo "AZ_STORAGE_ACCOUNT is required (example: make site-upload AZ_STORAGE_ACCOUNT=myreportstorage)"; \
 		exit 1; \

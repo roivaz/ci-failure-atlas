@@ -1,0 +1,8 @@
+.git
+.cursor
+.work
+bin
+data
+site
+backup
+*.code-workspace
