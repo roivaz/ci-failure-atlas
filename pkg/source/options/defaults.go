@@ -26,7 +26,7 @@ var supportedEnvironmentOrder = []string{"dev", "int", "stg", "prod"}
 
 var defaultRuntimeDefaults = RuntimeDefaults{
 	SippyBaseURL:         "https://sippy.dptools.openshift.org",
-	ProwArtifactsBaseURL: "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs",
+	ProwArtifactsBaseURL: "https://storage.googleapis.com",
 	SippyOrg:             "Azure",
 	SippyRepo:            "ARO-HCP",
 	GitHubRepoOwner:      "Azure",
