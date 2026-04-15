@@ -1101,6 +1101,14 @@ func affectedJobCount(row SignatureRow) int {
 	return len(OrderedUniqueReferences(row.References))
 }
 
+func rowAffectedReferences(row SignatureRow) []RunReference {
+	combined := append([]RunReference(nil), row.References...)
+	for _, child := range row.LinkedChildren {
+		combined = append(combined, child.References...)
+	}
+	return OrderedUniqueReferences(combined)
+}
+
 func rowScoreReferences(row SignatureRow) []RunReference {
 	if len(row.ScoringReferences) > 0 {
 		return row.ScoringReferences
@@ -1123,15 +1131,8 @@ func rowPostGoodCount(row SignatureRow) int {
 }
 
 func rowJobsAffected(row SignatureRow) int {
-	if len(row.LinkedChildren) == 0 {
-		return affectedJobCount(row)
-	}
-	total := 0
-	for _, child := range row.LinkedChildren {
-		total += affectedJobCount(child)
-	}
-	if total > 0 {
-		return total
+	if refs := rowAffectedReferences(row); len(refs) > 0 {
+		return len(refs)
 	}
 	return affectedJobCount(row)
 }
@@ -1139,7 +1140,7 @@ func rowJobsAffected(row SignatureRow) int {
 func totalAffectedJobs(rows []SignatureRow) int {
 	seenRuns := map[string]struct{}{}
 	for _, row := range rows {
-		for _, reference := range OrderedUniqueReferences(row.References) {
+		for _, reference := range rowAffectedReferences(row) {
 			runURL := strings.TrimSpace(reference.RunURL)
 			if runURL == "" {
 				continue

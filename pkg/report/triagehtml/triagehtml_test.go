@@ -601,6 +601,46 @@ func TestRenderTableLinkedRowsRenderChildExpandersInDetailRow(t *testing.T) {
 	}
 }
 
+func TestRenderTableLinkedRowsDeduplicateAggregateJobsAffectedByRunURL(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]SignatureRow{
+		{
+			Environment:  "dev",
+			Phrase:       "aggregate phrase",
+			ClusterID:    "p3c-aggregate",
+			SupportCount: 3,
+			SupportShare: 100,
+			LinkedChildren: []SignatureRow{
+				{
+					Environment: "dev",
+					Phrase:      "child phrase one",
+					ClusterID:   "phase2-dev-1",
+					References: []RunReference{
+						{RunURL: "https://prow.example/run/shared", OccurredAt: "2026-03-15T10:00:00Z"},
+						{RunURL: "https://prow.example/run/shared", OccurredAt: "2026-03-15T10:05:00Z"},
+					},
+				},
+				{
+					Environment: "dev",
+					Phrase:      "child phrase two",
+					ClusterID:   "phase2-dev-2",
+					References: []RunReference{
+						{RunURL: "https://prow.example/run/shared", OccurredAt: "2026-03-15T11:00:00Z"},
+					},
+				},
+			},
+		},
+	}, TableOptions{})
+
+	if !strings.Contains(rendered, `data-sort-jobs="1"`) {
+		t.Fatalf("expected aggregate row jobs affected to deduplicate shared runs, got %q", rendered)
+	}
+	if !strings.Contains(rendered, `data-sort-impact="100.000000"`) {
+		t.Fatalf("expected aggregate row impact to use deduplicated shared runs, got %q", rendered)
+	}
+}
+
 func TestRenderTableHidesCountAfterShareByDefaultAndShowsImpact(t *testing.T) {
 	t.Parallel()
 
