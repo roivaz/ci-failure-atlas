@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	frontservice "ci-failure-atlas/pkg/frontend/service"
 	reportreview "ci-failure-atlas/pkg/report/review"
-	reportsummary "ci-failure-atlas/pkg/report/summary"
 	"ci-failure-atlas/pkg/report/triagehtml"
 	reportweekly "ci-failure-atlas/pkg/report/weekly"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
@@ -56,7 +56,7 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.handleRoot)
-	mux.HandleFunc("/api/triage/daily", h.handleAPIDailyTriage)
+	mux.HandleFunc("/api/triage/window", h.handleAPIWindowedTriage)
 	mux.HandleFunc("/triage", h.handleTriagePage)
 	mux.HandleFunc("/global", h.handleLegacyGlobalRedirect)
 	mux.HandleFunc("/weekly", h.handleWeeklyPage)
@@ -70,6 +70,10 @@ func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if r.URL == nil || strings.TrimSpace(r.URL.Path) != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	http.Redirect(w, r, viewHref("/weekly", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusFound)
 }
 
@@ -78,14 +82,14 @@ func (h *handler) handleTriagePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	window, err := h.service.ResolveWeekWindow(r.Context(), strings.TrimSpace(r.URL.Query().Get("week")), time.Time{})
+	windowedQuery, err := h.resolveWindowedTriagePageQuery(r.Context(), windowedTriageQueryFromRequest(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	reportHTML, err := h.generateTriageReport(r.Context(), window)
+	reportHTML, err := h.generateWindowedTriageReport(r.Context(), windowedQuery)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("generate triage report: %v", err), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -127,16 +131,12 @@ func (h *handler) handleReviewRoot(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, viewHref("/review/", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusFound)
 }
 
-func (h *handler) handleAPIDailyTriage(w http.ResponseWriter, r *http.Request) {
+func (h *handler) handleAPIWindowedTriage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 		return
 	}
-	response, err := h.service.BuildDailyTriage(r.Context(), frontservice.DailyTriageQuery{
-		Date:         strings.TrimSpace(r.URL.Query().Get("date")),
-		Week:         strings.TrimSpace(r.URL.Query().Get("week")),
-		Environments: parseListQueryValues(r.URL.Query()["env"]),
-	})
+	response, err := h.service.BuildWindowedTriage(r.Context(), windowedTriageQueryFromRequest(r))
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
@@ -148,38 +148,29 @@ func (h *handler) handleAPIDailyTriage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (h *handler) generateTriageReport(ctx context.Context, window frontservice.WeekWindow) (string, error) {
-	week := strings.TrimSpace(window.CurrentWeek)
-	store, err := h.service.OpenStoreForWeek(week)
+func (h *handler) generateWindowedTriageReport(ctx context.Context, query frontservice.WindowedTriageQuery) (string, error) {
+	data, err := h.service.BuildWindowedTriage(ctx, query)
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		_ = store.Close()
-	}()
-
-	historyResolver, err := h.service.BuildHistoryResolver(ctx, week)
+	window, err := h.service.ResolveWeekWindow(ctx, data.Meta.ResolvedWeek, time.Time{})
 	if err != nil {
-		return "", fmt.Errorf("build triage history resolver: %w", err)
+		return "", err
 	}
-
-	opts := reportsummary.DefaultOptions()
-	opts.Top = 25
-	opts.MinPercent = 1.0
-	opts.Week = week
-	opts.HistoryHorizonWeeks = h.service.HistoryHorizonWeeks()
-	opts.HistoryResolver = historyResolver
-	opts.Chrome = triagehtml.ReportChromeOptions{
-		CurrentWeek:  week,
-		CurrentView:  triagehtml.ReportViewTriage,
-		PreviousWeek: strings.TrimSpace(window.PreviousWeek),
-		PreviousHref: navigationHref("/triage", window.PreviousWeek),
-		NextWeek:     strings.TrimSpace(window.NextWeek),
-		NextHref:     navigationHref("/triage", window.NextWeek),
-		WeeklyHref:   viewHref("/weekly", week),
-		TriageHref:   viewHref("/triage", week),
-	}
-	return reportsummary.GenerateHTML(ctx, store, opts)
+	week := strings.TrimSpace(data.Meta.ResolvedWeek)
+	return buildWindowedTriageReportHTML(data, windowedTriagePageOptions{
+		Query: query,
+		Chrome: triagehtml.ReportChromeOptions{
+			CurrentWeek:  week,
+			CurrentView:  triagehtml.ReportViewTriage,
+			PreviousWeek: strings.TrimSpace(window.PreviousWeek),
+			PreviousHref: shiftedWindowedTriageHref("/triage", window.PreviousWeek, week, data.Meta.StartDate, data.Meta.EndDate, query.Environments),
+			NextWeek:     strings.TrimSpace(window.NextWeek),
+			NextHref:     shiftedWindowedTriageHref("/triage", window.NextWeek, week, data.Meta.StartDate, data.Meta.EndDate, query.Environments),
+			WeeklyHref:   viewHref("/weekly", week),
+			TriageHref:   windowedTriageHref("/triage", week, data.Meta.StartDate, data.Meta.EndDate, query.Environments),
+		},
+	}), nil
 }
 
 func (h *handler) generateWeeklyReport(ctx context.Context, window frontservice.WeekWindow) (string, error) {
@@ -250,6 +241,134 @@ func navigationHref(path string, week string) string {
 		return ""
 	}
 	return viewHref(path, week)
+}
+
+func windowedTriageHref(path string, week string, startDate string, endDate string, environments []string) string {
+	trimmedPath := strings.TrimSpace(path)
+	if trimmedPath == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmedPath, "/") {
+		trimmedPath = "/" + trimmedPath
+	}
+	q := url.Values{}
+	if strings.TrimSpace(week) != "" {
+		q.Set("week", strings.TrimSpace(week))
+	}
+	if strings.TrimSpace(startDate) != "" {
+		q.Set("start_date", strings.TrimSpace(startDate))
+	}
+	if strings.TrimSpace(endDate) != "" {
+		q.Set("end_date", strings.TrimSpace(endDate))
+	}
+	for _, environment := range normalizedQueryEnvironments(environments) {
+		q.Add("env", environment)
+	}
+	if encoded := q.Encode(); encoded != "" {
+		return trimmedPath + "?" + encoded
+	}
+	return trimmedPath
+}
+
+func hasWindowedTriageQuery(query frontservice.WindowedTriageQuery) bool {
+	return strings.TrimSpace(query.StartDate) != "" || strings.TrimSpace(query.EndDate) != ""
+}
+
+func windowedTriageQueryFromRequest(r *http.Request) frontservice.WindowedTriageQuery {
+	if r == nil {
+		return frontservice.WindowedTriageQuery{}
+	}
+	return frontservice.WindowedTriageQuery{
+		StartDate:    strings.TrimSpace(r.URL.Query().Get("start_date")),
+		EndDate:      strings.TrimSpace(r.URL.Query().Get("end_date")),
+		Week:         strings.TrimSpace(r.URL.Query().Get("week")),
+		Environments: parseListQueryValues(r.URL.Query()["env"]),
+	}
+}
+
+func (h *handler) resolveWindowedTriagePageQuery(
+	ctx context.Context,
+	query frontservice.WindowedTriageQuery,
+) (frontservice.WindowedTriageQuery, error) {
+	window, err := h.service.ResolveWeekWindow(ctx, strings.TrimSpace(query.Week), time.Time{})
+	if err != nil {
+		return frontservice.WindowedTriageQuery{}, err
+	}
+	query.Week = strings.TrimSpace(window.CurrentWeek)
+	startDate := strings.TrimSpace(query.StartDate)
+	endDate := strings.TrimSpace(query.EndDate)
+	switch {
+	case startDate == "" && endDate == "":
+		query.StartDate, query.EndDate = semanticWeekDateRange(query.Week)
+	case startDate == "" || endDate == "":
+		return frontservice.WindowedTriageQuery{}, fmt.Errorf("start_date and end_date must both be set when filtering the triage window")
+	default:
+		query.StartDate = startDate
+		query.EndDate = endDate
+	}
+	return query, nil
+}
+
+func semanticWeekDateRange(week string) (string, string) {
+	startDate, err := time.Parse("2006-01-02", strings.TrimSpace(week))
+	if err != nil {
+		return "", ""
+	}
+	startDate = startDate.UTC()
+	return startDate.Format("2006-01-02"), startDate.AddDate(0, 0, 6).Format("2006-01-02")
+}
+
+func shiftedWindowedTriageHref(
+	path string,
+	targetWeek string,
+	currentWeek string,
+	startDate string,
+	endDate string,
+	environments []string,
+) string {
+	trimmedTargetWeek := strings.TrimSpace(targetWeek)
+	if trimmedTargetWeek == "" {
+		return ""
+	}
+	targetStart, targetEnd := semanticWeekDateRange(trimmedTargetWeek)
+	if targetStart == "" || targetEnd == "" {
+		return viewHref(path, trimmedTargetWeek)
+	}
+	currentWeekStart, errCurrentWeek := time.Parse("2006-01-02", strings.TrimSpace(currentWeek))
+	currentStartDate, errCurrentStart := time.Parse("2006-01-02", strings.TrimSpace(startDate))
+	currentEndDate, errCurrentEnd := time.Parse("2006-01-02", strings.TrimSpace(endDate))
+	targetWeekStart, errTargetWeek := time.Parse("2006-01-02", trimmedTargetWeek)
+	if errCurrentWeek != nil || errCurrentStart != nil || errCurrentEnd != nil || errTargetWeek != nil {
+		return windowedTriageHref(path, trimmedTargetWeek, targetStart, targetEnd, environments)
+	}
+	startOffset := int(currentStartDate.UTC().Sub(currentWeekStart.UTC()) / (24 * time.Hour))
+	endOffset := int(currentEndDate.UTC().Sub(currentWeekStart.UTC()) / (24 * time.Hour))
+	if startOffset < 0 || endOffset < startOffset || endOffset > 6 {
+		return windowedTriageHref(path, trimmedTargetWeek, targetStart, targetEnd, environments)
+	}
+	shiftedStart := targetWeekStart.UTC().AddDate(0, 0, startOffset).Format("2006-01-02")
+	shiftedEnd := targetWeekStart.UTC().AddDate(0, 0, endOffset).Format("2006-01-02")
+	return windowedTriageHref(path, trimmedTargetWeek, shiftedStart, shiftedEnd, environments)
+}
+
+func normalizedQueryEnvironments(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "" {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func parseListQueryValues(values []string) []string {

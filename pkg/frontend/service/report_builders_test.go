@@ -23,7 +23,7 @@ func TestBuildReviewWeekUsesServiceReadModel(t *testing.T) {
 	if err := previousStore.ReplaceMaterializedWeek(ctx, previousMaterializedWeek()); err != nil {
 		t.Fatalf("seed previous materialized week: %v", err)
 	}
-	if err := currentStore.UpsertRawFailures(ctx, rawFailuresForDailyTriage()); err != nil {
+	if err := currentStore.UpsertRawFailures(ctx, sampleRawFailuresFixture()); err != nil {
 		t.Fatalf("seed raw failures: %v", err)
 	}
 	if err := currentStore.UpsertMetricsDaily(ctx, reportMetricsDaily()); err != nil {
@@ -85,7 +85,7 @@ func TestBuildTriageReportDataProjectsSamplesAndCounts(t *testing.T) {
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
-	if err := store.UpsertRawFailures(ctx, rawFailuresForDailyTriage()); err != nil {
+	if err := store.UpsertRawFailures(ctx, sampleRawFailuresFixture()); err != nil {
 		t.Fatalf("seed raw failures: %v", err)
 	}
 	if err := store.UpsertMetricsDaily(ctx, reportMetricsDaily()); err != nil {
@@ -132,7 +132,7 @@ func TestBuildWeeklyReportDataBuildsCurrentAndPreviousReadModels(t *testing.T) {
 	if err := previousStore.ReplaceMaterializedWeek(ctx, previousMaterializedWeek()); err != nil {
 		t.Fatalf("seed previous materialized week: %v", err)
 	}
-	if err := currentStore.UpsertRawFailures(ctx, rawFailuresForDailyTriage()); err != nil {
+	if err := currentStore.UpsertRawFailures(ctx, sampleRawFailuresFixture()); err != nil {
 		t.Fatalf("seed raw failures: %v", err)
 	}
 	if err := currentStore.UpsertMetricsDaily(ctx, reportMetricsDaily()); err != nil {

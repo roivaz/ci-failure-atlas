@@ -2,3 +2,4 @@ data
 site
 backup
 .work
+*.code-workspace

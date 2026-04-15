@@ -71,111 +71,7 @@ type reviewActionTestResponse struct {
 	TotalAnchorCount     int      `json:"total_anchor_count"`
 }
 
-func TestHandleAPIDailyTriageReturnsJSON(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	fixture := newHandlerFixture(t)
-	store := fixture.openWeekStore(t, "2026-03-15")
-	if err := store.ReplaceMaterializedWeek(ctx, storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
-			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
-				Environment:                  "dev",
-				Phase2ClusterID:              "cluster-dev-a",
-				CanonicalEvidencePhrase:      "OAuth timeout",
-				SearchQueryPhrase:            "OAuth timeout",
-				SearchQuerySourceRunURL:      "https://prow.example.com/view/1",
-				SearchQuerySourceSignatureID: "sig-a",
-				SupportCount:                 2,
-				ContributingTestsCount:       1,
-				ContributingTests: []semanticcontracts.ContributingTestRecord{
-					{
-						Lane:         "upgrade",
-						JobName:      "periodic-ci",
-						TestName:     "should oauth",
-						SupportCount: 2,
-					},
-				},
-				MemberPhase1ClusterIDs: []string{"phase1-sig-a"},
-				MemberSignatureIDs:     []string{"sig-a"},
-				References: []semanticcontracts.ReferenceRecord{
-					{
-						RowID:       "row-1",
-						RunURL:      "https://prow.example.com/view/1",
-						OccurredAt:  "2026-03-16T08:00:00Z",
-						SignatureID: "sig-a",
-					},
-				},
-			},
-		},
-	}); err != nil {
-		t.Fatalf("seed materialized week: %v", err)
-	}
-	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
-		{
-			Environment: "dev",
-			RunURL:      "https://prow.example.com/view/1",
-			JobName:     "periodic-ci",
-			Failed:      true,
-			OccurredAt:  "2026-03-16T08:00:00Z",
-		},
-	}); err != nil {
-		t.Fatalf("seed runs: %v", err)
-	}
-	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
-		{
-			Environment:    "dev",
-			RowID:          "row-1",
-			RunURL:         "https://prow.example.com/view/1",
-			TestName:       "should oauth",
-			TestSuite:      "suite-a",
-			SignatureID:    "sig-a",
-			OccurredAt:     "2026-03-16T08:00:00Z",
-			RawText:        "OAuth timeout while waiting for cluster operator",
-			NormalizedText: "oauth timeout while waiting for cluster operator",
-		},
-	}); err != nil {
-		t.Fatalf("seed raw failures: %v", err)
-	}
-
-	handler, err := NewHandler(HandlerOptions{
-		PostgresPool: fixture.pool,
-	})
-	if err != nil {
-		t.Fatalf("new handler: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/triage/daily?date=2026-03-16&env=dev", nil)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-
-	if got, want := recorder.Code, http.StatusOK; got != want {
-		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
-	}
-	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("unexpected content type: %q", got)
-	}
-
-	var payload frontservice.DailyTriageResponse
-	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if got, want := payload.Meta.Date, "2026-03-16"; got != want {
-		t.Fatalf("unexpected response date: got=%q want=%q", got, want)
-	}
-	if got, want := payload.Meta.ResolvedWeek, "2026-03-15"; got != want {
-		t.Fatalf("unexpected resolved week: got=%q want=%q", got, want)
-	}
-	if got, want := len(payload.Environments), 1; got != want {
-		t.Fatalf("unexpected environment count: got=%d want=%d", got, want)
-	}
-	if got, want := payload.Environments[0].Items[0].SignatureID, "sig-a"; got != want {
-		t.Fatalf("unexpected signature id: got=%q want=%q", got, want)
-	}
-}
-
-func TestHandleAPIDailyTriageReturnsJSONError(t *testing.T) {
+func TestHandleAPIDailyTriageRouteRemoved(t *testing.T) {
 	t.Parallel()
 
 	fixture := newHandlerFixture(t)
@@ -190,6 +86,98 @@ func TestHandleAPIDailyTriageReturnsJSONError(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
+	if got, want := recorder.Code, http.StatusNotFound; got != want {
+		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+}
+
+func TestHandleAPIWindowedTriageReturnsJSON(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newHandlerFixture(t)
+	store := fixture.openWeekStore(t, "2026-03-15")
+	if err := store.ReplaceMaterializedWeek(ctx, reviewAPIMaterializedWeek()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/1",
+			JobName:     "periodic-ci",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T08:00:00Z",
+		},
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/2",
+			JobName:     "periodic-ci-nodepool",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T09:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, reviewAPIRawFailures()); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+	if err := store.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
+		{Environment: "dev", Date: "2026-03-16", Metric: "run_count", Value: 5},
+	}); err != nil {
+		t.Fatalf("seed metrics daily: %v", err)
+	}
+
+	handler, err := NewHandler(HandlerOptions{
+		PostgresPool: fixture.pool,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/triage/window?start_date=2026-03-16&end_date=2026-03-16&env=dev", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if got, want := recorder.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("unexpected content type: %q", got)
+	}
+
+	var payload frontservice.WindowedTriageData
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got, want := payload.Meta.ResolvedWeek, "2026-03-15"; got != want {
+		t.Fatalf("unexpected resolved week: got=%q want=%q", got, want)
+	}
+	if got, want := len(payload.Environments), 1; got != want {
+		t.Fatalf("unexpected environment count: got=%d want=%d", got, want)
+	}
+	if got, want := payload.Environments[0].Summary.TotalRuns, 5; got != want {
+		t.Fatalf("unexpected total runs: got=%d want=%d", got, want)
+	}
+	if got, want := len(payload.Environments[0].Rows), 2; got != want {
+		t.Fatalf("unexpected row count: got=%d want=%d", got, want)
+	}
+}
+
+func TestHandleAPIWindowedTriageReturnsJSONError(t *testing.T) {
+	t.Parallel()
+
+	fixture := newHandlerFixture(t)
+	handler, err := NewHandler(HandlerOptions{
+		PostgresPool: fixture.pool,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/triage/window?start_date=2026-03-16", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
 	if got, want := recorder.Code, http.StatusBadRequest; got != want {
 		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
 	}
@@ -198,8 +186,137 @@ func TestHandleAPIDailyTriageReturnsJSONError(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode error response: %v", err)
 	}
-	if got := payload["error"]; !strings.Contains(got, "date query parameter is required") {
+	if got := payload["error"]; !strings.Contains(got, "invalid end_date") {
 		t.Fatalf("unexpected error message: %q", got)
+	}
+}
+
+func TestHandleTriagePageWindowRendersHTML(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newHandlerFixture(t)
+	store := fixture.openWeekStore(t, "2026-03-15")
+	if err := store.ReplaceMaterializedWeek(ctx, reviewAPIMaterializedWeek()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/1",
+			JobName:     "periodic-ci",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T08:00:00Z",
+		},
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/2",
+			JobName:     "periodic-ci-nodepool",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T09:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, reviewAPIRawFailures()); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	handler, err := NewHandler(HandlerOptions{
+		PostgresPool: fixture.pool,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/triage?start_date=2026-03-16&end_date=2026-03-16&env=dev", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if got, want := recorder.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("unexpected content type: %q", got)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Resolved semantic week") {
+		t.Fatalf("expected resolved week note in body, got %q", body)
+	}
+	if !strings.Contains(body, "Jobs affected, impact, and seen-in values reflect the selected window") {
+		t.Fatalf("expected windowed triage guidance in body, got %q", body)
+	}
+	if !strings.Contains(body, "OAuth timeout") {
+		t.Fatalf("expected triage row phrase in body, got %q", body)
+	}
+	if !strings.Contains(body, `name="start_date" value="2026-03-16"`) {
+		t.Fatalf("expected start_date control in body, got %q", body)
+	}
+	if !strings.Contains(body, `name="end_date" value="2026-03-16"`) {
+		t.Fatalf("expected end_date control in body, got %q", body)
+	}
+	if !strings.Contains(body, `name="env" value="dev"`) {
+		t.Fatalf("expected env control in body, got %q", body)
+	}
+	if !strings.Contains(body, "Reset to full week") {
+		t.Fatalf("expected reset link in body, got %q", body)
+	}
+}
+
+func TestHandleTriagePageDefaultsToFullWeekWindow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newHandlerFixture(t)
+	store := fixture.openWeekStore(t, "2026-03-15")
+	if err := store.ReplaceMaterializedWeek(ctx, reviewAPIMaterializedWeek()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/1",
+			JobName:     "periodic-ci",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T08:00:00Z",
+		},
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/2",
+			JobName:     "periodic-ci-nodepool",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T09:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, reviewAPIRawFailures()); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	handler, err := NewHandler(HandlerOptions{
+		PostgresPool: fixture.pool,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/triage?week=2026-03-15", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if got, want := recorder.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `name="start_date" value="2026-03-15"`) {
+		t.Fatalf("expected default start_date in body, got %q", body)
+	}
+	if !strings.Contains(body, `name="end_date" value="2026-03-21"`) {
+		t.Fatalf("expected default end_date in body, got %q", body)
+	}
+	if !strings.Contains(body, "Apply window") {
+		t.Fatalf("expected apply button in body, got %q", body)
 	}
 }
 
@@ -521,6 +638,7 @@ type storeWithClose interface {
 	UpsertPhase3Links(context.Context, []semanticcontracts.Phase3LinkRecord) error
 	UpsertRuns(context.Context, []storecontracts.RunRecord) error
 	UpsertRawFailures(context.Context, []storecontracts.RawFailureRecord) error
+	UpsertMetricsDaily(context.Context, []storecontracts.MetricDailyRecord) error
 	ListPhase3Links(context.Context) ([]semanticcontracts.Phase3LinkRecord, error)
 	Close() error
 }
