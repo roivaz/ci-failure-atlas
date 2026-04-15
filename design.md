@@ -27,6 +27,33 @@ The runtime has three main planes:
    - `cfa app` serves weekly/triage/review views from PostgreSQL.
    - `cfa app export-site` renders static HTML from the same PostgreSQL-backed data as a compatibility/export path.
 
+## Codebase Map
+
+The architecture maps to the repository roughly like this:
+
+- CLI bootstrap and command surface:
+  - `cmd/main.go`
+  - `pkg/cli`
+- Controllers and source ingestion:
+  - `pkg/run`
+  - `pkg/controllers`
+  - `pkg/source`
+- Semantic materialization and read models:
+  - `pkg/semantic/engine`
+  - `pkg/semantic/workflow`
+  - `pkg/semantic/query`
+  - `pkg/semantic/history`
+- Product-facing HTTP and HTML/report surfaces:
+  - `pkg/frontend`
+  - `pkg/report`
+- Runtime storage contract and PostgreSQL implementation:
+  - `pkg/store/contracts`
+  - `pkg/store/postgres`
+- Deployment and publishing artifacts:
+  - `deploy/`
+  - `Dockerfile`
+  - `infra/azure/`
+
 ## Semantic Pipeline
 
 The semantic workflow is still logically split into three phases:
@@ -44,6 +71,12 @@ The semantic workflow is still logically split into three phases:
    - Operators link semantically equivalent signatures in the review UI.
    - Durable row-level anchors remain `environment + run_url + row_id`.
    - Stored Phase3 state is reapplied both in the live app and in exported static reports.
+
+## Terminology And Search Notes
+
+User-facing docs and UI now use "triage" for the signature triage surface.
+
+Some internal files, symbols, or helper names may still retain older `global` terminology from the earlier evolution of the codebase. That does not usually indicate a different product surface. When searching the repo, check both `triage` and `global` unless you are specifically working on phase2 global-signature merge semantics.
 
 ## Storage Model
 
@@ -137,6 +170,17 @@ Secondary maintenance/debug commands:
 
 5. **Static export is compatibility, not primary architecture**
    - It exists to bridge current hosting, not to define the long-term runtime shape.
+
+## Developer Orientation
+
+For a new coding session, the default validation loop is:
+
+- `make check` for broad repo validation
+- `go test ./pkg/semantic/...` for semantic/materialization work
+- `go test ./pkg/frontend/... ./pkg/report/...` for app/report work
+- `go test ./pkg/store/postgres/...` for store or migration work
+
+For manual smoke testing, use the main runtime commands described in `README.md`. Agent-oriented repo guidance lives in `AGENTS.md`.
 
 ## Next Milestone
 

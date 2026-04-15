@@ -13,6 +13,22 @@ The app+DB runtime is now the primary architecture. Static-site export still exi
 
 Local development defaults to embedded PostgreSQL with initialization and migrations enabled. Remote PostgreSQL is supported through the usual `--storage.postgres.*` flags.
 
+## Repository Guide
+
+- `cmd/main.go` bootstraps the Cobra CLI.
+- `pkg/cli` defines the command surface and shared PostgreSQL setup.
+- `pkg/run`, `pkg/controllers`, and `pkg/source` implement continuous ingestion and source clients.
+- `pkg/semantic` owns phase1/2/3 processing, week materialization, and history/query helpers.
+- `pkg/frontend` serves the unified weekly/triage/review app and API surface.
+- `pkg/report` renders HTML/report outputs, including static-site export.
+- `pkg/store/contracts` defines the store interfaces; `pkg/store/postgres` implements the active runtime store, migrations, and init/bootstrap helpers.
+- `deploy/` contains the standalone Helm chart for Postgres, the app, controllers, and cronjobs.
+- `Dockerfile` builds the container image for the Go application.
+- `infra/azure/` contains Azure infrastructure related to publishing the exported static site.
+- `.cursor/skills/` contains project-local skills for triage/review workflows.
+
+Search note: user-facing docs now say "triage", but some internal files and symbols still use older `global` names. When navigating the repo, check both terms unless you are specifically working on phase2 global-signature semantics.
+
 ## Prerequisites
 
 - Go 1.25+
@@ -86,12 +102,42 @@ To preview locally before uploading:
 python -m http.server 8080 --directory site
 ```
 
+## Deployment Artifacts
+
+- `deploy/` is the current standalone Kubernetes packaging surface for the app runtime.
+- `Dockerfile` is the image build entrypoint used by the deployment flow.
+- `infra/azure/report-static-website-storage.bicep` provisions Azure Storage for static-site publishing.
+- Hosted app operation, auth, backups, and broader operational automation are still evolving; these artifacts help with current deployment experiments but do not yet define a finished production platform.
+
 ## Semantic Week Contract
 
 - Semantic partitions are PostgreSQL week partitions, not free-form subdirectories.
 - A stored week must be a Sunday-starting `YYYY-MM-DD`.
 - The review app, weekly report, and history lookups all navigate across those stored weeks.
 - Partial per-environment materialization is intentionally not supported.
+
+## Validation And Developer Loop
+
+Default validation after code changes:
+
+```bash
+make check
+```
+
+Useful focused loops:
+
+- `go test ./pkg/semantic/...` for phase1/2/3 or materialization changes
+- `go test ./pkg/frontend/... ./pkg/report/...` for UI, API, and report rendering changes
+- `go test ./pkg/store/postgres/...` for schema, migration, or query-layer changes
+
+Useful local smoke commands:
+
+```bash
+make run-controllers CONTROLLER_ENVS=dev,int,stg,prod
+make semantic-materialize SEMANTIC_WEEK=2026-03-29
+make app APP_WEEK=2026-03-22
+go run cmd/main.go app export-site --site.root site
+```
 
 ## Other Commands
 
@@ -113,3 +159,4 @@ The remaining big phase is hosted operation rather than more architectural refac
 ## Reference
 
 - Architecture notes: `design.md`
+- Agent-oriented working notes: `AGENTS.md`
