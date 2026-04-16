@@ -1,6 +1,6 @@
 # CI Failure Atlas
 
-CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing weekly/triage/review views.
+CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing weekly/triage/runs/review views.
 
 The app+DB runtime is now the primary architecture. Static-site export still exists as an intentional compatibility path while hosted operation is being designed.
 
@@ -8,7 +8,7 @@ The app+DB runtime is now the primary architecture. Static-site export still exi
 
 - `cfa run` continuously ingests Sippy, Prow, and GitHub data and derives normalized facts into PostgreSQL.
 - `cfa semantic materialize` builds one semantic week from those facts and replaces that stored week in PostgreSQL.
-- `cfa app` serves the unified weekly, triage, and review UI from PostgreSQL.
+- `cfa app` serves the unified weekly, triage, runs, and review UI from PostgreSQL.
 - `cfa app export-site` renders static HTML from existing PostgreSQL data only; it does not run semantic materialization.
 
 Local development defaults to embedded PostgreSQL with initialization and migrations enabled. Remote PostgreSQL is supported through the usual `--storage.postgres.*` flags.
@@ -71,9 +71,57 @@ go run cmd/main.go app \
   --history.weeks 4
 ```
 
-Open `http://127.0.0.1:8082/` for the weekly/triage app or `http://127.0.0.1:8082/review/` for Phase3 review/linking.
+Open `http://127.0.0.1:8082/` for the weekly/triage/runs app or `http://127.0.0.1:8082/review/` for Phase3 review/linking.
 
-### 4. Export static HTML
+The day-scoped run history surface is:
+
+- HTML: `/runs?date=YYYY-MM-DD&env=dev`
+- JSON: `/api/runs/day?date=YYYY-MM-DD&env=dev`
+
+It renders one row per run for that day and enriches attached raw failures with semantic signatures from the resolved stored week.
+
+Current limitation: this is intentionally not yet a full Prow-history clone. `RunRecord` currently carries `run_url`, `job_name`, PR metadata, `failed`, and `occurred_at`, but not richer build/duration metadata, and some raw failures can still reference runs that need run-record backfill.
+
+### 4. Refresh local embedded PostgreSQL from a remote dump
+
+If you want to test against fresh production-like data locally, the `Makefile` includes Docker-backed PostgreSQL client helpers. This avoids relying on whatever `pg_dump` or `psql` version is installed on your workstation.
+
+Typical flow:
+
+1. Port-forward the remote PostgreSQL instance to localhost with `kubectl port-forward`.
+2. Dump the remote database through that forwarded port.
+3. Start the local app in another terminal so embedded PostgreSQL is up.
+4. Restore the dump into the local embedded database.
+
+Example:
+
+```bash
+# Terminal 1: remote port-forward
+kubectl port-forward <pod-or-service> 5432:5432
+
+# Terminal 2: dump the remote database through localhost
+make db-dump-remote \
+  REMOTE_PGUSER=<remote-user> \
+  REMOTE_PGPASSWORD=<remote-password> \
+  REMOTE_PGDATABASE=<remote-database> \
+  DB_DUMP_FILE=.work/cfa-prod.sql
+
+# Terminal 3: start the local app (this starts embedded PostgreSQL by default)
+make app
+
+# Terminal 4: restore the dump into the local embedded database
+make db-restore-local DB_DUMP_FILE=.work/cfa-prod.sql
+```
+
+Notes:
+
+- `db-dump-remote` uses the `postgres:18.3` Docker image and writes plain SQL with `--clean --if-exists --no-owner --no-privileges`.
+- `db-restore-local` restores that SQL into the local database with `psql -v ON_ERROR_STOP=1`.
+- Remote dump credentials are required explicitly: `REMOTE_PGUSER`, `REMOTE_PGPASSWORD`, and `REMOTE_PGDATABASE`.
+- Local restore defaults to `127.0.0.1:5432` and `postgres/postgres`, but `LOCAL_PGHOST`, `LOCAL_PGPORT`, `LOCAL_PGUSER`, `LOCAL_PGPASSWORD`, and `LOCAL_PGDATABASE` can be overridden if needed.
+- For safety, `db-restore-local` only allows localhost targets.
+
+### 5. Export static HTML
 
 ```bash
 go run cmd/main.go app export-site \
@@ -136,6 +184,8 @@ Useful local smoke commands:
 make run-controllers CONTROLLER_ENVS=dev,int,stg,prod
 make semantic-materialize SEMANTIC_WEEK=2026-03-29
 make app APP_WEEK=2026-03-22
+make db-dump-remote REMOTE_PGUSER=<remote-user> REMOTE_PGPASSWORD=<remote-password> REMOTE_PGDATABASE=<remote-database> DB_DUMP_FILE=.work/cfa-prod.sql
+make db-restore-local DB_DUMP_FILE=.work/cfa-prod.sql
 go run cmd/main.go app export-site --site.root site
 ```
 

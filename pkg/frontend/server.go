@@ -56,7 +56,9 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.handleRoot)
+	mux.HandleFunc("/api/runs/day", h.handleAPIRunsDay)
 	mux.HandleFunc("/api/triage/window", h.handleAPIWindowedTriage)
+	mux.HandleFunc("/runs", h.handleRunsPage)
 	mux.HandleFunc("/triage", h.handleTriagePage)
 	mux.HandleFunc("/global", h.handleLegacyGlobalRedirect)
 	mux.HandleFunc("/weekly", h.handleWeeklyPage)
@@ -90,6 +92,24 @@ func (h *handler) handleTriagePage(w http.ResponseWriter, r *http.Request) {
 	reportHTML, err := h.generateWindowedTriageReport(r.Context(), windowedQuery)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(reportHTML))
+}
+
+func (h *handler) handleRunsPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	reportHTML, err := h.generateDayRunHistoryPage(r.Context(), jobHistoryDayQueryFromRequest(r))
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
+			statusCode = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), statusCode)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -148,6 +168,23 @@ func (h *handler) handleAPIWindowedTriage(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (h *handler) handleAPIRunsDay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	response, err := h.service.BuildJobHistoryDay(r.Context(), jobHistoryDayQueryFromRequest(r))
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
+			statusCode = http.StatusNotFound
+		}
+		writeJSONError(w, statusCode, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (h *handler) generateWindowedTriageReport(ctx context.Context, query frontservice.WindowedTriageQuery) (string, error) {
 	data, err := h.service.BuildWindowedTriage(ctx, query)
 	if err != nil {
@@ -158,6 +195,10 @@ func (h *handler) generateWindowedTriageReport(ctx context.Context, query fronts
 		return "", err
 	}
 	week := strings.TrimSpace(data.Meta.ResolvedWeek)
+	runsHref := ""
+	if isSingleDayWindow(data.Meta.StartDate, data.Meta.EndDate) {
+		runsHref = dayRunHistoryHref("/runs", data.Meta.StartDate, week, query.Environments)
+	}
 	return buildWindowedTriageReportHTML(data, windowedTriagePageOptions{
 		Query: query,
 		Chrome: triagehtml.ReportChromeOptions{
@@ -169,6 +210,36 @@ func (h *handler) generateWindowedTriageReport(ctx context.Context, query fronts
 			NextHref:     shiftedWindowedTriageHref("/triage", window.NextWeek, week, data.Meta.StartDate, data.Meta.EndDate, query.Environments),
 			WeeklyHref:   viewHref("/weekly", week),
 			TriageHref:   windowedTriageHref("/triage", week, data.Meta.StartDate, data.Meta.EndDate, query.Environments),
+			RunsHref:     runsHref,
+		},
+	}), nil
+}
+
+func (h *handler) generateDayRunHistoryPage(ctx context.Context, query frontservice.JobHistoryDayQuery) (string, error) {
+	data, err := h.service.BuildJobHistoryDay(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	window, err := h.service.ResolveWeekWindow(ctx, data.Meta.ResolvedWeek, time.Time{})
+	if err != nil {
+		return "", err
+	}
+	week := strings.TrimSpace(data.Meta.ResolvedWeek)
+	environments := query.Environments
+	return buildDayRunHistoryPageHTML(data, dayRunHistoryPageOptions{
+		Query:      query,
+		TriageHref: windowedTriageHref("/triage", week, data.Meta.Date, data.Meta.Date, environments),
+		APIHref:    dayRunHistoryHref("/api/runs/day", data.Meta.Date, week, environments),
+		Chrome: triagehtml.ReportChromeOptions{
+			CurrentWeek:  week,
+			CurrentView:  triagehtml.ReportViewRuns,
+			PreviousWeek: strings.TrimSpace(window.PreviousWeek),
+			PreviousHref: shiftedDayRunHistoryHref("/runs", window.PreviousWeek, data.Meta.Date, week, environments),
+			NextWeek:     strings.TrimSpace(window.NextWeek),
+			NextHref:     shiftedDayRunHistoryHref("/runs", window.NextWeek, data.Meta.Date, week, environments),
+			WeeklyHref:   viewHref("/weekly", week),
+			TriageHref:   windowedTriageHref("/triage", week, data.Meta.Date, data.Meta.Date, environments),
+			RunsHref:     dayRunHistoryHref("/runs", data.Meta.Date, week, environments),
 		},
 	}), nil
 }
@@ -205,6 +276,7 @@ func (h *handler) generateWeeklyReport(ctx context.Context, window frontservice.
 	opts.Week = week
 	opts.HistoryHorizonWeeks = h.service.HistoryHorizonWeeks()
 	opts.HistoryResolver = historyResolver
+	opts.DayRunHistoryBasePath = "/runs"
 	opts.Chrome = triagehtml.ReportChromeOptions{
 		CurrentWeek:  week,
 		CurrentView:  triagehtml.ReportViewWeekly,
@@ -290,19 +362,24 @@ func (h *handler) resolveWindowedTriagePageQuery(
 	ctx context.Context,
 	query frontservice.WindowedTriageQuery,
 ) (frontservice.WindowedTriageQuery, error) {
-	window, err := h.service.ResolveWeekWindow(ctx, strings.TrimSpace(query.Week), time.Time{})
-	if err != nil {
-		return frontservice.WindowedTriageQuery{}, err
-	}
-	query.Week = strings.TrimSpace(window.CurrentWeek)
 	startDate := strings.TrimSpace(query.StartDate)
 	endDate := strings.TrimSpace(query.EndDate)
 	switch {
 	case startDate == "" && endDate == "":
+		window, err := h.service.ResolveWeekWindow(ctx, strings.TrimSpace(query.Week), time.Time{})
+		if err != nil {
+			return frontservice.WindowedTriageQuery{}, err
+		}
+		query.Week = strings.TrimSpace(window.CurrentWeek)
 		query.StartDate, query.EndDate = semanticWeekDateRange(query.Week)
 	case startDate == "" || endDate == "":
 		return frontservice.WindowedTriageQuery{}, fmt.Errorf("start_date and end_date must both be set when filtering the triage window")
 	default:
+		inferredWeek, err := semanticWeekForDateWindow(startDate, endDate)
+		if err != nil {
+			return frontservice.WindowedTriageQuery{}, err
+		}
+		query.Week = inferredWeek
 		query.StartDate = startDate
 		query.EndDate = endDate
 	}
@@ -316,6 +393,38 @@ func semanticWeekDateRange(week string) (string, string) {
 	}
 	startDate = startDate.UTC()
 	return startDate.Format("2006-01-02"), startDate.AddDate(0, 0, 6).Format("2006-01-02")
+}
+
+func semanticWeekForDateWindow(startDate string, endDate string) (string, error) {
+	startValue, err := parseDateInputValue("start_date", startDate)
+	if err != nil {
+		return "", err
+	}
+	endValue, err := parseDateInputValue("end_date", endDate)
+	if err != nil {
+		return "", err
+	}
+	if endValue.Before(startValue) {
+		return "", fmt.Errorf("end_date %s must be on or after start_date %s", endValue.Format("2006-01-02"), startValue.Format("2006-01-02"))
+	}
+	startWeek := startValue.AddDate(0, 0, -int(startValue.Weekday())).Format("2006-01-02")
+	endWeek := endValue.AddDate(0, 0, -int(endValue.Weekday())).Format("2006-01-02")
+	if startWeek != endWeek {
+		return "", fmt.Errorf("window %s..%s crosses semantic week boundaries (%s vs %s)", startValue.Format("2006-01-02"), endValue.Format("2006-01-02"), startWeek, endWeek)
+	}
+	return startWeek, nil
+}
+
+func parseDateInputValue(fieldName string, value string) (time.Time, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Time{}, fmt.Errorf("%s is required (YYYY-MM-DD)", strings.TrimSpace(fieldName))
+	}
+	parsed, err := time.Parse("2006-01-02", trimmed)
+	if err != nil || parsed.Format("2006-01-02") != trimmed {
+		return time.Time{}, fmt.Errorf("%s must use YYYY-MM-DD format", strings.TrimSpace(fieldName))
+	}
+	return parsed.UTC(), nil
 }
 
 func shiftedWindowedTriageHref(
@@ -351,6 +460,60 @@ func shiftedWindowedTriageHref(
 	return windowedTriageHref(path, trimmedTargetWeek, shiftedStart, shiftedEnd, environments)
 }
 
+func dayRunHistoryHref(path string, date string, week string, environments []string) string {
+	trimmedPath := strings.TrimSpace(path)
+	if trimmedPath == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmedPath, "/") {
+		trimmedPath = "/" + trimmedPath
+	}
+	q := url.Values{}
+	if strings.TrimSpace(date) != "" {
+		q.Set("date", strings.TrimSpace(date))
+	}
+	if strings.TrimSpace(week) != "" {
+		q.Set("week", strings.TrimSpace(week))
+	}
+	for _, environment := range normalizedQueryEnvironments(environments) {
+		q.Add("env", environment)
+	}
+	if encoded := q.Encode(); encoded != "" {
+		return trimmedPath + "?" + encoded
+	}
+	return trimmedPath
+}
+
+func shiftedDayRunHistoryHref(
+	path string,
+	targetWeek string,
+	currentDate string,
+	currentWeek string,
+	environments []string,
+) string {
+	trimmedTargetWeek := strings.TrimSpace(targetWeek)
+	if trimmedTargetWeek == "" {
+		return ""
+	}
+	targetWeekStart, errTargetWeek := time.Parse("2006-01-02", trimmedTargetWeek)
+	currentWeekStart, errCurrentWeek := time.Parse("2006-01-02", strings.TrimSpace(currentWeek))
+	currentDateValue, errCurrentDate := time.Parse("2006-01-02", strings.TrimSpace(currentDate))
+	if errTargetWeek != nil || errCurrentWeek != nil || errCurrentDate != nil {
+		return dayRunHistoryHref(path, trimmedTargetWeek, trimmedTargetWeek, environments)
+	}
+	offset := int(currentDateValue.UTC().Sub(currentWeekStart.UTC()) / (24 * time.Hour))
+	if offset < 0 || offset > 6 {
+		return dayRunHistoryHref(path, trimmedTargetWeek, trimmedTargetWeek, environments)
+	}
+	targetDate := targetWeekStart.UTC().AddDate(0, 0, offset).Format("2006-01-02")
+	return dayRunHistoryHref(path, targetDate, trimmedTargetWeek, environments)
+}
+
+func isSingleDayWindow(startDate string, endDate string) bool {
+	trimmedStartDate := strings.TrimSpace(startDate)
+	return trimmedStartDate != "" && trimmedStartDate == strings.TrimSpace(endDate)
+}
+
 func normalizedQueryEnvironments(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -369,6 +532,17 @@ func normalizedQueryEnvironments(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func jobHistoryDayQueryFromRequest(r *http.Request) frontservice.JobHistoryDayQuery {
+	if r == nil {
+		return frontservice.JobHistoryDayQuery{}
+	}
+	return frontservice.JobHistoryDayQuery{
+		Date:         strings.TrimSpace(r.URL.Query().Get("date")),
+		Week:         strings.TrimSpace(r.URL.Query().Get("week")),
+		Environments: parseListQueryValues(r.URL.Query()["env"]),
+	}
 }
 
 func parseListQueryValues(values []string) []string {

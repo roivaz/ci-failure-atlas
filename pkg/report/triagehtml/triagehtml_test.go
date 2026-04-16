@@ -448,7 +448,7 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 	for _, snippet := range []string{
 		"class=\"report-chrome\"",
 		"href=\"../2026-03-01/weekly-metrics.html\"",
-		"Week 2026-03-08",
+		"Week 2026-03-08 (UTC)",
 		"class=\"report-view-link active\" href=\"weekly-metrics.html\"",
 		"href=\"triage-report.html\"",
 		">Weekly Report</a>",

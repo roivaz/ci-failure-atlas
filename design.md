@@ -1,7 +1,7 @@
 # CI Failure Atlas Design
 
 Status: current architecture snapshot  
-Last updated: 2026-04-01
+Last updated: 2026-04-16
 
 ## Purpose
 
@@ -106,6 +106,33 @@ The semantic partitioning contract is now explicit:
 
 This removes the old ambiguity around generic semantic subdirectories or ad hoc materialization windows.
 
+### Future design: cross-week custom windows (not implemented)
+
+Current custom-window triage is intentionally limited to a single stored semantic week. That limit reflects the canonical storage/materialization contract above, not a claim that cross-week operator views are inherently invalid.
+
+If cross-week custom windows become a product requirement, the preferred direction is:
+
+- keep weekly semantic materialization as the only canonical persisted semantic partition
+- load the already-materialized weeks that intersect the requested date range
+- compose those stored weekly semantic outputs in memory into one presentation read model
+- then apply the requested date window over that composed read model
+
+This should be treated as a presentation/query-layer feature, not as a new arbitrary-window semantic materialization contract.
+
+The intended row-identity rules for such a feature would be:
+
+- use Phase3 issue ID as the strongest cross-week identity when present
+- otherwise fall back to the same kind of cross-week semantic key already used for recurrence/history lookups: environment + canonical phrase + search query
+
+If this is implemented later, the field contract should stay explicit:
+
+- window-local fields should be recomputed across the full requested range, for example jobs affected, impact, seen-in, references, and sample sets
+- week-anchored heuristics such as flake/trend should remain anchored to an explicit contributing semantic week rather than pretending that a multi-week window is itself a new stored semantic partition
+
+This is explicitly not implemented today.
+
+The non-preferred alternative is to add larger persisted semantic partitions such as monthly materializations. That is intentionally not the current design direction because it would introduce a second canonical semantic granularity, complicate identity/link semantics, and still leave boundary problems at larger partition edges.
+
 ## Local Runtime Model
 
 Local operation defaults to embedded PostgreSQL with initialization and migrations enabled. That is a development convenience, not the architecture itself.
@@ -124,8 +151,25 @@ In practice:
 
 - weekly report view
 - signature triage view
+- day-scoped run history view (`/runs`, `/api/runs/day`)
 - Phase3 review/linking workflow
 - cross-week history lookups based on stored semantic weeks
+
+### Day run history view and current fact gap
+
+The run-history surface is intentionally day-scoped and run-centric:
+
+- it loads the requested UTC day of `RunRecord` + `RawFailureRecord` facts
+- resolves the containing semantic week using the same Sunday-start rule as custom-window triage
+- enriches each raw failure row by matching its `signature_id` against the resolved stored weekly semantic clusters
+
+This gives a Prow-like operator view, but it is not yet a full Prow-history data model.
+
+Current gap to keep explicit:
+
+- `RunRecord` currently stores `run_url`, `job_name`, PR metadata, `failed`, and `occurred_at`
+- it does not yet include richer run-history fields such as duration/build metadata or more detailed terminal run state
+- some raw failures can still reference runs whose `RunRecord` needs backfill/lookup, so the first version of the run page is informative but not a complete fact model
 
 ### Static export
 

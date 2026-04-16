@@ -6,6 +6,16 @@ import (
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 )
 
+// RunRecord is the currently collected run-level fact used by weekly metrics,
+// windowed/day run history views, and semantic-reference joins.
+//
+// Today it intentionally remains small: run URL, job identity, basic PR
+// metadata, pass/fail state, and occurred-at timestamp.
+//
+// It is not yet a full Prow-style run history record. In particular it does not
+// currently carry duration/build identifiers or richer terminal run-state
+// details, and some raw-failure rows may still reference runs whose RunRecord
+// needs backfill/lookup.
 type RunRecord struct {
 	Environment    string `json:"environment"`
 	RunURL         string `json:"run_url"`

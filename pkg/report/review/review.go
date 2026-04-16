@@ -105,6 +105,7 @@ type apiWeekResponse struct {
 	Week                 string         `json:"week"`
 	PreviousWeek         string         `json:"previous_week"`
 	NextWeek             string         `json:"next_week"`
+	Timezone             string         `json:"timezone"`
 	TotalClusters        int            `json:"total_clusters"`
 	AnchoredClusters     int            `json:"anchored_clusters"`
 	MissingAnchorCount   int            `json:"missing_anchor_count"`
@@ -116,6 +117,7 @@ type apiWeekResponse struct {
 type actionResponse struct {
 	OK                     bool     `json:"ok"`
 	Week                   string   `json:"week,omitempty"`
+	Timezone               string   `json:"timezone,omitempty"`
 	Action                 string   `json:"action,omitempty"`
 	Notice                 string   `json:"notice,omitempty"`
 	RedirectURL            string   `json:"redirect_url,omitempty"`
@@ -132,6 +134,7 @@ type actionResponse struct {
 type actionErrorResponse struct {
 	Error       string `json:"error"`
 	Week        string `json:"week,omitempty"`
+	Timezone    string `json:"timezone,omitempty"`
 	Action      string `json:"action,omitempty"`
 	RedirectURL string `json:"redirect_url,omitempty"`
 }
@@ -377,6 +380,7 @@ func (h *handler) handleAPIWeeks(w http.ResponseWriter, r *http.Request) {
 		"current_week":  window.CurrentWeek,
 		"previous_week": window.PreviousWeek,
 		"next_week":     window.NextWeek,
+		"timezone":      "UTC",
 	})
 }
 
@@ -394,6 +398,7 @@ func (h *handler) handleAPIWeek(w http.ResponseWriter, r *http.Request) {
 		Week:                 snapshot.Week,
 		PreviousWeek:         snapshot.PreviousWeek,
 		NextWeek:             snapshot.NextWeek,
+		Timezone:             "UTC",
 		TotalClusters:        snapshot.TotalClusters,
 		AnchoredClusters:     snapshot.AnchoredClusterCount,
 		MissingAnchorCount:   snapshot.MissingAnchorCount,
@@ -418,6 +423,7 @@ func (h *handler) discoverSemanticWeeks(ctx context.Context) ([]string, error) {
 func (h *handler) respondActionSuccess(w http.ResponseWriter, r *http.Request, payload actionResponse) {
 	payload.OK = true
 	payload.Week = strings.TrimSpace(payload.Week)
+	payload.Timezone = "UTC"
 	payload.Action = strings.TrimSpace(payload.Action)
 	payload.Notice = strings.TrimSpace(payload.Notice)
 	payload.RedirectURL = h.noticeRedirectURL(payload.Week, payload.Notice)
@@ -443,6 +449,7 @@ func (h *handler) respondActionError(
 		writeJSON(w, statusCode, actionErrorResponse{
 			Error:       trimmedMessage,
 			Week:        trimmedWeek,
+			Timezone:    "UTC",
 			Action:      trimmedAction,
 			RedirectURL: h.noticeRedirectURL(trimmedWeek, trimmedMessage),
 		})

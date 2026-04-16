@@ -17,6 +17,21 @@ APP_LISTEN ?= 127.0.0.1:8082
 APP_WEEK ?=
 APP_ARGS ?=
 
+PG_CLIENT_IMAGE ?= postgres:18.3
+DB_DUMP_FILE ?= .work/db/latest.sql
+DB_DUMP_ARGS ?=
+DB_RESTORE_ARGS ?=
+REMOTE_PGHOST ?= 127.0.0.1
+REMOTE_PGPORT ?= 5432
+REMOTE_PGUSER ?=
+REMOTE_PGPASSWORD ?=
+REMOTE_PGDATABASE ?=
+LOCAL_PGHOST ?= 127.0.0.1
+LOCAL_PGPORT ?= 5432
+LOCAL_PGUSER ?= postgres
+LOCAL_PGPASSWORD ?= postgres
+LOCAL_PGDATABASE ?= postgres
+
 SITE_ROOT ?= site
 HISTORY_WEEKS ?= 4
 EXPORT_SITE_ARGS ?=
@@ -45,7 +60,7 @@ AZ_STATIC_WEBSITE_ENABLED ?= true
 AZ_STATIC_INDEX_DOCUMENT ?= index.html
 AZ_STATIC_ERROR_DOCUMENT ?= 404.html
 
-.PHONY: help fmt fmt-check vet test test-race test-cover build image build-and-push show-image run tidy check clean clean-site distclean semantic-materialize semantic-backfill app export-site site-upload deploy-static-website-storage run-controllers run-once sync-once migrate-legacy-data
+.PHONY: help fmt fmt-check vet test test-race test-cover build image build-and-push show-image run tidy check clean clean-site distclean semantic-materialize semantic-backfill app export-site site-upload deploy-static-website-storage run-controllers run-once sync-once migrate-legacy-data db-dump-remote db-restore-local
 
 help:
 	@echo "Go targets:"
@@ -72,6 +87,8 @@ help:
 	@echo ""
 	@echo "App targets:"
 	@echo "  make app"
+	@echo "  make db-dump-remote REMOTE_PGUSER=... REMOTE_PGPASSWORD=... REMOTE_PGDATABASE=... [REMOTE_PGHOST=127.0.0.1 REMOTE_PGPORT=5432]"
+	@echo "  make db-restore-local DB_DUMP_FILE=.work/db/latest.sql"
 	@echo "  make export-site"
 	@echo "  make site-upload"
 	@echo "  make deploy-static-website-storage"
@@ -95,6 +112,16 @@ help:
 	@echo "  IMAGE=$(IMAGE)"
 	@echo "  APP_LISTEN=$(APP_LISTEN)"
 	@echo "  APP_WEEK=$(APP_WEEK)"
+	@echo "  PG_CLIENT_IMAGE=$(PG_CLIENT_IMAGE)"
+	@echo "  DB_DUMP_FILE=$(DB_DUMP_FILE)"
+	@echo "  REMOTE_PGHOST=$(REMOTE_PGHOST)"
+	@echo "  REMOTE_PGPORT=$(REMOTE_PGPORT)"
+	@echo "  REMOTE_PGUSER=$(if $(strip $(REMOTE_PGUSER)),$(REMOTE_PGUSER),<required>)"
+	@echo "  REMOTE_PGDATABASE=$(if $(strip $(REMOTE_PGDATABASE)),$(REMOTE_PGDATABASE),<required>)"
+	@echo "  LOCAL_PGHOST=$(LOCAL_PGHOST)"
+	@echo "  LOCAL_PGPORT=$(LOCAL_PGPORT)"
+	@echo "  LOCAL_PGUSER=$(LOCAL_PGUSER)"
+	@echo "  LOCAL_PGDATABASE=$(LOCAL_PGDATABASE)"
 	@echo "  SITE_ROOT=$(SITE_ROOT)"
 	@echo "  HISTORY_WEEKS=$(HISTORY_WEEKS)"
 	@echo "  SEMANTIC_WEEK=$(SEMANTIC_WEEK)"
@@ -116,6 +143,8 @@ help:
 	@echo "  make semantic-materialize SEMANTIC_WEEK=2026-03-29"
 	@echo "  make semantic-backfill SEMANTIC_WEEKS=8"
 	@echo "  make app APP_WEEK=2026-03-08"
+	@echo "  make db-dump-remote REMOTE_PGUSER=myuser REMOTE_PGPASSWORD=secret REMOTE_PGDATABASE=mydb DB_DUMP_FILE=.work/cfa-prod.sql"
+	@echo "  make db-restore-local DB_DUMP_FILE=.work/cfa-prod.sql"
 	@echo "  make export-site SITE_ROOT=site HISTORY_WEEKS=4"
 	@echo "  make site-upload AZ_STORAGE_ACCOUNT=myreportstorage SITE_ROOT=site"
 	@echo "  make run-controllers CONTROLLER_ENVS=dev,int,stg,prod"
@@ -193,6 +222,61 @@ app:
 	$(CFA) app \
 		--app.listen "$(APP_LISTEN)" \
 		--history.weeks "$(HISTORY_WEEKS)" $(if $(strip $(APP_WEEK)),--week "$(APP_WEEK)",) $(APP_ARGS)
+
+db-dump-remote:
+	@if [[ -z "$(REMOTE_PGUSER)" ]]; then \
+		echo "REMOTE_PGUSER is required (example: make $@ REMOTE_PGUSER=myuser REMOTE_PGPASSWORD=secret REMOTE_PGDATABASE=mydb)"; \
+		exit 1; \
+	fi
+	@if [[ -z "$(REMOTE_PGPASSWORD)" ]]; then \
+		echo "REMOTE_PGPASSWORD is required (example: make $@ REMOTE_PGUSER=myuser REMOTE_PGPASSWORD=secret REMOTE_PGDATABASE=mydb)"; \
+		exit 1; \
+	fi
+	@if [[ -z "$(REMOTE_PGDATABASE)" ]]; then \
+		echo "REMOTE_PGDATABASE is required (example: make $@ REMOTE_PGUSER=myuser REMOTE_PGPASSWORD=secret REMOTE_PGDATABASE=mydb)"; \
+		exit 1; \
+	fi
+	@mkdir -p "$$(dirname "$(DB_DUMP_FILE)")"
+	@set -euo pipefail; \
+		tmp_file="$$(mktemp "$(DB_DUMP_FILE).tmp.XXXXXX")"; \
+		trap 'rm -f "$$tmp_file"' EXIT; \
+		$(DOCKER) run --rm --network host \
+			-e PGPASSWORD="$(REMOTE_PGPASSWORD)" \
+			"$(PG_CLIENT_IMAGE)" \
+			pg_dump \
+				-h "$(REMOTE_PGHOST)" \
+				-p "$(REMOTE_PGPORT)" \
+				-U "$(REMOTE_PGUSER)" \
+				-d "$(REMOTE_PGDATABASE)" \
+				--clean \
+				--if-exists \
+				--no-owner \
+				--no-privileges \
+				$(DB_DUMP_ARGS) > "$$tmp_file"; \
+		mv "$$tmp_file" "$(DB_DUMP_FILE)"; \
+		echo "wrote $(DB_DUMP_FILE)"
+
+db-restore-local:
+	@if [[ ! -f "$(DB_DUMP_FILE)" ]]; then \
+		echo "DB_DUMP_FILE \"$(DB_DUMP_FILE)\" does not exist; run 'make db-dump-remote' first"; \
+		exit 1; \
+	fi
+	@if [[ "$(LOCAL_PGHOST)" != "127.0.0.1" && "$(LOCAL_PGHOST)" != "localhost" && "$(LOCAL_PGHOST)" != "::1" ]]; then \
+		echo "LOCAL_PGHOST must be localhost/127.0.0.1/::1 for safety (got: $(LOCAL_PGHOST))"; \
+		exit 1; \
+	fi
+	@set -euo pipefail; \
+		$(DOCKER) run --rm --network host -i \
+			-e PGPASSWORD="$(LOCAL_PGPASSWORD)" \
+			"$(PG_CLIENT_IMAGE)" \
+			psql \
+				-v ON_ERROR_STOP=1 \
+				-h "$(LOCAL_PGHOST)" \
+				-p "$(LOCAL_PGPORT)" \
+				-U "$(LOCAL_PGUSER)" \
+				-d "$(LOCAL_PGDATABASE)" \
+				$(DB_RESTORE_ARGS) < "$(DB_DUMP_FILE)"; \
+		echo "restored $(DB_DUMP_FILE) into $(LOCAL_PGHOST):$(LOCAL_PGPORT)/$(LOCAL_PGDATABASE)"
 
 site-export:
 	$(CFA) app export-site \

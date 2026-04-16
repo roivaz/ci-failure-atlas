@@ -96,6 +96,7 @@ type ReportView string
 const (
 	ReportViewWeekly ReportView = "weekly"
 	ReportViewTriage ReportView = "triage"
+	ReportViewRuns   ReportView = "runs"
 )
 
 type ReportChromeOptions struct {
@@ -107,6 +108,7 @@ type ReportChromeOptions struct {
 	NextHref     string
 	WeeklyHref   string
 	TriageHref   string
+	RunsHref     string
 	ArchiveHref  string
 }
 
@@ -265,13 +267,16 @@ func ReportChromeHTML(options ReportChromeOptions) string {
 	b.WriteString("    </div>\n")
 	b.WriteString("    <div class=\"report-chrome-nav\">\n")
 	if normalized.CurrentWeek != "" {
-		b.WriteString(fmt.Sprintf("      <span class=\"report-week-label\">Week %s</span>\n", html.EscapeString(normalized.CurrentWeek)))
+		b.WriteString(fmt.Sprintf("      <span class=\"report-week-label\">Week %s (UTC)</span>\n", html.EscapeString(normalized.CurrentWeek)))
 	}
 	if strings.TrimSpace(normalized.WeeklyHref) != "" {
 		b.WriteString(renderReportChromeViewLink(normalized.WeeklyHref, "Weekly Report", normalized.CurrentView == ReportViewWeekly))
 	}
 	if strings.TrimSpace(normalized.TriageHref) != "" {
 		b.WriteString(renderReportChromeViewLink(normalized.TriageHref, "Triage Report", normalized.CurrentView == ReportViewTriage))
+	}
+	if strings.TrimSpace(normalized.RunsHref) != "" {
+		b.WriteString(renderReportChromeViewLink(normalized.RunsHref, "Runs", normalized.CurrentView == ReportViewRuns))
 	}
 	if strings.TrimSpace(normalized.ArchiveHref) != "" {
 		b.WriteString(renderReportChromeViewLink(normalized.ArchiveHref, "Archive", false))
@@ -377,9 +382,10 @@ func normalizedReportChromeOptions(options ReportChromeOptions) ReportChromeOpti
 	options.NextHref = strings.TrimSpace(options.NextHref)
 	options.WeeklyHref = strings.TrimSpace(options.WeeklyHref)
 	options.TriageHref = strings.TrimSpace(options.TriageHref)
+	options.RunsHref = strings.TrimSpace(options.RunsHref)
 	options.ArchiveHref = strings.TrimSpace(options.ArchiveHref)
 	switch options.CurrentView {
-	case ReportViewWeekly, ReportViewTriage:
+	case ReportViewWeekly, ReportViewTriage, ReportViewRuns:
 	default:
 		options.CurrentView = ""
 	}
@@ -392,6 +398,7 @@ func hasReportChromeNavigation(options ReportChromeOptions) bool {
 		options.NextHref != "" ||
 		options.WeeklyHref != "" ||
 		options.TriageHref != "" ||
+		options.RunsHref != "" ||
 		options.ArchiveHref != ""
 }
 
@@ -411,7 +418,7 @@ func renderReportChromeNavButton(href string, label string, week string, older b
 	}
 	title := "Go to week report"
 	if trimmedWeek != "" {
-		title = fmt.Sprintf("Go to week %s", trimmedWeek)
+		title = fmt.Sprintf("Go to week %s (UTC)", trimmedWeek)
 	}
 	return fmt.Sprintf(
 		"      <a class=\"report-nav-btn\" href=\"%s\" title=\"%s\">%s</a>\n",
@@ -835,7 +842,7 @@ func ParseReferenceTimestamp(value string) (time.Time, bool) {
 func FormatReferenceTimestampLabel(value string) string {
 	label := strings.TrimSpace(value)
 	if parsed, ok := ParseReferenceTimestamp(value); ok {
-		label = parsed.UTC().Format("2006-01-02 15:04Z")
+		label = parsed.UTC().Format("2006-01-02 15:04 UTC")
 	}
 	if label == "" {
 		return "unknown-time"
@@ -1006,7 +1013,7 @@ func DailyDensitySparkline(references []RunReference, windowDays int, endAnchor 
 		unicodeBuilder.WriteRune(unicodeLevels[levelIndex])
 	}
 
-	dateRange := fmt.Sprintf("%s..%s", startDay.Format("2006-01-02"), endDay.Format("2006-01-02"))
+	dateRange := fmt.Sprintf("%s..%s UTC", startDay.Format("2006-01-02"), endDay.Format("2006-01-02"))
 	return unicodeBuilder.String(), counts, dateRange, true
 }
 
@@ -1291,7 +1298,8 @@ func trendRangeEndAnchor(trendRange string) (time.Time, bool) {
 	if len(parts) != 2 {
 		return time.Time{}, false
 	}
-	endDay, err := time.Parse("2006-01-02", strings.TrimSpace(parts[1]))
+	endLabel := strings.TrimSuffix(strings.TrimSpace(parts[1]), " UTC")
+	endDay, err := time.Parse("2006-01-02", strings.TrimSpace(endLabel))
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -1999,7 +2007,7 @@ func renderAffectedRunsDetails(rows []RunReference, opts TableOptions) string {
 		b.WriteString("</details>")
 		return b.String()
 	}
-	b.WriteString("<div class=\"runs-scroll\"><table class=\"runs-table\"><thead><tr><th>Date</th><th>Associated PR</th><th>Prow job</th></tr></thead><tbody>")
+	b.WriteString("<div class=\"runs-scroll\"><table class=\"runs-table\"><thead><tr><th>Date (UTC)</th><th>Associated PR</th><th>Prow job</th></tr></thead><tbody>")
 	for _, row := range runs {
 		b.WriteString("<tr>")
 		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(FormatReferenceTimestampLabel(row.OccurredAt))))

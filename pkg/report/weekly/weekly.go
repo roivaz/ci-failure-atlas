@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,23 +29,25 @@ const (
 )
 
 type Options struct {
-	OutputPath          string
-	StartDate           string
-	TargetRate          float64
-	Week                string
-	HistoryHorizonWeeks int
-	HistoryResolver     semhistory.GlobalSignatureResolver
-	Chrome              triagehtml.ReportChromeOptions
+	OutputPath            string
+	StartDate             string
+	TargetRate            float64
+	Week                  string
+	HistoryHorizonWeeks   int
+	HistoryResolver       semhistory.GlobalSignatureResolver
+	DayRunHistoryBasePath string
+	Chrome                triagehtml.ReportChromeOptions
 }
 
 type validatedOptions struct {
-	OutputPath          string
-	StartDate           time.Time
-	TargetRate          float64
-	Week                string
-	HistoryHorizonWeeks int
-	HistoryResolver     semhistory.GlobalSignatureResolver
-	Chrome              triagehtml.ReportChromeOptions
+	OutputPath            string
+	StartDate             time.Time
+	TargetRate            float64
+	Week                  string
+	HistoryHorizonWeeks   int
+	HistoryResolver       semhistory.GlobalSignatureResolver
+	DayRunHistoryBasePath string
+	Chrome                triagehtml.ReportChromeOptions
 }
 
 type counts = frontservice.WeeklyCounts
@@ -108,6 +111,7 @@ func GenerateWithComparison(
 		data.TestsBelowTargetByEnv,
 		data.TopSignaturesByEnv,
 		data.HistoryResolver,
+		validated.DayRunHistoryBasePath,
 		validated.Chrome,
 	)
 
@@ -182,13 +186,14 @@ func validateOptions(opts Options) (validatedOptions, error) {
 		opts.HistoryHorizonWeeks = 4
 	}
 	return validatedOptions{
-		OutputPath:          outputPath,
-		StartDate:           startDate.UTC(),
-		TargetRate:          opts.TargetRate,
-		Week:                normalizedWeek,
-		HistoryHorizonWeeks: opts.HistoryHorizonWeeks,
-		HistoryResolver:     opts.HistoryResolver,
-		Chrome:              opts.Chrome,
+		OutputPath:            outputPath,
+		StartDate:             startDate.UTC(),
+		TargetRate:            opts.TargetRate,
+		Week:                  normalizedWeek,
+		HistoryHorizonWeeks:   opts.HistoryHorizonWeeks,
+		HistoryResolver:       opts.HistoryResolver,
+		DayRunHistoryBasePath: strings.TrimSpace(opts.DayRunHistoryBasePath),
+		Chrome:                opts.Chrome,
 	}, nil
 }
 
@@ -203,6 +208,7 @@ func buildHTML(
 	testsBelowTargetByEnv map[string][]belowTargetTest,
 	topSignaturesByEnv map[string][]topSignature,
 	historyResolver semhistory.GlobalSignatureResolver,
+	dayRunHistoryBasePath string,
 	chrome triagehtml.ReportChromeOptions,
 ) string {
 	var b strings.Builder
@@ -281,7 +287,7 @@ func buildHTML(
 	b.WriteString("<body data-chart-mode=\"count\">\n")
 	b.WriteString(triagehtml.ReportChromeHTML(chrome))
 	b.WriteString("  <h1>CI Weekly Report</h1>\n")
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Window: <strong>%s</strong> to <strong>%s</strong> (7 days)</p>\n",
+	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (7 days)</p>\n",
 		startDate.Format("2006-01-02"),
 		endDate.Format("2006-01-02"),
 	))
@@ -448,7 +454,10 @@ func buildHTML(
 			successfulRuns, ciInfraFailedRuns, provisionFailedRuns, e2eFailedRuns := dailyRunOutcomeCounts(day.Counts)
 			totalRuns := day.Counts.RunCount
 			b.WriteString("      <div class=\"outcome-row\">")
-			b.WriteString(fmt.Sprintf("<div class=\"outcome-date\">%s</div>", html.EscapeString(day.Date)))
+			b.WriteString(fmt.Sprintf(
+				"<div class=\"outcome-date\">%s</div>",
+				weeklyOutcomeDateHTML(day.Date, report.Environment, dayRunHistoryBasePath, startDate.Format("2006-01-02")),
+			))
 			if totalRuns <= 0 {
 				b.WriteString("<div class=\"outcome-bar outcome-bar-empty\">No runs</div>")
 			} else {
@@ -494,7 +503,10 @@ func buildHTML(
 				e2eFailedRuns := day.PostGoodRunOutcomes.E2EFailedRuns
 				totalRuns := day.PostGoodRunOutcomes.TotalRuns
 				b.WriteString("      <div class=\"outcome-row\">")
-				b.WriteString(fmt.Sprintf("<div class=\"outcome-date\">%s</div>", html.EscapeString(day.Date)))
+				b.WriteString(fmt.Sprintf(
+					"<div class=\"outcome-date\">%s</div>",
+					weeklyOutcomeDateHTML(day.Date, report.Environment, dayRunHistoryBasePath, startDate.Format("2006-01-02")),
+				))
 				if totalRuns <= 0 {
 					b.WriteString("<div class=\"outcome-bar outcome-bar-empty\">No runs</div>")
 				} else {
@@ -533,7 +545,7 @@ func buildHTML(
 			b.WriteString(fmt.Sprintf("      <p class=\"panel-empty\">No tests below %.2f%% in this window with at least %d runs.</p>\n", weeklyTestSuccessTarget, weeklyTestSuccessMinRuns))
 		} else {
 			b.WriteString("      <table class=\"detail-table\">\n")
-			b.WriteString("        <thead><tr><th>Pass rate</th><th>Runs</th><th>Date</th><th>Suite</th><th>Test</th></tr></thead>\n")
+			b.WriteString("        <thead><tr><th>Pass rate</th><th>Runs</th><th>Date (UTC)</th><th>Suite</th><th>Test</th></tr></thead>\n")
 			b.WriteString("        <tbody>\n")
 			for _, item := range tests {
 				suite := cleanInline(item.TestSuite, 80)
@@ -543,7 +555,7 @@ func buildHTML(
 				b.WriteString("          <tr>")
 				b.WriteString(fmt.Sprintf("<td>%.2f%%</td>", item.PassRate))
 				b.WriteString(fmt.Sprintf("<td>%d</td>", item.Runs))
-				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(item.Date)))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(item.Date+" UTC")))
 				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(suite)))
 				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(cleanInline(item.TestName, 160))))
 				b.WriteString("</tr>\n")
@@ -1107,4 +1119,41 @@ func triageReportEnvironmentHref(baseHref string, environment string) string {
 		return trimmedBase
 	}
 	return trimmedBase + "#env-" + normalizedEnvironment
+}
+
+func weeklyOutcomeDateHTML(date string, environment string, basePath string, week string) string {
+	trimmedDate := strings.TrimSpace(date)
+	if trimmedDate == "" {
+		return ""
+	}
+	label := trimmedDate + " UTC"
+	href := weeklyRunsDayHref(basePath, trimmedDate, week, environment)
+	if strings.TrimSpace(href) == "" {
+		return html.EscapeString(label)
+	}
+	return fmt.Sprintf("<a href=\"%s\">%s</a>", html.EscapeString(href), html.EscapeString(label))
+}
+
+func weeklyRunsDayHref(basePath string, date string, week string, environment string) string {
+	trimmedBasePath := strings.TrimSpace(basePath)
+	if trimmedBasePath == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmedBasePath, "/") && !strings.Contains(trimmedBasePath, "://") && !strings.HasPrefix(trimmedBasePath, ".") {
+		trimmedBasePath = "/" + trimmedBasePath
+	}
+	values := url.Values{}
+	if trimmedDate := strings.TrimSpace(date); trimmedDate != "" {
+		values.Set("date", trimmedDate)
+	}
+	if trimmedWeek := strings.TrimSpace(week); trimmedWeek != "" {
+		values.Set("week", trimmedWeek)
+	}
+	if normalizedEnvironment := normalizeReportEnvironment(environment); normalizedEnvironment != "" {
+		values.Add("env", normalizedEnvironment)
+	}
+	if encoded := values.Encode(); encoded != "" {
+		return trimmedBasePath + "?" + encoded
+	}
+	return trimmedBasePath
 }

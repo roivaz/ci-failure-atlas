@@ -101,13 +101,13 @@ func buildTriageReportHTML(
 	if hasWindow {
 		windowDays := inclusiveWindowDays(windowStart, windowEnd)
 		b.WriteString(fmt.Sprintf(
-			"  <p class=\"meta\">Window: <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
+			"  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
 			html.EscapeString(windowStart.Format("2006-01-02")),
 			html.EscapeString(windowEnd.Format("2006-01-02")),
 			windowDays,
 		))
 	}
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated: <strong>%s</strong></p>\n", html.EscapeString(generatedAt.Format(time.RFC3339))))
+	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated (UTC): <strong>%s</strong></p>\n", html.EscapeString(generatedAt.Format(time.RFC3339))))
 	b.WriteString("  <p class=\"meta\">Failure signatures grouped by environment for engineering triage. Includes lightweight quality scoring and cross-environment overlap hints.</p>\n")
 	b.WriteString("  <div class=\"cards\">\n")
 	b.WriteString(triageCardHTML("Environments in scope", fmt.Sprintf("%d", len(environments))))
