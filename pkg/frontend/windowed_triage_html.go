@@ -1,0 +1,277 @@
+package frontend
+
+import (
+	"fmt"
+	"html"
+	"sort"
+	"strings"
+	"time"
+
+	frontservice "ci-failure-atlas/pkg/frontend/service"
+	"ci-failure-atlas/pkg/report/triagehtml"
+	sourceoptions "ci-failure-atlas/pkg/source/options"
+)
+
+const (
+	windowedTriageLoadedRowsLimit    = 50
+	windowedTriageInitialVisibleRows = 25
+)
+
+type windowedTriagePageOptions struct {
+	Chrome triagehtml.ReportChromeOptions
+	Query  frontservice.WindowedTriageQuery
+}
+
+func buildWindowedTriageReportHTML(
+	data frontservice.WindowedTriageData,
+	options windowedTriagePageOptions,
+) string {
+	totalRows := 0
+	totalMatchedFailures := 0
+	for _, environment := range data.Environments {
+		totalRows += len(environment.Rows)
+		totalMatchedFailures += environment.Summary.MatchedFailureCount
+	}
+
+	startDate, endDate, hasWindow := parseWindowedTriageDates(data.Meta.StartDate, data.Meta.EndDate)
+	var b strings.Builder
+	b.WriteString("<!doctype html>\n")
+	b.WriteString("<html lang=\"en\">\n")
+	b.WriteString("<head>\n")
+	b.WriteString("  <meta charset=\"utf-8\" />\n")
+	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
+	b.WriteString("  <title>CI Signature Triage Report</title>\n")
+	b.WriteString(triagehtml.ThemeInitScriptTag())
+	b.WriteString("  <style>\n")
+	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
+	b.WriteString("    h1 { margin-bottom: 6px; }\n")
+	b.WriteString("    h2 { margin-top: 22px; }\n")
+	b.WriteString("    .meta { color: #4b5563; margin-bottom: 8px; }\n")
+	b.WriteString("    .cards { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 18px; }\n")
+	b.WriteString("    .card { border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; padding: 10px 12px; min-width: 180px; }\n")
+	b.WriteString("    .label { font-size: 12px; color: #6b7280; margin-bottom: 3px; }\n")
+	b.WriteString("    .value { font-size: 20px; font-weight: 700; }\n")
+	b.WriteString("    .section { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin: 14px 0; }\n")
+	b.WriteString("    .section-note { color: #4b5563; font-size: 12px; margin-top: -4px; margin-bottom: 8px; }\n")
+	b.WriteString("    .muted { color: #6b7280; }\n")
+	b.WriteString("    .window-controls { border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; padding: 12px; margin: 14px 0 18px; }\n")
+	b.WriteString("    .window-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }\n")
+	b.WriteString("    .window-field { display: flex; flex-direction: column; gap: 4px; min-width: 180px; }\n")
+	b.WriteString("    .window-field label { font-size: 12px; font-weight: 600; color: #374151; }\n")
+	b.WriteString("    .window-field input { border: 1px solid #d1d5db; border-radius: 6px; padding: 8px 10px; font-size: 14px; background: #ffffff; color: #111827; }\n")
+	b.WriteString("    .window-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }\n")
+	b.WriteString("    .window-apply, .window-reset { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 600; text-decoration: none; }\n")
+	b.WriteString("    .window-apply { border: 1px solid #111827; background: #111827; color: #ffffff; cursor: pointer; }\n")
+	b.WriteString("    .window-reset { border: 1px solid #d1d5db; background: #ffffff; color: #1f2937; }\n")
+	b.WriteString("    .window-apply:hover { background: #1f2937; }\n")
+	b.WriteString("    .window-reset:hover { background: #f3f4f6; }\n")
+	b.WriteString("    .window-help { margin-top: 8px; font-size: 12px; color: #6b7280; }\n")
+	b.WriteString(triagehtml.ReportChromeCSS())
+	b.WriteString(triagehtml.StylesCSS())
+	b.WriteString(triagehtml.ThemeCSS())
+	b.WriteString("    :root[data-theme=\"dark\"] .window-controls { background: #111827; border-color: #334155; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .window-field label, :root[data-theme=\"dark\"] .window-help { color: #94a3b8; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .window-field input { background: #0f172a; border-color: #334155; color: #e2e8f0; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .window-apply { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .window-apply:hover { background: #1d4ed8; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .window-reset { background: #1f2937; border-color: #334155; color: #e2e8f0; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .window-reset:hover { background: #0f172a; }\n")
+	b.WriteString("  </style>\n")
+	b.WriteString("</head>\n")
+	b.WriteString("<body>\n")
+	b.WriteString(triagehtml.ReportChromeHTML(options.Chrome))
+	b.WriteString("  <h1>CI Signature Triage Report</h1>\n")
+	if hasWindow {
+		b.WriteString(fmt.Sprintf(
+			"  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
+			html.EscapeString(startDate.Format("2006-01-02")),
+			html.EscapeString(endDate.Format("2006-01-02")),
+			windowedTriageInclusiveDays(startDate, endDate),
+		))
+	}
+	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Resolved semantic week (UTC): <strong>%s</strong></p>\n", html.EscapeString(strings.TrimSpace(data.Meta.ResolvedWeek))))
+	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated (UTC): <strong>%s</strong></p>\n", html.EscapeString(strings.TrimSpace(data.Meta.GeneratedAt))))
+	b.WriteString("  <p class=\"meta\">Jobs affected, impact, and seen-in values reflect the selected window. Flake score and trend remain anchored to the resolved semantic week.</p>\n")
+	b.WriteString(windowedTriageControlsHTML(data, options.Query))
+	b.WriteString("  <div class=\"cards\">\n")
+	b.WriteString(windowedTriageCardHTML("Environments in scope", fmt.Sprintf("%d", len(data.Environments))))
+	b.WriteString(windowedTriageCardHTML("Signatures in triage", fmt.Sprintf("%d", totalRows)))
+	b.WriteString(windowedTriageCardHTML("Matched failure support", fmt.Sprintf("%d", totalMatchedFailures)))
+	b.WriteString(windowedTriageCardHTML("Resolved semantic week (UTC)", strings.TrimSpace(data.Meta.ResolvedWeek)))
+	b.WriteString("  </div>\n")
+
+	for _, environment := range data.Environments {
+		signatureRows := windowedTriageSignatureRows(environment.Rows, environment.Summary.MatchedFailureCount)
+		b.WriteString(fmt.Sprintf("  <section id=\"window-%s\" class=\"section\">\n", html.EscapeString(strings.TrimSpace(environment.Environment))))
+		b.WriteString(fmt.Sprintf("    <h2>Environment: %s</h2>\n", html.EscapeString(strings.ToUpper(strings.TrimSpace(environment.Environment)))))
+		if len(signatureRows) == 0 {
+			b.WriteString(fmt.Sprintf(
+				"    <p class=\"section-note\">Rows shown: 0 &middot; matched failures: %d &middot; total runs: %d</p>\n",
+				environment.Summary.MatchedFailureCount,
+				environment.Summary.TotalRuns,
+			))
+			b.WriteString("    <p class=\"muted\">No weekly semantic signatures had matching failures in this window.</p>\n")
+			b.WriteString("  </section>\n")
+			continue
+		}
+		b.WriteString(fmt.Sprintf(
+			"    <p class=\"section-note\">Rows shown: %d &middot; matched failures: %d &middot; total runs: %d &middot; jobs affected: %d</p>\n",
+			len(signatureRows),
+			environment.Summary.MatchedFailureCount,
+			environment.Summary.TotalRuns,
+			environment.Summary.JobsAffected,
+		))
+		b.WriteString(triagehtml.RenderTable(signatureRows, triagehtml.TableOptions{
+			IncludeTrend:       true,
+			GitHubRepoOwner:    sourceoptions.DefaultGitHubRepoOwner(),
+			GitHubRepoName:     sourceoptions.DefaultGitHubRepoName(),
+			ImpactTotalJobs:    environment.Summary.TotalRuns,
+			LoadedRowsLimit:    windowedTriageLoadedRowsLimit,
+			InitialVisibleRows: windowedTriageInitialVisibleRows,
+		}))
+		b.WriteString("  </section>\n")
+	}
+
+	b.WriteString(triagehtml.ThemeToggleScriptTag())
+	b.WriteString("</body>\n")
+	b.WriteString("</html>\n")
+	return b.String()
+}
+
+func windowedTriageSignatureRows(
+	rows []frontservice.WindowedTriageRow,
+	totalEnvironmentFailures int,
+) []triagehtml.SignatureRow {
+	out := make([]triagehtml.SignatureRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.SignatureRow{
+			Environment:       strings.TrimSpace(row.Environment),
+			Lane:              strings.TrimSpace(row.Lane),
+			JobName:           strings.TrimSpace(row.JobName),
+			TestName:          strings.TrimSpace(row.TestName),
+			TestSuite:         strings.TrimSpace(row.TestSuite),
+			Phrase:            strings.TrimSpace(row.CanonicalEvidencePhrase),
+			ClusterID:         strings.TrimSpace(row.ClusterID),
+			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:      row.WindowFailureCount,
+			TrendCounts:       append([]int(nil), row.TrendCounts...),
+			TrendRange:        strings.TrimSpace(row.TrendRange),
+			SupportShare:      windowedTriagePercent(row.WindowFailureCount, totalEnvironmentFailures),
+			PostGoodCount:     row.WeeklyPostGoodCount,
+			AlsoSeenIn:        append([]string(nil), row.SeenIn...),
+			ContributingTests: windowedTriageContributingTests(row.ContributingTests),
+			FullErrorSamples:  append([]string(nil), row.FullErrorSamples...),
+			References:        windowedTriageRunReferences(row.References),
+			ScoringReferences: windowedTriageRunReferences(row.ScoringReferences),
+			PriorWeeksPresent: row.PriorWeeksPresent,
+			PriorWeekStarts:   append([]string(nil), row.PriorWeekStarts...),
+			PriorJobsAffected: row.PriorJobsAffected,
+			PriorLastSeenAt:   strings.TrimSpace(row.PriorLastSeenAt),
+			LinkedChildren:    windowedTriageSignatureRows(row.LinkedChildren, totalEnvironmentFailures),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SupportCount != out[j].SupportCount {
+			return out[i].SupportCount > out[j].SupportCount
+		}
+		if out[i].ClusterID != out[j].ClusterID {
+			return out[i].ClusterID < out[j].ClusterID
+		}
+		return out[i].Phrase < out[j].Phrase
+	})
+	return out
+}
+
+func windowedTriageRunReferences(rows []frontservice.TriageReportReference) []triagehtml.RunReference {
+	out := make([]triagehtml.RunReference, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.RunReference{
+			RunURL:      strings.TrimSpace(row.RunURL),
+			OccurredAt:  strings.TrimSpace(row.OccurredAt),
+			SignatureID: strings.TrimSpace(row.SignatureID),
+			PRNumber:    row.PRNumber,
+		})
+	}
+	return out
+}
+
+func windowedTriageContributingTests(rows []frontservice.TriageReportContributingTest) []triagehtml.ContributingTest {
+	out := make([]triagehtml.ContributingTest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.ContributingTest{
+			Lane:         strings.TrimSpace(row.Lane),
+			JobName:      strings.TrimSpace(row.JobName),
+			TestName:     strings.TrimSpace(row.TestName),
+			SupportCount: row.SupportCount,
+		})
+	}
+	return out
+}
+
+func windowedTriageCardHTML(label string, value string) string {
+	return fmt.Sprintf(
+		"    <div class=\"card\"><div class=\"label\">%s</div><div class=\"value\">%s</div></div>\n",
+		html.EscapeString(strings.TrimSpace(label)),
+		html.EscapeString(strings.TrimSpace(value)),
+	)
+}
+
+func windowedTriagePercent(value int, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return (float64(value) * 100.0) / float64(total)
+}
+
+func parseWindowedTriageDates(startDate string, endDate string) (time.Time, time.Time, bool) {
+	start, err := time.Parse("2006-01-02", strings.TrimSpace(startDate))
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	end, err := time.Parse("2006-01-02", strings.TrimSpace(endDate))
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	return start.UTC(), end.UTC(), true
+}
+
+func windowedTriageInclusiveDays(startDate time.Time, endDate time.Time) int {
+	startDay := startDate.UTC().Truncate(24 * time.Hour)
+	endDay := endDate.UTC().Truncate(24 * time.Hour)
+	if endDay.Before(startDay) {
+		return 0
+	}
+	return int(endDay.Sub(startDay)/(24*time.Hour)) + 1
+}
+
+func windowedTriageControlsHTML(
+	data frontservice.WindowedTriageData,
+	query frontservice.WindowedTriageQuery,
+) string {
+	weekStart, weekEnd := semanticWeekDateRange(data.Meta.ResolvedWeek)
+	resetHref := windowedTriageHref("/triage", data.Meta.ResolvedWeek, weekStart, weekEnd, query.Environments)
+	var b strings.Builder
+	b.WriteString("  <section class=\"window-controls\">\n")
+	b.WriteString("    <form class=\"window-form\" method=\"get\" action=\"/triage\">\n")
+	b.WriteString(fmt.Sprintf("      <input type=\"hidden\" name=\"week\" value=\"%s\" />\n", html.EscapeString(strings.TrimSpace(data.Meta.ResolvedWeek))))
+	b.WriteString("      <div class=\"window-field\">\n")
+	b.WriteString("        <label for=\"triage-start-date\">Start date</label>\n")
+	b.WriteString(fmt.Sprintf("        <input id=\"triage-start-date\" type=\"date\" name=\"start_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.StartDate))))
+	b.WriteString("      </div>\n")
+	b.WriteString("      <div class=\"window-field\">\n")
+	b.WriteString("        <label for=\"triage-end-date\">End date</label>\n")
+	b.WriteString(fmt.Sprintf("        <input id=\"triage-end-date\" type=\"date\" name=\"end_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.EndDate))))
+	b.WriteString("      </div>\n")
+	b.WriteString("      <div class=\"window-field\">\n")
+	b.WriteString("        <label for=\"triage-env-filter\">Environment filter</label>\n")
+	b.WriteString(fmt.Sprintf("        <input id=\"triage-env-filter\" type=\"text\" name=\"env\" value=\"%s\" placeholder=\"dev,int\" />\n", html.EscapeString(strings.Join(normalizedQueryEnvironments(query.Environments), ","))))
+	b.WriteString("      </div>\n")
+	b.WriteString("      <div class=\"window-actions\">\n")
+	b.WriteString("        <button class=\"window-apply\" type=\"submit\">Apply window</button>\n")
+	b.WriteString(fmt.Sprintf("        <a class=\"window-reset\" href=\"%s\">Reset to full week</a>\n", html.EscapeString(resetHref)))
+	b.WriteString("      </div>\n")
+	b.WriteString("    </form>\n")
+	b.WriteString("    <p class=\"window-help\">Choose any inclusive UTC date range within a single semantic week. Leave the environment filter blank to show all environments.</p>\n")
+	b.WriteString("  </section>\n")
+	return b.String()
+}

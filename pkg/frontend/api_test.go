@@ -423,6 +423,12 @@ func TestHandleAPIRunsDayReturnsJSON(t *testing.T) {
 	if got, want := multipleRun.FailedTestCount, 2; got != want {
 		t.Fatalf("unexpected multiple run failed test count: got=%d want=%d", got, want)
 	}
+	if got, want := multipleRun.BadPRScore, 3; got != want {
+		t.Fatalf("unexpected multiple run bad PR score: got=%d want=%d", got, want)
+	}
+	if got := len(multipleRun.BadPRReasons); got == 0 {
+		t.Fatalf("expected multiple run bad PR reasons in payload")
+	}
 	if got, want := len(multipleRun.Lanes), 1; got != want {
 		t.Fatalf("unexpected multiple run lane count: got=%d want=%d", got, want)
 	}
