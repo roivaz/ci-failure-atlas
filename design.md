@@ -1,7 +1,7 @@
 # CI Failure Atlas Design
 
 Status: current architecture snapshot  
-Last updated: 2026-04-15
+Last updated: 2026-04-18
 
 ## Purpose
 
@@ -77,6 +77,50 @@ The semantic workflow is still logically split into three phases:
 User-facing docs and UI now use "triage" for the signature triage surface.
 
 Some internal files, symbols, or helper names may still retain older `global` terminology from the earlier evolution of the codebase. That does not usually indicate a different product surface. When searching the repo, check both `triage` and `global` unless you are specifically working on phase2 global-signature merge semantics.
+
+## UI Terminology
+
+The following user-facing terms are used consistently across all report and triage views. When adding or editing UI labels, tooltips, or copy, use these terms — not the internal names from the storage model or semantic pipeline.
+
+### Core Concepts
+
+| User-facing term | Replaces | Definition |
+|---|---|---|
+| **Failure pattern** | signature, failure signature, semantic cluster | A recurring, normalized form of a CI failure extracted from raw logs. |
+| **Occurrences** | support count, matched failure support, total signature support | The number of individual CI failures matching a given pattern within the selected window. |
+| **Runs affected** | jobs affected | The number of distinct job runs exhibiting a given failure pattern. |
+| **Run impact** | impact | Percentage of all job runs in the environment affected by this pattern (`runs affected / total runs`). |
+| **Flake signal** | flake score (0–14) | Heuristic indicator of whether a failure looks like an ongoing flake rather than a PR-introduced regression. Displayed as **Low / Medium / High** (color-coded); numeric score stays in the hover tooltip. |
+| **After last push of merged PR** | after last push, PostGoodCount | Runs that occurred after the last push of a PR that eventually merged. High count = strong flake signal. Used as an input to flake signal scoring; no dedicated main-table column. |
+| **Failed at** | lane | Where in the job run the failure occurred: `provision`, `e2e`, or `other`. |
+| **Also in** | seen in | Other environments where the same failure pattern was also detected during the selected window. |
+
+### "Failed at" Values
+
+| Value | Meaning |
+|---|---|
+| `provision` | Failure during environment setup. DEV only — each DEV presubmit deploys its own ephemeral Azure environment before running tests. |
+| `e2e` | Failure during the test suite execution step. Applies to all environments. |
+| `other` | Failure due to CI infrastructure issues, image build problems, etc. CFA does not extract failure patterns for these. Replaces `unknown`. |
+
+### View Names (Navigation)
+
+| Label | Route | Notes |
+|---|---|---|
+| Last 7 Days | `/report` (rolling) | Rolling 7-day report window |
+| Weekly Report | `/report` (week-anchored) | Per-week semantic report |
+| Failure Patterns | `/triage` | Windowed signature triage view |
+| Run Log | `/runs` | Day-scoped run history |
+
+### What Not to Expose in User-Facing Views
+
+- Raw flake score number (0–14) as the primary cell value — use the High/Medium/Low label; keep the score in the tooltip.
+- Full flake signal scoring breakdown in the expanded detail row — the label alone is sufficient there; the breakdown is in the column hover tooltip.
+- Bad PR score and reasons in the expanded detail row — this is already factored into the flake signal.
+- Quality flag badges (`context type stub leaked`, `source deserialization/no-output error`, `struct/object fragment`, etc.) — internal diagnostics only.
+- `Phase3 cluster` column header — use `Linked group ID` if the column must appear.
+- `Triage threshold` summary card — remove entirely.
+- Internal names such as `signature`, `support`, `lane`, `matched failure support` — use the table above.
 
 ## Storage Model
 
