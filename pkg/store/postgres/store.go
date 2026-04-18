@@ -268,11 +268,11 @@ func (s *Store) ReplaceMaterializedWeek(ctx context.Context, week storecontracts
 	return s.replaceMaterializedWeekImpl(ctx, week)
 }
 
-func (s *Store) ListGlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error) {
+func (s *Store) ListFailurePatterns(ctx context.Context) ([]semanticcontracts.FailurePatternRecord, error) {
 	if err := requireContext(ctx); err != nil {
 		return nil, err
 	}
-	return s.listGlobalClustersImpl(ctx)
+	return s.listFailurePatternsImpl(ctx)
 }
 
 func (s *Store) ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error) {

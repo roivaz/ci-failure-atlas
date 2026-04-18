@@ -16,16 +16,16 @@ type LoadWeekDataOptions struct {
 }
 
 type WeekData struct {
-	SourceGlobalClusters     []semanticcontracts.GlobalClusterRecord
-	GlobalClusters           []semanticcontracts.GlobalClusterRecord
-	ReviewQueue              []semanticcontracts.ReviewItemRecord
-	Phase3Links              []semanticcontracts.Phase3LinkRecord
-	RawFailures              []storecontracts.RawFailureRecord
-	TestClusterCountsByEnv   map[string]int
-	ReviewQueueCountsByEnv   map[string]int
-	GlobalClusterCountsByEnv map[string]int
-	GlobalSupportTotalsByEnv map[string]int
-	AvailableEnvironments    []string
+	SourceFailurePatterns     []semanticcontracts.FailurePatternRecord
+	FailurePatterns           []semanticcontracts.FailurePatternRecord
+	ReviewQueue               []semanticcontracts.ReviewItemRecord
+	Phase3Links               []semanticcontracts.Phase3LinkRecord
+	RawFailures               []storecontracts.RawFailureRecord
+	TestClusterCountsByEnv    map[string]int
+	ReviewQueueCountsByEnv    map[string]int
+	FailurePatternCountsByEnv map[string]int
+	OccurrenceTotalsByEnv     map[string]int
+	AvailableEnvironments     []string
 }
 
 func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeekDataOptions) (WeekData, error) {
@@ -33,9 +33,9 @@ func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeek
 		return WeekData{}, fmt.Errorf("store is required")
 	}
 
-	sourceGlobalClusters, err := store.ListGlobalClusters(ctx)
+	sourceFailurePatterns, err := store.ListFailurePatterns(ctx)
 	if err != nil {
-		return WeekData{}, fmt.Errorf("list global clusters: %w", err)
+		return WeekData{}, fmt.Errorf("list failure patterns: %w", err)
 	}
 	reviewQueue, err := store.ListReviewQueue(ctx)
 	if err != nil {
@@ -49,7 +49,7 @@ func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeek
 	if err != nil {
 		return WeekData{}, fmt.Errorf("list phase3 links: %w", err)
 	}
-	globalClusters, err := phase3engine.Merge(sourceGlobalClusters, phase3Links)
+	globalClusters, err := phase3engine.Merge(sourceFailurePatterns, phase3Links)
 	if err != nil {
 		return WeekData{}, fmt.Errorf("apply phase3 materialized view: %w", err)
 	}
@@ -63,16 +63,16 @@ func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeek
 	}
 
 	return WeekData{
-		SourceGlobalClusters:     sourceGlobalClusters,
-		GlobalClusters:           globalClusters,
-		ReviewQueue:              reviewQueue,
-		Phase3Links:              phase3Links,
-		RawFailures:              rawFailures,
-		TestClusterCountsByEnv:   summary.TestClusterCountsByEnv,
-		ReviewQueueCountsByEnv:   summary.ReviewQueueCountsByEnv,
-		GlobalClusterCountsByEnv: summary.GlobalClusterCountsByEnv,
-		GlobalSupportTotalsByEnv: summary.GlobalSupportTotalsByEnv,
-		AvailableEnvironments:    summary.AvailableEnvironments,
+		SourceFailurePatterns:     sourceFailurePatterns,
+		FailurePatterns:           globalClusters,
+		ReviewQueue:               reviewQueue,
+		Phase3Links:               phase3Links,
+		RawFailures:               rawFailures,
+		TestClusterCountsByEnv:    summary.TestClusterCountsByEnv,
+		ReviewQueueCountsByEnv:    summary.ReviewQueueCountsByEnv,
+		FailurePatternCountsByEnv: summary.FailurePatternCountsByEnv,
+		OccurrenceTotalsByEnv:     summary.OccurrenceTotalsByEnv,
+		AvailableEnvironments:     summary.AvailableEnvironments,
 	}, nil
 }
 

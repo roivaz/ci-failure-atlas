@@ -56,7 +56,7 @@ func TestReplaceMaterializedWeekClearsPriorSnapshot(t *testing.T) {
 	ctx := context.Background()
 
 	if err := store.ReplaceMaterializedWeek(ctx, storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
 				Environment:             "dev",
 				Phase2ClusterID:         "cluster-a",
@@ -79,7 +79,7 @@ func TestReplaceMaterializedWeekClearsPriorSnapshot(t *testing.T) {
 	}
 
 	if err := store.ReplaceMaterializedWeek(ctx, storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
 				Environment:             "int",
 				Phase2ClusterID:         "cluster-b",
@@ -93,12 +93,12 @@ func TestReplaceMaterializedWeekClearsPriorSnapshot(t *testing.T) {
 		t.Fatalf("replace materialized week: %v", err)
 	}
 
-	globalClusters, err := store.ListGlobalClusters(ctx)
+	globalClusters, err := store.ListFailurePatterns(ctx)
 	if err != nil {
-		t.Fatalf("list global clusters: %v", err)
+		t.Fatalf("list failure patterns: %v", err)
 	}
 	if len(globalClusters) != 1 || globalClusters[0].Environment != "int" || globalClusters[0].Phase2ClusterID != "cluster-b" {
-		t.Fatalf("expected only replaced global cluster, got=%+v", globalClusters)
+		t.Fatalf("expected only replaced failure pattern, got=%+v", globalClusters)
 	}
 
 	reviewQueue, err := store.ListReviewQueue(ctx)
@@ -115,7 +115,7 @@ func TestGetSemanticWeekSummaryAggregatesByEnvironment(t *testing.T) {
 	ctx := context.Background()
 
 	if err := store.ReplaceMaterializedWeek(ctx, storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
 				Environment:             "dev",
 				Phase2ClusterID:         "cluster-a",
@@ -166,16 +166,16 @@ func TestGetSemanticWeekSummaryAggregatesByEnvironment(t *testing.T) {
 		t.Fatalf("get semantic week summary: %v", err)
 	}
 
-	if got, want := summary.GlobalClusterCountsByEnv["dev"], 2; got != want {
-		t.Fatalf("unexpected dev global cluster count: got=%d want=%d", got, want)
+	if got, want := summary.FailurePatternCountsByEnv["dev"], 2; got != want {
+		t.Fatalf("unexpected dev failure-pattern count: got=%d want=%d", got, want)
 	}
-	if got, want := summary.GlobalClusterCountsByEnv["int"], 1; got != want {
-		t.Fatalf("unexpected int global cluster count: got=%d want=%d", got, want)
+	if got, want := summary.FailurePatternCountsByEnv["int"], 1; got != want {
+		t.Fatalf("unexpected int failure-pattern count: got=%d want=%d", got, want)
 	}
-	if got, want := summary.GlobalSupportTotalsByEnv["dev"], 4; got != want {
+	if got, want := summary.OccurrenceTotalsByEnv["dev"], 4; got != want {
 		t.Fatalf("unexpected dev support total: got=%d want=%d", got, want)
 	}
-	if got, want := summary.GlobalSupportTotalsByEnv["int"], 4; got != want {
+	if got, want := summary.OccurrenceTotalsByEnv["int"], 4; got != want {
 		t.Fatalf("unexpected int support total: got=%d want=%d", got, want)
 	}
 	if got, want := summary.TestClusterCountsByEnv["dev"], 3; got != want {

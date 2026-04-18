@@ -83,7 +83,7 @@ func TestHandleAPIDailyTriageRouteRemoved(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/triage/daily", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/failure-patterns/daily", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -92,7 +92,7 @@ func TestHandleAPIDailyTriageRouteRemoved(t *testing.T) {
 	}
 }
 
-func TestHandleAPIWindowedTriageReturnsJSON(t *testing.T) {
+func TestHandleAPIFailurePatternsReturnsJSON(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -135,7 +135,7 @@ func TestHandleAPIWindowedTriageReturnsJSON(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/triage/window?start_date=2026-03-16&end_date=2026-03-16&env=dev", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/failure-patterns/window?start_date=2026-03-16&end_date=2026-03-16&env=dev", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -146,15 +146,20 @@ func TestHandleAPIWindowedTriageReturnsJSON(t *testing.T) {
 		t.Fatalf("unexpected content type: %q", got)
 	}
 
-	var payload frontservice.WindowedTriageData
+	var payload frontservice.FailurePatternsData
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if strings.Contains(recorder.Body.String(), "\"resolved_week\"") {
-		t.Fatalf("did not expect resolved_week in triage payload: %s", recorder.Body.String())
+		t.Fatalf("did not expect resolved_week in failure-pattern payload: %s", recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "\"failure_pattern_id\"") || !strings.Contains(body, "\"matched_occurrences\"") || !strings.Contains(body, "\"runs_affected\"") {
+		t.Fatalf("expected renamed failure-pattern keys in body, got %q", body)
+	} else if strings.Contains(body, "\"cluster_id\"") || strings.Contains(body, "\"matched_failure_count\"") || strings.Contains(body, "\"jobs_affected\"") {
+		t.Fatalf("did not expect stale failure-pattern keys in body, got %q", body)
 	}
 	if got, want := payload.Meta.Timezone, "UTC"; got != want {
-		t.Fatalf("unexpected windowed triage payload timezone: got=%q want=%q", got, want)
+		t.Fatalf("unexpected failure-pattern payload timezone: got=%q want=%q", got, want)
 	}
 	if got, want := len(payload.Environments), 1; got != want {
 		t.Fatalf("unexpected environment count: got=%d want=%d", got, want)
@@ -167,7 +172,7 @@ func TestHandleAPIWindowedTriageReturnsJSON(t *testing.T) {
 	}
 }
 
-func TestHandleAPIWindowedTriageReturnsJSONError(t *testing.T) {
+func TestHandleAPIFailurePatternsReturnsJSONError(t *testing.T) {
 	t.Parallel()
 
 	fixture := newHandlerFixture(t)
@@ -178,7 +183,7 @@ func TestHandleAPIWindowedTriageReturnsJSONError(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/triage/window?start_date=2026-03-16", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/failure-patterns/window?start_date=2026-03-16", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -237,7 +242,7 @@ func TestHandleTriagePageWindowRendersHTML(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/triage?start_date=2026-03-16&end_date=2026-03-16&env=dev", nil)
+	req := httptest.NewRequest(http.MethodGet, "/failure-patterns?start_date=2026-03-16&end_date=2026-03-16&env=dev", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -252,10 +257,10 @@ func TestHandleTriagePageWindowRendersHTML(t *testing.T) {
 		t.Fatalf("did not expect resolved week note in body, got %q", body)
 	}
 	if !strings.Contains(body, "Runs affected, run impact, and seen-in are recomputed across the selected window") {
-		t.Fatalf("expected windowed triage guidance in body, got %q", body)
+		t.Fatalf("expected failure-pattern guidance in body, got %q", body)
 	}
 	if !strings.Contains(body, "OAuth timeout") {
-		t.Fatalf("expected triage row phrase in body, got %q", body)
+		t.Fatalf("expected failure-pattern row phrase in body, got %q", body)
 	}
 	if !strings.Contains(body, `name="start_date" value="2026-03-16"`) {
 		t.Fatalf("expected start_date control in body, got %q", body)
@@ -312,7 +317,7 @@ func TestHandleTriagePageDefaultsToFullWeekWindow(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/triage?week=2026-03-15", nil)
+	req := httptest.NewRequest(http.MethodGet, "/failure-patterns?week=2026-03-15", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -365,7 +370,7 @@ func TestHandleAPIRunsDayReturnsJSON(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/runs/day?date=2026-03-16&env=dev", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/run-log/day?date=2026-03-16&env=dev", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -376,12 +381,17 @@ func TestHandleAPIRunsDayReturnsJSON(t *testing.T) {
 		t.Fatalf("unexpected content type: %q", got)
 	}
 
-	var payload frontservice.JobHistoryDayData
+	var payload frontservice.RunLogDayData
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if strings.Contains(recorder.Body.String(), "\"resolved_week\"") {
 		t.Fatalf("did not expect resolved_week in runs payload: %s", recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "\"failure_pattern_match\"") || !strings.Contains(body, "\"failure_pattern_summary\"") || !strings.Contains(body, "\"failed_at\"") {
+		t.Fatalf("expected renamed run-log keys in body, got %q", body)
+	} else if strings.Contains(body, "\"semantic_attachment\"") || strings.Contains(body, "\"semantic_rollups\"") || strings.Contains(body, "\"lanes\"") {
+		t.Fatalf("did not expect stale run-log keys in body, got %q", body)
 	}
 	if got, want := payload.Meta.Timezone, "UTC"; got != want {
 		t.Fatalf("unexpected runs payload timezone: got=%q want=%q", got, want)
@@ -457,7 +467,7 @@ func TestHandleAPIRunsDayReturnsValidationError(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/runs/day?env=dev", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/run-log/day?env=dev", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -497,7 +507,7 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/runs?date=2026-03-16&env=dev", nil)
+	req := httptest.NewRequest(http.MethodGet, "/run-log?date=2026-03-16&env=dev", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -511,8 +521,8 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if !strings.Contains(body, "CI Runs") {
 		t.Fatalf("expected runs title in body, got %q", body)
 	}
-	if !strings.Contains(body, "Open triage for this day") {
-		t.Fatalf("expected triage CTA in body, got %q", body)
+	if !strings.Contains(body, "Open failure patterns for this day") {
+		t.Fatalf("expected failure-pattern CTA in body, got %q", body)
 	}
 	if !strings.Contains(body, "View JSON API") {
 		t.Fatalf("expected JSON API link in body, got %q", body)
@@ -568,8 +578,8 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if !strings.Contains(body, "#123 (open)") {
 		t.Fatalf("expected open PR state label in body, got %q", body)
 	}
-	if !strings.Contains(body, "/triage?") || !strings.Contains(body, "start_date=2026-03-16") || !strings.Contains(body, "end_date=2026-03-16") {
-		t.Fatalf("expected same-day triage link in body, got %q", body)
+	if !strings.Contains(body, "/failure-patterns?") || !strings.Contains(body, "start_date=2026-03-16") || !strings.Contains(body, "end_date=2026-03-16") {
+		t.Fatalf("expected same-day failure-pattern link in body, got %q", body)
 	}
 }
 
@@ -901,7 +911,7 @@ type storeWithClose interface {
 
 func reviewAPIMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
 				SchemaVersion:                semanticcontracts.SchemaVersionV1,
 				Environment:                  "dev",
@@ -993,7 +1003,7 @@ func reviewAPIRawFailures() []storecontracts.RawFailureRecord {
 
 func jobHistoryAPIMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
 				SchemaVersion:                semanticcontracts.SchemaVersionV1,
 				Environment:                  "dev",
@@ -1127,7 +1137,7 @@ func jobHistoryAPIRawFailures() []storecontracts.RawFailureRecord {
 
 func reviewActionMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
 				SchemaVersion:                semanticcontracts.SchemaVersionV1,
 				Environment:                  "dev",

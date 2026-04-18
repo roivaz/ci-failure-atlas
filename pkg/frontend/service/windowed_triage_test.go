@@ -8,7 +8,7 @@ import (
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
-func TestBuildWindowedTriageProjectsWeeklyRowsIntoWindow(t *testing.T) {
+func TestBuildFailurePatternsProjectsWeeklyRowsIntoWindow(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -34,13 +34,13 @@ func TestBuildWindowedTriageProjectsWeeklyRowsIntoWindow(t *testing.T) {
 		t.Fatalf("seed metrics daily: %v", err)
 	}
 
-	data, err := fixture.service.BuildWindowedTriage(ctx, WindowedTriageQuery{
+	data, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
 		StartDate:    "2026-03-16",
 		EndDate:      "2026-03-16",
 		Environments: []string{"dev"},
 	})
 	if err != nil {
-		t.Fatalf("build windowed triage: %v", err)
+		t.Fatalf("build failure patterns: %v", err)
 	}
 
 	if got, want := data.Meta.AnchorWeek, "2026-03-15"; got != want {
@@ -106,7 +106,7 @@ func TestBuildWindowedTriageProjectsWeeklyRowsIntoWindow(t *testing.T) {
 	}
 }
 
-func TestBuildWindowedTriageComposesCrossWeekWindows(t *testing.T) {
+func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -117,10 +117,10 @@ func TestBuildWindowedTriageComposesCrossWeekWindows(t *testing.T) {
 		t.Fatalf("seed current materialized week: %v", err)
 	}
 	nextWeek := currentMaterializedWeek()
-	nextWeek.GlobalClusters[0].Phase2ClusterID = "cluster-dev-b"
-	nextWeek.GlobalClusters[0].SupportCount = 5
-	nextWeek.GlobalClusters[0].PostGoodCommitCount = 1
-	nextWeek.GlobalClusters[0].References = []semanticcontracts.ReferenceRecord{
+	nextWeek.FailurePatterns[0].Phase2ClusterID = "cluster-dev-b"
+	nextWeek.FailurePatterns[0].SupportCount = 5
+	nextWeek.FailurePatterns[0].PostGoodCommitCount = 1
+	nextWeek.FailurePatterns[0].References = []semanticcontracts.ReferenceRecord{
 		{
 			RowID:       "row-22",
 			RunURL:      "https://prow.example.com/view/22",
@@ -160,7 +160,7 @@ func TestBuildWindowedTriageComposesCrossWeekWindows(t *testing.T) {
 		t.Fatalf("seed cross-week metrics daily: %v", err)
 	}
 
-	data, err := fixture.service.BuildWindowedTriage(ctx, WindowedTriageQuery{
+	data, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
 		StartDate:    "2026-03-16",
 		EndDate:      "2026-03-22",
 		Environments: []string{"dev"},

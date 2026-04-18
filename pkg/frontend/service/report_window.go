@@ -24,7 +24,7 @@ type ReportData struct {
 	PreviousReports       []WeeklyEnvReport
 	TargetRate            float64
 	TestsBelowTargetByEnv map[string][]WeeklyBelowTargetTest
-	TopSignaturesByEnv    map[string][]WindowedTriageRow
+	TopSignaturesByEnv    map[string][]FailurePatternsRow
 	NavigationAnchorWeek  string
 }
 
@@ -78,16 +78,16 @@ func (s *Service) BuildReportData(ctx context.Context, query ReportQuery) (Repor
 		return ReportData{}, fmt.Errorf("load report tests below target: %w", err)
 	}
 
-	triageData, err := s.BuildWindowedTriage(ctx, WindowedTriageQuery{
+	triageData, err := s.BuildFailurePatterns(ctx, FailurePatternsQuery{
 		StartDate: scope.StartDate,
 		EndDate:   scope.EndDate,
 	})
 	if err != nil {
 		return ReportData{}, fmt.Errorf("build report signature data: %w", err)
 	}
-	topSignaturesByEnv := make(map[string][]WindowedTriageRow, len(triageData.Environments))
+	topSignaturesByEnv := make(map[string][]FailurePatternsRow, len(triageData.Environments))
 	for _, environment := range triageData.Environments {
-		topSignaturesByEnv[environment.Environment] = append([]WindowedTriageRow(nil), environment.Rows...)
+		topSignaturesByEnv[environment.Environment] = append([]FailurePatternsRow(nil), environment.Rows...)
 	}
 
 	generatedAt := query.GeneratedAt

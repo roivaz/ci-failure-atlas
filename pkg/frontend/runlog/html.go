@@ -1,4 +1,4 @@
-package frontend
+package runlog
 
 import (
 	"fmt"
@@ -7,22 +7,22 @@ import (
 	"strings"
 	"time"
 
-	frontservice "ci-failure-atlas/pkg/frontend/service"
-	"ci-failure-atlas/pkg/report/triagehtml"
+	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
+	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	sourceoptions "ci-failure-atlas/pkg/source/options"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
-type dayRunHistoryPageOptions struct {
-	Chrome     triagehtml.ReportChromeOptions
-	Query      frontservice.JobHistoryDayQuery
-	TriageHref string
-	APIHref    string
+type PageOptions struct {
+	Chrome              triagehtml.ReportChromeOptions
+	Query               frontservice.RunLogDayQuery
+	FailurePatternsHref string
+	APIHref             string
 }
 
-func buildDayRunHistoryPageHTML(
-	data frontservice.JobHistoryDayData,
-	options dayRunHistoryPageOptions,
+func RenderHTML(
+	data frontservice.RunLogDayData,
+	options PageOptions,
 ) string {
 	totalRuns := 0
 	totalFailedRuns := 0
@@ -101,14 +101,14 @@ func buildDayRunHistoryPageHTML(
 		html.EscapeString(strings.TrimSpace(data.Meta.Date)),
 	))
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Environments: <strong>%s</strong></p>\n",
-		html.EscapeString(dayRunHistoryEnvironmentList(data.Meta.Environments)),
+		html.EscapeString(runLogDayEnvironmentList(data.Meta.Environments)),
 	))
-	b.WriteString("  <p class=\"meta\">Semantic matches and bad-PR signals use the latest contributing stored semantic snapshot for the matched signature so the score stays stable even on a single-day slice. <span class=\"triage-header-help\" title=\"The page shows one UTC day of runs, but semantic attachments and bad-PR scoring come from the latest contributing stored semantic snapshot for each matched signature rather than being recomputed from the day in isolation.\">?</span></p>\n")
-	b.WriteString(dayRunHistoryActionsHTML(options))
+	b.WriteString("  <p class=\"meta\">Semantic matches and bad-PR signals use the latest contributing stored semantic snapshot for the matched signature so the score stays stable even on a single-day slice. <span class=\"failure-patterns-header-help\" title=\"The page shows one UTC day of runs, but semantic attachments and bad-PR scoring come from the latest contributing stored semantic snapshot for each matched signature rather than being recomputed from the day in isolation.\">?</span></p>\n")
+	b.WriteString(runLogDayActionsHTML(options))
 	b.WriteString("  <div class=\"cards\">\n")
-	b.WriteString(dayRunHistoryCardHTML("Environments in scope", fmt.Sprintf("%d", len(data.Environments))))
-	b.WriteString(dayRunHistoryCardHTML("Runs", fmt.Sprintf("%d", totalRuns)))
-	b.WriteString(dayRunHistoryCardHTML("Failed runs", fmt.Sprintf("%d", totalFailedRuns)))
+	b.WriteString(runLogDayCardHTML("Environments in scope", fmt.Sprintf("%d", len(data.Environments))))
+	b.WriteString(runLogDayCardHTML("Runs", fmt.Sprintf("%d", totalRuns)))
+	b.WriteString(runLogDayCardHTML("Failed runs", fmt.Sprintf("%d", totalFailedRuns)))
 	b.WriteString("  </div>\n")
 
 	for _, environment := range data.Environments {
@@ -123,7 +123,7 @@ func buildDayRunHistoryPageHTML(
 		b.WriteString("      <thead><tr><th>Time (UTC)</th><th>Job</th><th>Failed at</th><th>Result</th><th>PR</th><th>Failed tests</th><th>Details</th></tr></thead>\n")
 		b.WriteString("      <tbody>\n")
 		for _, row := range environment.Runs {
-			b.WriteString(dayRunHistoryRunRowHTML(row))
+			b.WriteString(runLogDayRunRowHTML(row))
 		}
 		b.WriteString("      </tbody>\n")
 		b.WriteString("    </table>\n")
@@ -136,12 +136,12 @@ func buildDayRunHistoryPageHTML(
 	return b.String()
 }
 
-func dayRunHistoryActionsHTML(options dayRunHistoryPageOptions) string {
+func runLogDayActionsHTML(options PageOptions) string {
 	var b strings.Builder
 	b.WriteString("  <div class=\"page-actions\">\n")
-	if href := strings.TrimSpace(options.TriageHref); href != "" {
+	if href := strings.TrimSpace(options.FailurePatternsHref); href != "" {
 		b.WriteString(fmt.Sprintf(
-			"    <a class=\"action-btn action-primary\" href=\"%s\">Open triage for this day</a>\n",
+			"    <a class=\"action-btn action-primary\" href=\"%s\">Open failure patterns for this day</a>\n",
 			html.EscapeString(href),
 		))
 	}
@@ -155,7 +155,7 @@ func dayRunHistoryActionsHTML(options dayRunHistoryPageOptions) string {
 	return b.String()
 }
 
-func dayRunHistoryCardHTML(label string, value string) string {
+func runLogDayCardHTML(label string, value string) string {
 	return fmt.Sprintf(
 		"    <div class=\"card\"><div class=\"label\">%s</div><div class=\"value\">%s</div></div>\n",
 		html.EscapeString(strings.TrimSpace(label)),
@@ -163,27 +163,27 @@ func dayRunHistoryCardHTML(label string, value string) string {
 	)
 }
 
-func dayRunHistoryRunRowHTML(row frontservice.JobHistoryRunRow) string {
+func runLogDayRunRowHTML(row frontservice.JobHistoryRunRow) string {
 	var b strings.Builder
 	b.WriteString("        <tr>\n")
-	b.WriteString(fmt.Sprintf("          <td class=\"time-col\">%s</td>\n", html.EscapeString(dayRunHistoryRunTime(row.Run.OccurredAt))))
+	b.WriteString(fmt.Sprintf("          <td class=\"time-col\">%s</td>\n", html.EscapeString(runLogDayRunTime(row.Run.OccurredAt))))
 	b.WriteString("          <td>")
-	b.WriteString(dayRunHistoryJobHTML(row.Run))
-	if flagsHTML := dayRunHistoryRunFlagsHTML(row.Run); flagsHTML != "" {
+	b.WriteString(runLogDayJobHTML(row.Run))
+	if flagsHTML := runLogDayRunFlagsHTML(row.Run); flagsHTML != "" {
 		b.WriteString(flagsHTML)
 	}
-	b.WriteString(fmt.Sprintf("<div class=\"job-submeta\">%s</div>", html.EscapeString(dayRunHistoryRunSubmeta(row.Run))))
+	b.WriteString(fmt.Sprintf("<div class=\"job-submeta\">%s</div>", html.EscapeString(runLogDayRunSubmeta(row.Run))))
 	b.WriteString("</td>\n")
-	b.WriteString(fmt.Sprintf("          <td>%s</td>\n", html.EscapeString(dayRunHistoryLaneSummary(row))))
-	b.WriteString(fmt.Sprintf("          <td class=\"result-col\">%s</td>\n", dayRunHistoryResultBadgeHTML(row.Run)))
-	b.WriteString(fmt.Sprintf("          <td class=\"pr-col\">%s</td>\n", dayRunHistoryPRHTML(row)))
-	b.WriteString(fmt.Sprintf("          <td class=\"failed-tests-col\">%s</td>\n", html.EscapeString(dayRunHistoryFailedTestsLabel(row))))
+	b.WriteString(fmt.Sprintf("          <td>%s</td>\n", html.EscapeString(runLogDayLaneSummary(row))))
+	b.WriteString(fmt.Sprintf("          <td class=\"result-col\">%s</td>\n", runLogDayResultBadgeHTML(row.Run)))
+	b.WriteString(fmt.Sprintf("          <td class=\"pr-col\">%s</td>\n", runLogDayPRHTML(row)))
+	b.WriteString(fmt.Sprintf("          <td class=\"failed-tests-col\">%s</td>\n", html.EscapeString(runLogDayFailedTestsLabel(row))))
 	b.WriteString("          <td>")
-	b.WriteString(html.EscapeString(dayRunHistoryPrimaryPhrase(row)))
-	if submeta := dayRunHistoryPrimaryPhraseSubmeta(row); submeta != "" {
+	b.WriteString(html.EscapeString(runLogDayPrimaryPhrase(row)))
+	if submeta := runLogDayPrimaryPhraseSubmeta(row); submeta != "" {
 		b.WriteString(fmt.Sprintf("<div class=\"phrase-submeta\">%s</div>", html.EscapeString(submeta)))
 	}
-	if detailsHTML := dayRunHistoryFailureDetailsHTML(row); detailsHTML != "" {
+	if detailsHTML := runLogDayFailureDetailsHTML(row); detailsHTML != "" {
 		b.WriteString(detailsHTML)
 	}
 	b.WriteString("</td>\n")
@@ -191,7 +191,7 @@ func dayRunHistoryRunRowHTML(row frontservice.JobHistoryRunRow) string {
 	return b.String()
 }
 
-func dayRunHistoryRunTime(occurredAt string) string {
+func runLogDayRunTime(occurredAt string) string {
 	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(occurredAt))
 	if err != nil {
 		return strings.TrimSpace(occurredAt)
@@ -199,7 +199,7 @@ func dayRunHistoryRunTime(occurredAt string) string {
 	return parsed.UTC().Format("15:04:05 UTC")
 }
 
-func dayRunHistoryJobLabel(run storecontracts.RunRecord) string {
+func runLogDayJobLabel(run storecontracts.RunRecord) string {
 	label := strings.TrimSpace(run.JobName)
 	if label != "" {
 		return label
@@ -207,15 +207,15 @@ func dayRunHistoryJobLabel(run storecontracts.RunRecord) string {
 	return "unknown job"
 }
 
-func dayRunHistoryJobHTML(run storecontracts.RunRecord) string {
-	label := dayRunHistoryJobLabel(run)
+func runLogDayJobHTML(run storecontracts.RunRecord) string {
+	label := runLogDayJobLabel(run)
 	if href := strings.TrimSpace(run.RunURL); href != "" {
 		return fmt.Sprintf("<a class=\"job-link\" href=\"%s\">%s</a>", html.EscapeString(href), html.EscapeString(label))
 	}
 	return fmt.Sprintf("<span class=\"job-link\">%s</span>", html.EscapeString(label))
 }
 
-func dayRunHistoryRunFlagsHTML(run storecontracts.RunRecord) string {
+func runLogDayRunFlagsHTML(run storecontracts.RunRecord) string {
 	flags := make([]string, 0, 2)
 	if run.PostGoodCommit {
 		flags = append(flags, "post-good")
@@ -235,12 +235,12 @@ func dayRunHistoryRunFlagsHTML(run storecontracts.RunRecord) string {
 	return b.String()
 }
 
-func dayRunHistoryRunSubmeta(run storecontracts.RunRecord) string {
+func runLogDayRunSubmeta(run storecontracts.RunRecord) string {
 	parts := make([]string, 0, 2)
-	if short := dayRunHistoryShortSHA(run.PRSHA); short != "" {
+	if short := runLogDayShortSHA(run.PRSHA); short != "" {
 		parts = append(parts, "head "+short)
 	}
-	if short := dayRunHistoryShortSHA(run.FinalMergedSHA); short != "" {
+	if short := runLogDayShortSHA(run.FinalMergedSHA); short != "" {
 		parts = append(parts, "merge "+short)
 	}
 	if len(parts) == 0 {
@@ -249,7 +249,7 @@ func dayRunHistoryRunSubmeta(run storecontracts.RunRecord) string {
 	return strings.Join(parts, " · ")
 }
 
-func dayRunHistoryResultBadgeHTML(run storecontracts.RunRecord) string {
+func runLogDayResultBadgeHTML(run storecontracts.RunRecord) string {
 	label := "passed"
 	className := "status-badge status-passed"
 	if run.Failed {
@@ -259,26 +259,26 @@ func dayRunHistoryResultBadgeHTML(run storecontracts.RunRecord) string {
 	return fmt.Sprintf("<span class=\"%s\">%s</span>", className, html.EscapeString(label))
 }
 
-func dayRunHistoryPRHTML(row frontservice.JobHistoryRunRow) string {
+func runLogDayPRHTML(row frontservice.JobHistoryRunRow) string {
 	run := row.Run
 	if run.PRNumber <= 0 {
 		return "<span class=\"muted\">n/a</span>"
 	}
 	label := fmt.Sprintf("#%d", run.PRNumber)
-	if state := dayRunHistoryPRStateLabel(run); state != "" {
+	if state := runLogDayPRStateLabel(run); state != "" {
 		label += " (" + state + ")"
 	}
 	content := html.EscapeString(label)
-	if href := dayRunHistoryGitHubPRURL(run.PRNumber); href != "" {
+	if href := runLogDayGitHubPRURL(run.PRNumber); href != "" {
 		content = fmt.Sprintf("<a href=\"%s\">%s</a>", html.EscapeString(href), content)
 	}
-	if badPRFlag := dayRunHistoryBadPRFlagHTML(row); badPRFlag != "" {
+	if badPRFlag := runLogDayBadPRFlagHTML(row); badPRFlag != "" {
 		return badPRFlag + content
 	}
 	return content
 }
 
-func dayRunHistoryPRStateLabel(run storecontracts.RunRecord) string {
+func runLogDayPRStateLabel(run storecontracts.RunRecord) string {
 	if run.PRNumber <= 0 {
 		return ""
 	}
@@ -294,11 +294,11 @@ func dayRunHistoryPRStateLabel(run storecontracts.RunRecord) string {
 	}
 }
 
-func dayRunHistoryBadPRFlagHTML(row frontservice.JobHistoryRunRow) string {
-	if !dayRunHistoryShouldShowBadPRFlag(row) {
+func runLogDayBadPRFlagHTML(row frontservice.JobHistoryRunRow) string {
+	if !runLogDayShouldShowBadPRFlag(row) {
 		return ""
 	}
-	score, reasons := dayRunHistoryBadPRScoreAndReasons(row)
+	score, reasons := runLogDayBadPRScoreAndReasons(row)
 	if score != 3 {
 		return ""
 	}
@@ -311,18 +311,18 @@ func dayRunHistoryBadPRFlagHTML(row frontservice.JobHistoryRunRow) string {
 	)
 }
 
-func dayRunHistoryShouldShowBadPRFlag(row frontservice.JobHistoryRunRow) bool {
+func runLogDayShouldShowBadPRFlag(row frontservice.JobHistoryRunRow) bool {
 	return row.Run.Failed && row.SemanticRollups.ClusteredRows > 0
 }
 
-func dayRunHistoryBadPRScoreAndReasons(row frontservice.JobHistoryRunRow) (int, []string) {
+func runLogDayBadPRScoreAndReasons(row frontservice.JobHistoryRunRow) (int, []string) {
 	if row.BadPRScore <= 0 {
 		return 0, nil
 	}
 	return row.BadPRScore, append([]string(nil), row.BadPRReasons...)
 }
 
-func dayRunHistoryPrimaryPhrase(row frontservice.JobHistoryRunRow) string {
+func runLogDayPrimaryPhrase(row frontservice.JobHistoryRunRow) string {
 	if len(row.FailureRows) == 0 {
 		if row.Run.Failed {
 			return "Failure details unavailable"
@@ -330,7 +330,7 @@ func dayRunHistoryPrimaryPhrase(row frontservice.JobHistoryRunRow) string {
 		return "n/a"
 	}
 
-	phrases := dayRunHistorySemanticPhrases(row)
+	phrases := runLogDaySemanticPhrases(row)
 	switch strings.TrimSpace(row.SemanticRollups.AttachmentSummary) {
 	case "single_clustered":
 		if len(phrases) > 0 {
@@ -341,7 +341,7 @@ func dayRunHistoryPrimaryPhrase(row frontservice.JobHistoryRunRow) string {
 	case "unmatched_only":
 		if len(row.FailureRows) == 1 {
 			if text := strings.TrimSpace(row.FailureRows[0].FailureText); text != "" {
-				return dayRunHistoryPreviewText(text, 140)
+				return runLogDayPreviewText(text, 140)
 			}
 		}
 		return fmt.Sprintf("Multiple failures (%d)", row.FailedTestCount)
@@ -352,7 +352,7 @@ func dayRunHistoryPrimaryPhrase(row frontservice.JobHistoryRunRow) string {
 	return fmt.Sprintf("%d failure rows", len(row.FailureRows))
 }
 
-func dayRunHistoryPrimaryPhraseSubmeta(row frontservice.JobHistoryRunRow) string {
+func runLogDayPrimaryPhraseSubmeta(row frontservice.JobHistoryRunRow) string {
 	if len(row.FailureRows) == 0 {
 		if row.Run.Failed {
 			return "Failure details are not available for this run yet."
@@ -362,11 +362,11 @@ func dayRunHistoryPrimaryPhraseSubmeta(row frontservice.JobHistoryRunRow) string
 	return ""
 }
 
-func dayRunHistoryFailureDetailsHTML(row frontservice.JobHistoryRunRow) string {
+func runLogDayFailureDetailsHTML(row frontservice.JobHistoryRunRow) string {
 	if len(row.FailureRows) == 0 {
 		return ""
 	}
-	if dayRunHistoryAllFailuresNonArtifactBacked(row.FailureRows) {
+	if runLogDayAllFailuresNonArtifactBacked(row.FailureRows) {
 		return ""
 	}
 
@@ -375,19 +375,19 @@ func dayRunHistoryFailureDetailsHTML(row frontservice.JobHistoryRunRow) string {
 	b.WriteString("<div class=\"detail-list\">")
 	for _, failure := range row.FailureRows {
 		b.WriteString("<div class=\"detail-item\">")
-		b.WriteString(fmt.Sprintf("<div class=\"detail-title\">%s</div>", html.EscapeString(dayRunHistoryFailureTitle(failure))))
-		b.WriteString(fmt.Sprintf("<div class=\"detail-meta\">%s</div>", html.EscapeString(dayRunHistoryFailureMeta(failure))))
-		if flags := dayRunHistoryFailureFlagsHTML(failure); flags != "" {
+		b.WriteString(fmt.Sprintf("<div class=\"detail-title\">%s</div>", html.EscapeString(runLogDayFailureTitle(failure))))
+		b.WriteString(fmt.Sprintf("<div class=\"detail-meta\">%s</div>", html.EscapeString(runLogDayFailureMeta(failure))))
+		if flags := runLogDayFailureFlagsHTML(failure); flags != "" {
 			b.WriteString(flags)
 		}
-		b.WriteString(dayRunHistoryRawFailureToggleHTML(failure))
+		b.WriteString(runLogDayRawFailureToggleHTML(failure))
 		b.WriteString("</div>")
 	}
 	b.WriteString("</div></details>")
 	return b.String()
 }
 
-func dayRunHistoryAllFailuresNonArtifactBacked(rows []frontservice.JobHistoryFailureRow) bool {
+func runLogDayAllFailuresNonArtifactBacked(rows []frontservice.JobHistoryFailureRow) bool {
 	if len(rows) == 0 {
 		return false
 	}
@@ -399,19 +399,19 @@ func dayRunHistoryAllFailuresNonArtifactBacked(rows []frontservice.JobHistoryFai
 	return true
 }
 
-func dayRunHistoryFailureTitle(row frontservice.JobHistoryFailureRow) string {
+func runLogDayFailureTitle(row frontservice.JobHistoryFailureRow) string {
 	if phrase := strings.TrimSpace(row.SemanticAttachment.CanonicalEvidencePhrase); phrase != "" {
 		return phrase
 	}
 	if text := strings.TrimSpace(row.FailureText); text != "" {
-		return dayRunHistoryPreviewText(text, 140)
+		return runLogDayPreviewText(text, 140)
 	}
 	return "Failure detail"
 }
 
-func dayRunHistoryFailureMeta(row frontservice.JobHistoryFailureRow) string {
+func runLogDayFailureMeta(row frontservice.JobHistoryFailureRow) string {
 	parts := make([]string, 0, 4)
-	if occurredAt := dayRunHistoryRunTime(row.OccurredAt); occurredAt != "" {
+	if occurredAt := runLogDayRunTime(row.OccurredAt); occurredAt != "" {
 		parts = append(parts, occurredAt)
 	}
 	if lane := strings.TrimSpace(row.Lane); lane != "" {
@@ -426,7 +426,7 @@ func dayRunHistoryFailureMeta(row frontservice.JobHistoryFailureRow) string {
 	return strings.Join(parts, " · ")
 }
 
-func dayRunHistoryFailureFlagsHTML(row frontservice.JobHistoryFailureRow) string {
+func runLogDayFailureFlagsHTML(row frontservice.JobHistoryFailureRow) string {
 	flags := make([]string, 0, 2)
 	if issueID := strings.TrimSpace(row.Phase3IssueID); issueID != "" {
 		flags = append(flags, "phase3 "+issueID)
@@ -446,7 +446,7 @@ func dayRunHistoryFailureFlagsHTML(row frontservice.JobHistoryFailureRow) string
 	return b.String()
 }
 
-func dayRunHistoryRawFailureToggleHTML(row frontservice.JobHistoryFailureRow) string {
+func runLogDayRawFailureToggleHTML(row frontservice.JobHistoryFailureRow) string {
 	text := strings.TrimSpace(row.FailureText)
 	if text == "" {
 		return ""
@@ -457,7 +457,7 @@ func dayRunHistoryRawFailureToggleHTML(row frontservice.JobHistoryFailureRow) st
 	)
 }
 
-func dayRunHistorySemanticPhrases(row frontservice.JobHistoryRunRow) []string {
+func runLogDaySemanticPhrases(row frontservice.JobHistoryRunRow) []string {
 	set := map[string]struct{}{}
 	for _, failure := range row.FailureRows {
 		phrase := strings.TrimSpace(failure.SemanticAttachment.CanonicalEvidencePhrase)
@@ -474,7 +474,7 @@ func dayRunHistorySemanticPhrases(row frontservice.JobHistoryRunRow) []string {
 	return out
 }
 
-func dayRunHistoryEnvironmentList(environments []string) string {
+func runLogDayEnvironmentList(environments []string) string {
 	normalized := normalizedQueryEnvironments(environments)
 	if len(normalized) == 0 {
 		return "none"
@@ -485,21 +485,41 @@ func dayRunHistoryEnvironmentList(environments []string) string {
 	return strings.Join(normalized, ", ")
 }
 
-func dayRunHistoryLaneSummary(row frontservice.JobHistoryRunRow) string {
+func normalizedQueryEnvironments(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "" {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func runLogDayLaneSummary(row frontservice.JobHistoryRunRow) string {
 	if len(row.Lanes) == 0 {
 		return "n/a"
 	}
 	return strings.Join(row.Lanes, ", ")
 }
 
-func dayRunHistoryFailedTestsLabel(row frontservice.JobHistoryRunRow) string {
+func runLogDayFailedTestsLabel(row frontservice.JobHistoryRunRow) string {
 	if len(row.FailureRows) == 0 && row.Run.Failed {
 		return "n/a"
 	}
 	return fmt.Sprintf("%d", row.FailedTestCount)
 }
 
-func dayRunHistoryGitHubPRURL(prNumber int) string {
+func runLogDayGitHubPRURL(prNumber int) string {
 	if prNumber <= 0 {
 		return ""
 	}
@@ -511,7 +531,7 @@ func dayRunHistoryGitHubPRURL(prNumber int) string {
 	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, prNumber)
 }
 
-func dayRunHistoryShortSHA(value string) string {
+func runLogDayShortSHA(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return ""
@@ -522,7 +542,7 @@ func dayRunHistoryShortSHA(value string) string {
 	return trimmed[:7]
 }
 
-func dayRunHistoryPreviewText(value string, max int) string {
+func runLogDayPreviewText(value string, max int) string {
 	normalized := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(value, "\n", " "), "\r", " "), "\t", " "))
 	normalized = strings.Join(strings.Fields(normalized), " ")
 	if max <= 0 || len([]rune(normalized)) <= max {

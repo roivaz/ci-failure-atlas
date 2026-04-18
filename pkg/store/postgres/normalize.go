@@ -347,7 +347,7 @@ func normalizeContributingTests(rows []semanticcontracts.ContributingTestRecord)
 	return out
 }
 
-func normalizeGlobalClusterRecord(row semanticcontracts.GlobalClusterRecord) semanticcontracts.GlobalClusterRecord {
+func normalizeFailurePatternRecord(row semanticcontracts.FailurePatternRecord) semanticcontracts.FailurePatternRecord {
 	supportCount := row.SupportCount
 	if supportCount < 0 {
 		supportCount = 0
@@ -357,7 +357,7 @@ func normalizeGlobalClusterRecord(row semanticcontracts.GlobalClusterRecord) sem
 		postGoodCommitCount = 0
 	}
 	contributingTests := normalizeContributingTests(row.ContributingTests)
-	return semanticcontracts.GlobalClusterRecord{
+	return semanticcontracts.FailurePatternRecord{
 		SchemaVersion:                strings.TrimSpace(row.SchemaVersion),
 		Environment:                  normalizeSemanticEnvironment(row.Environment),
 		Phase2ClusterID:              strings.TrimSpace(row.Phase2ClusterID),
@@ -462,7 +462,7 @@ func testMetadataDailyKey(row storecontracts.TestMetadataDailyRecord) string {
 	return row.Environment + "|" + row.Date + "|" + row.Period + "|" + row.TestSuite + "|" + row.TestName
 }
 
-func globalClusterKey(row semanticcontracts.GlobalClusterRecord) string {
+func globalClusterKey(row semanticcontracts.FailurePatternRecord) string {
 	environment := normalizeSemanticEnvironment(row.Environment)
 	clusterID := strings.TrimSpace(row.Phase2ClusterID)
 	if environment == "" || clusterID == "" {

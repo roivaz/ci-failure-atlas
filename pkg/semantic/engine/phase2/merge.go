@@ -53,7 +53,7 @@ type globalBucket struct {
 func Merge(
 	testClusters []semanticcontracts.TestClusterRecord,
 	reviewItems []semanticcontracts.ReviewItemRecord,
-) ([]semanticcontracts.GlobalClusterRecord, []semanticcontracts.ReviewItemRecord, error) {
+) ([]semanticcontracts.FailurePatternRecord, []semanticcontracts.ReviewItemRecord, error) {
 	if len(testClusters) == 0 {
 		finalizedReview := finalizeReviewIDs(reviewItems)
 		sortReviewItems(finalizedReview)
@@ -76,7 +76,7 @@ func Merge(
 		bucket.members = append(bucket.members, normalizedCluster)
 	}
 
-	globalClusters := make([]semanticcontracts.GlobalClusterRecord, 0, len(buckets))
+	globalClusters := make([]semanticcontracts.FailurePatternRecord, 0, len(buckets))
 	for _, bucket := range buckets {
 		cluster, err := compileGlobalCluster(bucket.members)
 		if err != nil {
@@ -84,7 +84,7 @@ func Merge(
 		}
 		globalClusters = append(globalClusters, cluster)
 	}
-	sortGlobalClusters(globalClusters)
+	sortFailurePatterns(globalClusters)
 
 	mergedReview := append([]semanticcontracts.ReviewItemRecord(nil), reviewItems...)
 	mergedReview = append(mergedReview, buildPhase2AmbiguousProviderReviewItems(testClusters)...)
@@ -93,9 +93,9 @@ func Merge(
 	return globalClusters, mergedReview, nil
 }
 
-func compileGlobalCluster(members []semanticcontracts.TestClusterRecord) (semanticcontracts.GlobalClusterRecord, error) {
+func compileGlobalCluster(members []semanticcontracts.TestClusterRecord) (semanticcontracts.FailurePatternRecord, error) {
 	if len(members) == 0 {
-		return semanticcontracts.GlobalClusterRecord{}, fmt.Errorf("cannot compile global cluster from empty members")
+		return semanticcontracts.FailurePatternRecord{}, fmt.Errorf("cannot compile failure pattern from empty members")
 	}
 
 	sort.Slice(members, func(i, j int) bool {
@@ -192,7 +192,7 @@ func compileGlobalCluster(members []semanticcontracts.TestClusterRecord) (semant
 		}
 	}
 
-	return semanticcontracts.GlobalClusterRecord{
+	return semanticcontracts.FailurePatternRecord{
 		SchemaVersion:                semanticcontracts.SchemaVersionV1,
 		Environment:                  environment,
 		Phase2ClusterID:              phase2ClusterID,
@@ -482,7 +482,7 @@ func sortReferences(rows []semanticcontracts.ReferenceRecord) {
 	})
 }
 
-func sortGlobalClusters(rows []semanticcontracts.GlobalClusterRecord) {
+func sortFailurePatterns(rows []semanticcontracts.FailurePatternRecord) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].SupportCount != rows[j].SupportCount {
 			return rows[i].SupportCount > rows[j].SupportCount

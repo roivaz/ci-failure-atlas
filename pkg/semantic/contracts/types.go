@@ -23,7 +23,7 @@ type Phase1WorksetRecord struct {
 	// JobName is the CI job identifier; it is used to scope grouping and reports;
 	// derived from the associated run record.
 	JobName string `json:"job_name"`
-	// TestName is the failing test identifier; it is used for grouping and triage;
+	// TestName is the failing test identifier; it is used for grouping and analysis;
 	// derived from raw/artifact-backed failure facts.
 	TestName string `json:"test_name"`
 	// TestSuite is the test suite label; it is used for lane rules and grouping;
@@ -39,7 +39,7 @@ type Phase1WorksetRecord struct {
 	// derived from run facts for the failure row.
 	RunURL string `json:"run_url"`
 	// PRNumber is the related PR number (when present); it is used for PR-aware
-	// triage metrics; derived from enriched run metadata.
+	// analysis metrics; derived from enriched run metadata.
 	PRNumber int `json:"pr_number"`
 	// PostGoodCommit marks runs after the good-PR baseline; it is used for
 	// systemic-signal semantics; derived in run enrichment from PR merge state.
@@ -71,7 +71,7 @@ type Phase1NormalizedRecord struct {
 	// JobName is the CI job label; used in grouping and report context; propagated
 	// from workset.
 	JobName string `json:"job_name"`
-	// TestName is the test identifier; used in grouping and triage outputs;
+	// TestName is the test identifier; used in grouping and report outputs;
 	// propagated from workset.
 	TestName string `json:"test_name"`
 	// TestSuite is the suite label; used by lane/rule logic and grouping;
@@ -159,7 +159,7 @@ type ReferenceRecord struct {
 	// SignatureID is the referenced failure fingerprint; used to join back to raw
 	// failure signatures; derived from source row signature_id.
 	SignatureID string `json:"signature_id"`
-	// PRNumber is the PR context for the reference; used in PR-oriented triage;
+	// PRNumber is the PR context for the reference; used in PR-oriented analysis;
 	// derived from enriched run metadata.
 	PRNumber int `json:"pr_number"`
 	// PostGoodCommit flags post-good references; used for systemic-signal counts;
@@ -180,7 +180,7 @@ type TestClusterRecord struct {
 	// Lane is the cluster lane family; used in ranking, filtering, and grouping;
 	// derived from member row lane values.
 	Lane string `json:"lane"`
-	// JobName is the shared job scope for cluster rows; used for triage context;
+	// JobName is the shared job scope for cluster rows; used for report context;
 	// derived from member rows.
 	JobName string `json:"job_name"`
 	// TestName is the shared test name for cluster rows; used for per-test views;
@@ -205,7 +205,7 @@ type TestClusterRecord struct {
 	// derived as len(cluster members).
 	SupportCount int `json:"support_count"`
 	// SeenPostGoodCommit indicates any post-good member exists; used as systemic
-	// signal in triage; derived from member PostGoodCommit flags.
+	// signal in operator analysis; derived from member PostGoodCommit flags.
 	SeenPostGoodCommit bool `json:"seen_post_good_commit"`
 	// PostGoodCommitCount is the number of post-good members; used for impact
 	// ranking; derived by counting member PostGoodCommit=true rows.
@@ -219,7 +219,7 @@ type TestClusterRecord struct {
 }
 
 type ContributingTestRecord struct {
-	// Lane is the contributing test lane; used in global cluster composition views;
+	// Lane is the contributing test lane; used in failure-pattern composition views;
 	// derived from source phase1 test cluster.
 	Lane string `json:"lane"`
 	// JobName is the contributing job name; used to identify failure surface area;
@@ -229,24 +229,24 @@ type ContributingTestRecord struct {
 	// derived from source phase1 test cluster.
 	TestName string `json:"test_name"`
 	// SupportCount is that test's contribution volume; used for weighting within a
-	// global cluster; derived by summing member phase1 supports.
+	// failure pattern; derived by summing member phase1 supports.
 	SupportCount int `json:"support_count"`
 }
 
-type GlobalClusterRecord struct {
-	// SchemaVersion declares global-cluster schema version; used for compatibility;
+type FailurePatternRecord struct {
+	// SchemaVersion declares failure-pattern schema version; used for compatibility;
 	// emitted as SchemaVersionV1.
 	SchemaVersion string `json:"schema_version"`
-	// Environment partitions global clusters by env; used to avoid cross-env merge;
+	// Environment partitions failure patterns by env; used to avoid cross-env merge;
 	// derived from member phase1 cluster environment.
 	Environment string `json:"environment"`
-	// Phase2ClusterID is the deterministic global cluster ID; used as the phase2
+	// Phase2ClusterID is the deterministic failure-pattern ID; used as the phase2
 	// primary key; derived from sorted member phase1 cluster IDs fingerprint.
 	Phase2ClusterID string `json:"phase2_cluster_id"`
-	// CanonicalEvidencePhrase is the representative global evidence label; used for
-	// triage communication; derived from representative member cluster.
+	// CanonicalEvidencePhrase is the representative failure-pattern label; used for
+	// operator communication; derived from representative member cluster.
 	CanonicalEvidencePhrase string `json:"canonical_evidence_phrase"`
-	// SearchQueryPhrase is the representative global query seed; used for
+	// SearchQueryPhrase is the representative failure-pattern query seed; used for
 	// investigation pivots; derived from representative/fallback phrase logic.
 	SearchQueryPhrase string `json:"search_query_phrase"`
 	// SearchQuerySourceRunURL references the run backing SearchQueryPhrase; used to
@@ -255,7 +255,7 @@ type GlobalClusterRecord struct {
 	// SearchQuerySourceSignatureID references the signature backing the query
 	// phrase; used for exact joins; derived from representative/fallback source.
 	SearchQuerySourceSignatureID string `json:"search_query_source_signature_id"`
-	// SupportCount is total failures represented by the global cluster; used for
+	// SupportCount is total failures represented by the failure pattern; used for
 	// prioritization; derived by summing member phase1 support counts.
 	SupportCount int `json:"support_count"`
 	// SeenPostGoodCommit indicates post-good presence in the cluster; used for
@@ -294,7 +294,7 @@ type ReviewItemRecord struct {
 	// Phase indicates where the ambiguity was detected (phase1/phase2); used for
 	// workflow routing; derived from emitting engine.
 	Phase string `json:"phase"`
-	// Reason is a machine-readable review trigger code; used for triage actions and
+	// Reason is a machine-readable review trigger code; used for review actions and
 	// reporting; derived from heuristic/rule outcomes.
 	Reason string `json:"reason"`
 	// ProposedCanonicalEvidencePhrase is the suggested canonical phrase; used by

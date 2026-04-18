@@ -58,7 +58,7 @@ func TestMergeBuildsDeterministicGlobalCluster(t *testing.T) {
 		t.Fatalf("merge: %v", err)
 	}
 	if len(globalClusters) != 1 {
-		t.Fatalf("unexpected global cluster count: got=%d want=1", len(globalClusters))
+		t.Fatalf("unexpected failure-pattern count: got=%d want=1", len(globalClusters))
 	}
 	if len(reviewItems) != 0 {
 		t.Fatalf("unexpected review item count: got=%d want=0", len(reviewItems))
@@ -127,7 +127,7 @@ func TestMergeSplitsGenericCanonicalByProvider(t *testing.T) {
 		t.Fatalf("merge: %v", err)
 	}
 	if len(globalClusters) != 2 {
-		t.Fatalf("expected provider split into 2 global clusters, got=%d", len(globalClusters))
+		t.Fatalf("expected provider split into 2 failure patterns, got=%d", len(globalClusters))
 	}
 }
 
@@ -176,7 +176,7 @@ func TestMergeDoesNotMergeAcrossLanes(t *testing.T) {
 		t.Fatalf("merge: %v", err)
 	}
 	if len(globalClusters) != 2 {
-		t.Fatalf("expected lane split into 2 global clusters, got=%d", len(globalClusters))
+		t.Fatalf("expected lane split into 2 failure patterns, got=%d", len(globalClusters))
 	}
 }
 
@@ -208,7 +208,7 @@ func TestMergeFallsBackSearchPhraseWhenSourceInvalid(t *testing.T) {
 		t.Fatalf("merge: %v", err)
 	}
 	if len(globalClusters) != 1 {
-		t.Fatalf("unexpected global cluster count: got=%d want=1", len(globalClusters))
+		t.Fatalf("unexpected failure-pattern count: got=%d want=1", len(globalClusters))
 	}
 	if globalClusters[0].SearchQueryPhrase != "timeout while provisioning" {
 		t.Fatalf("unexpected fallback search phrase: got=%q", globalClusters[0].SearchQueryPhrase)

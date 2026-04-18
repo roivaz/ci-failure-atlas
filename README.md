@@ -1,6 +1,6 @@
 # CI Failure Atlas
 
-CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing report/triage/runs/review views.
+CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing report/failure-patterns/run-log/review views.
 
 The app+DB runtime is the primary architecture. Dynamic HTML is served directly from PostgreSQL-backed state.
 
@@ -8,7 +8,7 @@ The app+DB runtime is the primary architecture. Dynamic HTML is served directly 
 
 - `cfa run` continuously ingests Sippy, Prow, and GitHub data and derives normalized facts into PostgreSQL.
 - `cfa semantic materialize` builds one semantic week from those facts and replaces that stored week in PostgreSQL.
-- `cfa app` serves the unified report, triage, runs, and review UI from PostgreSQL.
+- `cfa app` serves the unified report, failure patterns, run log, and review UI from PostgreSQL.
 
 Local development defaults to embedded PostgreSQL with initialization and migrations enabled. Remote PostgreSQL is supported through the usual `--storage.postgres.*` flags.
 
@@ -18,15 +18,15 @@ Local development defaults to embedded PostgreSQL with initialization and migrat
 - `pkg/cli` defines the command surface and shared PostgreSQL setup.
 - `pkg/run`, `pkg/controllers`, and `pkg/source` implement continuous ingestion and source clients.
 - `pkg/semantic` owns phase1/2/3 processing, week materialization, and history/query helpers.
-- `pkg/frontend` serves the unified report/triage/runs/review app and API surface.
-- `pkg/report` renders HTML/report outputs for the app surface.
+- `pkg/frontend` serves the unified report/failure-patterns/run-log/review app and API surface.
+- `pkg/frontend/readmodel` holds shared week/store/history helpers; `pkg/frontend/ui` holds shared chrome/table rendering; `pkg/frontend/report`, `pkg/frontend/failurepatterns`, `pkg/frontend/runlog`, and `pkg/frontend/review` own the active product-surface packages.
 - `pkg/store/contracts` defines the store interfaces; `pkg/store/postgres` implements the active runtime store, migrations, and init/bootstrap helpers.
 - `deploy/` contains the standalone Helm chart for Postgres, the app, controllers, and cronjobs.
 - `Dockerfile` builds the container image for the Go application.
 - `infra/azure/` contains Azure infrastructure related to the storage-account redirect and current deployment experiments.
-- `.cursor/skills/` contains project-local skills for triage/review workflows.
+- `.cursor/skills/` contains project-local skills for failure-pattern/review workflows.
 
-Search note: user-facing docs now say "triage", but some internal files and symbols still use older `global` names. When navigating the repo, check both terms unless you are specifically working on phase2 global-signature semantics.
+Search note: user-facing docs now say "failure patterns" and "run log", but some internal files and symbols may still use phase2-specific `global` or `signature` names where they describe the semantic pipeline itself. When navigating the repo, check both terms unless you are specifically working on phase2 failure-pattern merge semantics.
 
 ## Prerequisites
 
@@ -77,14 +77,14 @@ Key app routes:
 - `/` renders the rolling 7-day report window
 - `/report?week=YYYY-MM-DD` renders the classic week-shaped report view
 - `/report?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` renders an arbitrary UTC report window
-- `/triage?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` renders the triage window view
+- `/failure-patterns?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` renders the failure-patterns window view
 
 The day-scoped run history surface is:
 
-- HTML: `/runs?date=YYYY-MM-DD&env=dev`
-- JSON: `/api/runs/day?date=YYYY-MM-DD&env=dev`
+- HTML: `/run-log?date=YYYY-MM-DD&env=dev`
+- JSON: `/api/run-log/day?date=YYYY-MM-DD&env=dev`
 
-It renders one row per run for that day and enriches attached raw failures with semantic signatures from the latest contributing stored semantic snapshot for the matched signature.
+It renders one row per run for that day and enriches attached raw failures with failure-pattern matches from the latest contributing stored semantic snapshot for the matched signature.
 
 Current limitation: this is intentionally not yet a full Prow-history clone. `RunRecord` currently carries `run_url`, `job_name`, PR metadata, `failed`, and `occurred_at`, but not richer build/duration metadata, and some raw failures can still reference runs that need run-record backfill.
 
@@ -158,7 +158,7 @@ python -m http.server 8080 --directory site
 
 - Semantic partitions are PostgreSQL week partitions, not free-form subdirectories.
 - A stored week must be a Sunday-starting `YYYY-MM-DD`.
-- The review app and windowed report/triage/runs surfaces compose over those stored weeks.
+- The review app and windowed report/failure-patterns/run-log surfaces compose over those stored weeks.
 - Partial per-environment materialization is intentionally not supported.
 
 ## Validation And Developer Loop
@@ -172,7 +172,7 @@ make check
 Useful focused loops:
 
 - `go test ./pkg/semantic/...` for phase1/2/3 or materialization changes
-- `go test ./pkg/frontend/... ./pkg/report/...` for UI, API, and report rendering changes
+- `go test ./pkg/frontend/...` for UI, API, and report rendering changes
 - `go test ./pkg/store/postgres/...` for schema, migration, or query-layer changes
 
 Useful local smoke commands:

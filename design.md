@@ -5,7 +5,7 @@ Last updated: 2026-04-18
 
 ## Purpose
 
-CI Failure Atlas ingests CI run/failure data, materializes semantic failure clusters by week, and serves operator-facing report, triage, runs, and review workflows.
+CI Failure Atlas ingests CI run/failure data, materializes semantic failure clusters by week, and serves operator-facing report, failure-patterns, run-log, and review workflows.
 
 The important architectural point is that the Go app + PostgreSQL runtime is no longer the target state. It is the current state.
 
@@ -24,7 +24,7 @@ The runtime has three main planes:
    - Phase1 and phase2 execute in memory; persisted outputs are the user-facing week datasets.
 
 3. **Product surfaces**
-   - `cfa app` serves report/triage/runs/review views from PostgreSQL.
+   - `cfa app` serves report/failure-patterns/run-log/review views from PostgreSQL.
    - Azure Storage can still host a tiny redirect page that points users at the hosted app URL.
 
 ## Codebase Map
@@ -43,9 +43,14 @@ The architecture maps to the repository roughly like this:
   - `pkg/semantic/workflow`
   - `pkg/semantic/query`
   - `pkg/semantic/history`
-- Product-facing HTTP and HTML/report surfaces:
+- Product-facing HTTP, read-model, and HTML surfaces:
   - `pkg/frontend`
-  - `pkg/report`
+  - `pkg/frontend/readmodel`
+  - `pkg/frontend/ui`
+  - `pkg/frontend/report`
+  - `pkg/frontend/failurepatterns`
+  - `pkg/frontend/runlog`
+  - `pkg/frontend/review`
 - Runtime storage contract and PostgreSQL implementation:
   - `pkg/store/contracts`
   - `pkg/store/postgres`
@@ -64,23 +69,23 @@ The semantic workflow is still logically split into three phases:
    - Classify failures into deterministic test-scoped clusters.
 
 2. **Phase2: global merge**
-   - Merge test-scoped clusters into global failure signatures.
-   - Produce the signature rows used by report/triage and review flows.
+   - Merge test-scoped clusters into cross-test failure patterns.
+   - Produce the failure-pattern rows used by report/failure-patterns and review flows.
 
 3. **Phase3: human linking and reconciliation**
    - Operators link semantically equivalent signatures in the review UI.
    - Durable row-level anchors remain `environment + run_url + row_id`.
-   - Stored Phase3 state is reapplied across the live app surfaces and shared report renderers.
+   - Stored Phase3 state is reapplied across the live app surfaces and shared frontend UI renderers.
 
 ## Terminology And Search Notes
 
-User-facing docs and UI now use "triage" for the signature triage surface.
+User-facing docs and UI now use "failure patterns" and "run log" for the operator surfaces layered on top of semantic weeks.
 
-Some internal files, symbols, or helper names may still retain older `global` terminology from the earlier evolution of the codebase. That does not usually indicate a different product surface. When searching the repo, check both `triage` and `global` unless you are specifically working on phase2 global-signature merge semantics.
+Some internal files, symbols, or helper names may still retain phase-oriented terminology such as `global` or `signature` where they describe the semantic pipeline itself. That does not usually indicate a different product surface. When searching the repo, check both the user-facing and semantic terms unless you are specifically working on phase2 failure-pattern merge semantics.
 
 ## UI Terminology
 
-The following user-facing terms are used consistently across all report and triage views. When adding or editing UI labels, tooltips, or copy, use these terms — not the internal names from the storage model or semantic pipeline.
+The following user-facing terms are used consistently across all report and failure-pattern views. When adding or editing UI labels, tooltips, or copy, use these terms, not the internal names from the storage model or semantic pipeline.
 
 ### Core Concepts
 
@@ -109,8 +114,8 @@ The following user-facing terms are used consistently across all report and tria
 |---|---|---|
 | Last 7 Days | `/report` (rolling) | Rolling 7-day report window |
 | Weekly Report | `/report` (week-anchored) | Per-week semantic report |
-| Failure Patterns | `/triage` | Windowed signature triage view |
-| Run Log | `/runs` | Day-scoped run history |
+| Failure Patterns | `/failure-patterns` | Windowed failure-pattern view |
+| Run Log | `/run-log` | Day-scoped run history |
 
 ### What Not to Expose in User-Facing Views
 
@@ -119,7 +124,7 @@ The following user-facing terms are used consistently across all report and tria
 - Bad PR score and reasons in the expanded detail row — this is already factored into the flake signal.
 - Quality flag badges (`context type stub leaked`, `source deserialization/no-output error`, `struct/object fragment`, etc.) — internal diagnostics only.
 - `Phase3 cluster` column header — use `Linked group ID` if the column must appear.
-- `Triage threshold` summary card — remove entirely.
+- `Failure-pattern threshold` summary card — remove entirely.
 - Internal names such as `signature`, `support`, `lane`, `matched failure support` — use the table above.
 
 ## Storage Model
@@ -156,7 +161,7 @@ User-facing report surfaces now resolve a presentation window independently from
 
 - `/report` accepts either `week=YYYY-MM-DD` or `start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
 - `/` redirects to a rolling 7-day `/report` window
-- `/triage` and `/runs` use the same shared window resolver for navigation and range normalization
+- `/failure-patterns` and `/run-log` use the same shared window resolver for navigation and range normalization
 
 The important invariant is that this does **not** change semantic storage:
 
@@ -193,8 +198,8 @@ In practice:
 `cfa app` is the primary operator surface:
 
 - report view (`/report`) with classic week-shaped and arbitrary-window modes
-- signature triage view
-- day-scoped run history view (`/runs`, `/api/runs/day`)
+- failure-patterns view
+- day-scoped run history view (`/run-log`, `/api/run-log/day`)
 - Phase3 review/linking workflow
 - cross-week history lookups based on stored semantic weeks
 
@@ -243,7 +248,7 @@ Secondary maintenance/debug commands:
 ## Key Design Decisions
 
 1. **App + DB is the primary runtime**
-   - Reports, triage, runs, and review all read from PostgreSQL-backed state.
+   - Report, failure-patterns, run-log, and review all read from PostgreSQL-backed state.
 
 2. **Semantic weeks are canonical**
    - The UI, materialization contract, and storage schema all agree on Sunday-starting week partitions.
@@ -263,7 +268,7 @@ For a new coding session, the default validation loop is:
 
 - `make check` for broad repo validation
 - `go test ./pkg/semantic/...` for semantic/materialization work
-- `go test ./pkg/frontend/... ./pkg/report/...` for app/report work
+- `go test ./pkg/frontend/...` for app/report work
 - `go test ./pkg/store/postgres/...` for store or migration work
 
 For manual smoke testing, use the main runtime commands described in `README.md`. Agent-oriented repo guidance lives in `AGENTS.md`.

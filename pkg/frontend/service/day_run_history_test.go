@@ -9,7 +9,7 @@ import (
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
-func TestBuildJobHistoryDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
+func TestBuildRunLogDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -37,7 +37,7 @@ func TestBuildJobHistoryDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 		t.Fatalf("seed raw failures: %v", err)
 	}
 
-	data, err := fixture.service.BuildJobHistoryDay(ctx, JobHistoryDayQuery{
+	data, err := fixture.service.BuildRunLogDay(ctx, RunLogDayQuery{
 		Date:         "2026-03-16",
 		Environments: []string{"dev"},
 	})
@@ -112,7 +112,7 @@ func TestBuildJobHistoryDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 	}
 }
 
-func TestBuildJobHistoryDayHandlesMultipleSignaturesOnOneRun(t *testing.T) {
+func TestBuildRunLogDayHandlesMultipleSignaturesOnOneRun(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -140,7 +140,7 @@ func TestBuildJobHistoryDayHandlesMultipleSignaturesOnOneRun(t *testing.T) {
 		t.Fatalf("seed raw failures: %v", err)
 	}
 
-	data, err := fixture.service.BuildJobHistoryDay(ctx, JobHistoryDayQuery{
+	data, err := fixture.service.BuildRunLogDay(ctx, RunLogDayQuery{
 		Date:         "2026-03-16",
 		Environments: []string{"dev"},
 	})
@@ -172,7 +172,7 @@ func TestBuildJobHistoryDayHandlesMultipleSignaturesOnOneRun(t *testing.T) {
 	}
 }
 
-func TestBuildJobHistoryDayFlagsFailedRunsWithoutRawRows(t *testing.T) {
+func TestBuildRunLogDayFlagsFailedRunsWithoutRawRows(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -196,7 +196,7 @@ func TestBuildJobHistoryDayFlagsFailedRunsWithoutRawRows(t *testing.T) {
 		t.Fatalf("seed raw failures: %v", err)
 	}
 
-	data, err := fixture.service.BuildJobHistoryDay(ctx, JobHistoryDayQuery{
+	data, err := fixture.service.BuildRunLogDay(ctx, RunLogDayQuery{
 		Date:         "2026-03-16",
 		Environments: []string{"dev"},
 	})
@@ -217,7 +217,7 @@ func TestBuildJobHistoryDayFlagsFailedRunsWithoutRawRows(t *testing.T) {
 	}
 }
 
-func TestBuildJobHistoryDayUsesWeeklySemanticBadPRScore(t *testing.T) {
+func TestBuildRunLogDayUsesWeeklySemanticBadPRScore(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -237,7 +237,7 @@ func TestBuildJobHistoryDayUsesWeeklySemanticBadPRScore(t *testing.T) {
 		t.Fatalf("seed raw failures: %v", err)
 	}
 
-	data, err := fixture.service.BuildJobHistoryDay(ctx, JobHistoryDayQuery{
+	data, err := fixture.service.BuildRunLogDay(ctx, RunLogDayQuery{
 		Date:         "2026-03-16",
 		Environments: []string{"dev"},
 	})
@@ -253,7 +253,7 @@ func TestBuildJobHistoryDayUsesWeeklySemanticBadPRScore(t *testing.T) {
 
 func jobHistoryMaterializedWeekWithExtraCluster() storecontracts.MaterializedWeek {
 	week := currentMaterializedWeek()
-	week.GlobalClusters = append(week.GlobalClusters, semanticcontracts.GlobalClusterRecord{
+	week.FailurePatterns = append(week.FailurePatterns, semanticcontracts.FailurePatternRecord{
 		SchemaVersion:                semanticcontracts.SchemaVersionV1,
 		Environment:                  "dev",
 		Phase2ClusterID:              "cluster-dev-c",
@@ -285,7 +285,7 @@ func jobHistoryMaterializedWeekWithExtraCluster() storecontracts.MaterializedWee
 	return week
 }
 
-func jobHistoryEnvironmentByName(t *testing.T, data JobHistoryDayData, environment string) JobHistoryDayEnvironment {
+func jobHistoryEnvironmentByName(t *testing.T, data RunLogDayData, environment string) RunLogDayEnvironment {
 	t.Helper()
 	for _, row := range data.Environments {
 		if strings.TrimSpace(row.Environment) == strings.TrimSpace(environment) {
@@ -293,10 +293,10 @@ func jobHistoryEnvironmentByName(t *testing.T, data JobHistoryDayData, environme
 		}
 	}
 	t.Fatalf("environment %q not found", environment)
-	return JobHistoryDayEnvironment{}
+	return RunLogDayEnvironment{}
 }
 
-func jobHistoryRunByURL(t *testing.T, environment JobHistoryDayEnvironment, runURL string) JobHistoryRunRow {
+func jobHistoryRunByURL(t *testing.T, environment RunLogDayEnvironment, runURL string) JobHistoryRunRow {
 	t.Helper()
 	for _, row := range environment.Runs {
 		if strings.TrimSpace(row.Run.RunURL) == strings.TrimSpace(runURL) {

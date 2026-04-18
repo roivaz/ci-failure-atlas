@@ -11,10 +11,12 @@ import (
 	"strings"
 	"time"
 
-	frontservice "ci-failure-atlas/pkg/frontend/service"
-	reportreview "ci-failure-atlas/pkg/report/review"
-	"ci-failure-atlas/pkg/report/triagehtml"
-	reportweekly "ci-failure-atlas/pkg/report/weekly"
+	frontfailurepatterns "ci-failure-atlas/pkg/frontend/failurepatterns"
+	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
+	reportreview "ci-failure-atlas/pkg/frontend/review"
+	frontrunlog "ci-failure-atlas/pkg/frontend/runlog"
+	triagehtml "ci-failure-atlas/pkg/frontend/ui"
+	reportweekly "ci-failure-atlas/pkg/frontend/report"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -50,8 +52,8 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 		HistoryHorizonWeeks: service.HistoryHorizonWeeks(),
 		PostgresPool:        opts.PostgresPool,
 		RoutePrefix:         "/review",
-		WeeklyPath:          "/report",
-		TriagePath:          "/triage",
+		ReportPath:          "/report",
+		FailurePatternsPath: "/failure-patterns",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create review handler: %w", err)
@@ -62,11 +64,11 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.handleRoot)
-	mux.HandleFunc("/api/runs/day", h.handleAPIRunsDay)
-	mux.HandleFunc("/api/triage/window", h.handleAPIWindowedTriage)
+	mux.HandleFunc("/api/run-log/day", h.handleAPIRunsDay)
+	mux.HandleFunc("/api/failure-patterns/window", h.handleAPIFailurePatterns)
 	mux.HandleFunc("/report", h.handleReportPage)
-	mux.HandleFunc("/runs", h.handleRunsPage)
-	mux.HandleFunc("/triage", h.handleTriagePage)
+	mux.HandleFunc("/run-log", h.handleRunsPage)
+	mux.HandleFunc("/failure-patterns", h.handleTriagePage)
 	mux.HandleFunc("/global", h.handleLegacyGlobalRedirect)
 	mux.HandleFunc("/review", h.handleReviewRoot)
 	mux.Handle("/review/", http.StripPrefix("/review", reviewHandler))
@@ -99,12 +101,12 @@ func (h *handler) handleTriagePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	windowedQuery, err := h.resolveWindowedTriagePageQuery(r.Context(), windowedTriageQueryFromRequest(r))
+	windowedQuery, err := h.resolveFailurePatternsPageQuery(r.Context(), failurePatternsQueryFromRequest(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	reportHTML, err := h.generateWindowedTriageReport(r.Context(), windowedQuery)
+	reportHTML, err := h.generateFailurePatternsReport(r.Context(), windowedQuery)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -118,7 +120,7 @@ func (h *handler) handleRunsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	reportHTML, err := h.generateDayRunHistoryPage(r.Context(), jobHistoryDayQueryFromRequest(r))
+	reportHTML, err := h.generateDayRunHistoryPage(r.Context(), runLogDayQueryFromRequest(r))
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
@@ -136,7 +138,7 @@ func (h *handler) handleLegacyGlobalRedirect(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	http.Redirect(w, r, viewHref("/triage", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusMovedPermanently)
+	http.Redirect(w, r, viewHref("/failure-patterns", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusMovedPermanently)
 }
 
 func (h *handler) handleReportPage(w http.ResponseWriter, r *http.Request) {
@@ -174,12 +176,12 @@ func (h *handler) handleReviewRoot(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, viewHref("/review/", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusFound)
 }
 
-func (h *handler) handleAPIWindowedTriage(w http.ResponseWriter, r *http.Request) {
+func (h *handler) handleAPIFailurePatterns(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 		return
 	}
-	response, err := h.service.BuildWindowedTriage(r.Context(), windowedTriageQueryFromRequest(r))
+	response, err := h.service.BuildFailurePatterns(r.Context(), failurePatternsQueryFromRequest(r))
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
@@ -196,7 +198,7 @@ func (h *handler) handleAPIRunsDay(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 		return
 	}
-	response, err := h.service.BuildJobHistoryDay(r.Context(), jobHistoryDayQueryFromRequest(r))
+	response, err := h.service.BuildRunLogDay(r.Context(), runLogDayQueryFromRequest(r))
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
@@ -208,8 +210,8 @@ func (h *handler) handleAPIRunsDay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (h *handler) generateWindowedTriageReport(ctx context.Context, query frontservice.WindowedTriageQuery) (string, error) {
-	data, err := h.service.BuildWindowedTriage(ctx, query)
+func (h *handler) generateFailurePatternsReport(ctx context.Context, query frontservice.FailurePatternsQuery) (string, error) {
+	data, err := h.service.BuildFailurePatterns(ctx, query)
 	if err != nil {
 		return "", err
 	}
@@ -224,23 +226,23 @@ func (h *handler) generateWindowedTriageReport(ctx context.Context, query fronts
 	if err != nil {
 		return "", err
 	}
-	return buildWindowedTriageReportHTML(data, windowedTriagePageOptions{
+	return frontfailurepatterns.RenderHTML(data, frontfailurepatterns.PageOptions{
 		Query: query,
 		Chrome: triagehtml.ReportChromeOptions{
-			WindowLabel:  formatWindowLabel(scope.StartDate, scope.EndDate),
-			CurrentView:  triagehtml.ReportViewTriage,
-			PreviousHref: h.shiftedTriageHref(ctx, scope.StartDate, scope.EndDate, -7, query.Environments),
-			NextHref:     h.shiftedTriageHref(ctx, scope.StartDate, scope.EndDate, 7, query.Environments),
-			RollingHref:  rollingHref,
-			ReportHref:   reportHref("/report", scope.StartDate, scope.EndDate, reportPageModeReport),
-			TriageHref:   windowedTriageHref("/triage", "", scope.StartDate, scope.EndDate, query.Environments),
-			RunsHref:     dayRunHistoryHref("/runs", scope.EndDate, "", query.Environments),
+			WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
+			CurrentView:         triagehtml.ReportViewFailurePatterns,
+			PreviousHref:        h.shiftedFailurePatternsHref(ctx, scope.StartDate, scope.EndDate, -7, query.Environments),
+			NextHref:            h.shiftedFailurePatternsHref(ctx, scope.StartDate, scope.EndDate, 7, query.Environments),
+			RollingHref:         rollingHref,
+			ReportHref:          reportHref("/report", scope.StartDate, scope.EndDate, reportPageModeReport),
+			FailurePatternsHref: failurePatternsHref("/failure-patterns", "", scope.StartDate, scope.EndDate, query.Environments),
+			RunLogHref:          runLogDayHref("/run-log", scope.EndDate, "", query.Environments),
 		},
 	}), nil
 }
 
-func (h *handler) generateDayRunHistoryPage(ctx context.Context, query frontservice.JobHistoryDayQuery) (string, error) {
-	data, err := h.service.BuildJobHistoryDay(ctx, query)
+func (h *handler) generateDayRunHistoryPage(ctx context.Context, query frontservice.RunLogDayQuery) (string, error) {
+	data, err := h.service.BuildRunLogDay(ctx, query)
 	if err != nil {
 		return "", err
 	}
@@ -255,19 +257,19 @@ func (h *handler) generateDayRunHistoryPage(ctx context.Context, query frontserv
 		return "", err
 	}
 	environments := query.Environments
-	return buildDayRunHistoryPageHTML(data, dayRunHistoryPageOptions{
-		Query:      query,
-		TriageHref: windowedTriageHref("/triage", "", scope.StartDate, scope.EndDate, environments),
-		APIHref:    dayRunHistoryHref("/api/runs/day", data.Meta.Date, "", environments),
+	return frontrunlog.RenderHTML(data, frontrunlog.PageOptions{
+		Query:               query,
+		FailurePatternsHref: failurePatternsHref("/failure-patterns", "", scope.StartDate, scope.EndDate, environments),
+		APIHref:             runLogDayHref("/api/run-log/day", data.Meta.Date, "", environments),
 		Chrome: triagehtml.ReportChromeOptions{
-			WindowLabel:  formatWindowLabel(scope.StartDate, scope.EndDate),
-			CurrentView:  triagehtml.ReportViewRuns,
-			PreviousHref: h.shiftedRunsHref(ctx, data.Meta.Date, -1, environments),
-			NextHref:     h.shiftedRunsHref(ctx, data.Meta.Date, 1, environments),
-			RollingHref:  rollingHref,
-			ReportHref:   reportHref("/report", scope.StartDate, scope.EndDate, reportPageModeReport),
-			TriageHref:   windowedTriageHref("/triage", "", scope.StartDate, scope.EndDate, environments),
-			RunsHref:     dayRunHistoryHref("/runs", data.Meta.Date, "", environments),
+			WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
+			CurrentView:         triagehtml.ReportViewRunLog,
+			PreviousHref:        h.shiftedRunLogHref(ctx, data.Meta.Date, -1, environments),
+			NextHref:            h.shiftedRunLogHref(ctx, data.Meta.Date, 1, environments),
+			RollingHref:         rollingHref,
+			ReportHref:          reportHref("/report", scope.StartDate, scope.EndDate, reportPageModeReport),
+			FailurePatternsHref: failurePatternsHref("/failure-patterns", "", scope.StartDate, scope.EndDate, environments),
+			RunLogHref:          runLogDayHref("/run-log", data.Meta.Date, "", environments),
 		},
 	}), nil
 }
@@ -298,16 +300,16 @@ func (h *handler) generateReportPage(
 		reportHrefValue = reportHref("/report", reportStart, reportEnd, reportPageModeReport)
 	}
 	opts := reportweekly.DefaultOptions()
-	opts.DayRunHistoryBasePath = "/runs"
+	opts.RunLogDayBasePath = "/run-log"
 	opts.Chrome = triagehtml.ReportChromeOptions{
-		WindowLabel:  formatWindowLabel(scope.StartDate, scope.EndDate),
-		CurrentView:  reportChromeView(mode),
-		PreviousHref: h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, -7, mode),
-		NextHref:     h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, 7, mode),
-		RollingHref:  rollingHref,
-		ReportHref:   reportHrefValue,
-		TriageHref:   windowedTriageHref("/triage", "", scope.StartDate, scope.EndDate, nil),
-		RunsHref:     dayRunHistoryHref("/runs", scope.EndDate, "", nil),
+		WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
+		CurrentView:         reportChromeView(mode),
+		PreviousHref:        h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, -7, mode),
+		NextHref:            h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, 7, mode),
+		RollingHref:         rollingHref,
+		ReportHref:          reportHrefValue,
+		FailurePatternsHref: failurePatternsHref("/failure-patterns", "", scope.StartDate, scope.EndDate, nil),
+		RunLogHref:          runLogDayHref("/run-log", scope.EndDate, "", nil),
 	}
 	if mode == reportPageModeRolling {
 		opts.Chrome.PreviousHref = ""
@@ -341,7 +343,7 @@ func navigationHref(path string, week string) string {
 	return viewHref(path, week)
 }
 
-func windowedTriageHref(path string, week string, startDate string, endDate string, environments []string) string {
+func failurePatternsHref(path string, week string, startDate string, endDate string, environments []string) string {
 	trimmedPath := strings.TrimSpace(path)
 	if trimmedPath == "" {
 		return ""
@@ -368,15 +370,15 @@ func windowedTriageHref(path string, week string, startDate string, endDate stri
 	return trimmedPath
 }
 
-func hasWindowedTriageQuery(query frontservice.WindowedTriageQuery) bool {
+func hasFailurePatternsQuery(query frontservice.FailurePatternsQuery) bool {
 	return strings.TrimSpace(query.StartDate) != "" || strings.TrimSpace(query.EndDate) != ""
 }
 
-func windowedTriageQueryFromRequest(r *http.Request) frontservice.WindowedTriageQuery {
+func failurePatternsQueryFromRequest(r *http.Request) frontservice.FailurePatternsQuery {
 	if r == nil {
-		return frontservice.WindowedTriageQuery{}
+		return frontservice.FailurePatternsQuery{}
 	}
-	return frontservice.WindowedTriageQuery{
+	return frontservice.FailurePatternsQuery{
 		StartDate:    strings.TrimSpace(r.URL.Query().Get("start_date")),
 		EndDate:      strings.TrimSpace(r.URL.Query().Get("end_date")),
 		Week:         strings.TrimSpace(r.URL.Query().Get("week")),
@@ -395,10 +397,10 @@ func reportQueryFromRequest(r *http.Request) frontservice.ReportQuery {
 	}
 }
 
-func (h *handler) resolveWindowedTriagePageQuery(
+func (h *handler) resolveFailurePatternsPageQuery(
 	ctx context.Context,
-	query frontservice.WindowedTriageQuery,
-) (frontservice.WindowedTriageQuery, error) {
+	query frontservice.FailurePatternsQuery,
+) (frontservice.FailurePatternsQuery, error) {
 	window, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
 		StartDate:   query.StartDate,
 		EndDate:     query.EndDate,
@@ -406,7 +408,7 @@ func (h *handler) resolveWindowedTriagePageQuery(
 		DefaultMode: frontservice.WindowDefaultLatestWeek,
 	})
 	if err != nil {
-		return frontservice.WindowedTriageQuery{}, err
+		return frontservice.FailurePatternsQuery{}, err
 	}
 	query.Week = ""
 	query.StartDate = window.StartDate
@@ -536,7 +538,7 @@ func (h *handler) shiftedReportHref(
 	return reportHref("/report", targetStart, targetEnd, reportPageModeReport)
 }
 
-func (h *handler) shiftedTriageHref(
+func (h *handler) shiftedFailurePatternsHref(
 	ctx context.Context,
 	startDate string,
 	endDate string,
@@ -553,10 +555,10 @@ func (h *handler) shiftedTriageHref(
 	}); err != nil {
 		return ""
 	}
-	return windowedTriageHref("/triage", "", targetStart, targetEnd, environments)
+	return failurePatternsHref("/failure-patterns", "", targetStart, targetEnd, environments)
 }
 
-func (h *handler) shiftedRunsHref(
+func (h *handler) shiftedRunLogHref(
 	ctx context.Context,
 	currentDate string,
 	days int,
@@ -572,7 +574,7 @@ func (h *handler) shiftedRunsHref(
 	}); err != nil {
 		return ""
 	}
-	return dayRunHistoryHref("/runs", targetDate, "", environments)
+	return runLogDayHref("/run-log", targetDate, "", environments)
 }
 
 func shiftDateWindow(startDate string, endDate string, days int) (string, string, error) {
@@ -628,7 +630,7 @@ func parseDateInputValue(fieldName string, value string) (time.Time, error) {
 	return parsed.UTC(), nil
 }
 
-func shiftedWindowedTriageHref(
+func shiftedFailurePatternsHref(
 	path string,
 	targetWeek string,
 	currentWeek string,
@@ -649,19 +651,19 @@ func shiftedWindowedTriageHref(
 	currentEndDate, errCurrentEnd := time.Parse("2006-01-02", strings.TrimSpace(endDate))
 	targetWeekStart, errTargetWeek := time.Parse("2006-01-02", trimmedTargetWeek)
 	if errCurrentWeek != nil || errCurrentStart != nil || errCurrentEnd != nil || errTargetWeek != nil {
-		return windowedTriageHref(path, trimmedTargetWeek, targetStart, targetEnd, environments)
+		return failurePatternsHref(path, trimmedTargetWeek, targetStart, targetEnd, environments)
 	}
 	startOffset := int(currentStartDate.UTC().Sub(currentWeekStart.UTC()) / (24 * time.Hour))
 	endOffset := int(currentEndDate.UTC().Sub(currentWeekStart.UTC()) / (24 * time.Hour))
 	if startOffset < 0 || endOffset < startOffset || endOffset > 6 {
-		return windowedTriageHref(path, trimmedTargetWeek, targetStart, targetEnd, environments)
+		return failurePatternsHref(path, trimmedTargetWeek, targetStart, targetEnd, environments)
 	}
 	shiftedStart := targetWeekStart.UTC().AddDate(0, 0, startOffset).Format("2006-01-02")
 	shiftedEnd := targetWeekStart.UTC().AddDate(0, 0, endOffset).Format("2006-01-02")
-	return windowedTriageHref(path, trimmedTargetWeek, shiftedStart, shiftedEnd, environments)
+	return failurePatternsHref(path, trimmedTargetWeek, shiftedStart, shiftedEnd, environments)
 }
 
-func dayRunHistoryHref(path string, date string, week string, environments []string) string {
+func runLogDayHref(path string, date string, week string, environments []string) string {
 	trimmedPath := strings.TrimSpace(path)
 	if trimmedPath == "" {
 		return ""
@@ -700,14 +702,14 @@ func shiftedDayRunHistoryHref(
 	currentWeekStart, errCurrentWeek := time.Parse("2006-01-02", strings.TrimSpace(currentWeek))
 	currentDateValue, errCurrentDate := time.Parse("2006-01-02", strings.TrimSpace(currentDate))
 	if errTargetWeek != nil || errCurrentWeek != nil || errCurrentDate != nil {
-		return dayRunHistoryHref(path, trimmedTargetWeek, trimmedTargetWeek, environments)
+		return runLogDayHref(path, trimmedTargetWeek, trimmedTargetWeek, environments)
 	}
 	offset := int(currentDateValue.UTC().Sub(currentWeekStart.UTC()) / (24 * time.Hour))
 	if offset < 0 || offset > 6 {
-		return dayRunHistoryHref(path, trimmedTargetWeek, trimmedTargetWeek, environments)
+		return runLogDayHref(path, trimmedTargetWeek, trimmedTargetWeek, environments)
 	}
 	targetDate := targetWeekStart.UTC().AddDate(0, 0, offset).Format("2006-01-02")
-	return dayRunHistoryHref(path, targetDate, trimmedTargetWeek, environments)
+	return runLogDayHref(path, targetDate, trimmedTargetWeek, environments)
 }
 
 func isSingleDayWindow(startDate string, endDate string) bool {
@@ -735,11 +737,11 @@ func normalizedQueryEnvironments(values []string) []string {
 	return out
 }
 
-func jobHistoryDayQueryFromRequest(r *http.Request) frontservice.JobHistoryDayQuery {
+func runLogDayQueryFromRequest(r *http.Request) frontservice.RunLogDayQuery {
 	if r == nil {
-		return frontservice.JobHistoryDayQuery{}
+		return frontservice.RunLogDayQuery{}
 	}
-	return frontservice.JobHistoryDayQuery{
+	return frontservice.RunLogDayQuery{
 		Date:         strings.TrimSpace(r.URL.Query().Get("date")),
 		Week:         strings.TrimSpace(r.URL.Query().Get("week")),
 		Environments: parseListQueryValues(r.URL.Query()["env"]),

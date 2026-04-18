@@ -23,8 +23,8 @@ func TestViewHrefIncludesWeekQuery(t *testing.T) {
 	if got, want := viewHref("/report", "2026-03-15"), "/report?week=2026-03-15"; got != want {
 		t.Fatalf("unexpected report href: got=%q want=%q", got, want)
 	}
-	if got, want := viewHref("/triage", "2026-03-15"), "/triage?week=2026-03-15"; got != want {
-		t.Fatalf("unexpected triage href: got=%q want=%q", got, want)
+	if got, want := viewHref("/failure-patterns", "2026-03-15"), "/failure-patterns?week=2026-03-15"; got != want {
+		t.Fatalf("unexpected failure-pattern href: got=%q want=%q", got, want)
 	}
 }
 
@@ -50,7 +50,7 @@ func TestHandleLegacyGlobalRedirectsToTriage(t *testing.T) {
 	if got, want := recorder.Code, http.StatusMovedPermanently; got != want {
 		t.Fatalf("unexpected status code: got=%d want=%d", got, want)
 	}
-	if got, want := recorder.Header().Get("Location"), "/triage?week=2026-03-15"; got != want {
+	if got, want := recorder.Header().Get("Location"), "/failure-patterns?week=2026-03-15"; got != want {
 		t.Fatalf("unexpected redirect target: got=%q want=%q", got, want)
 	}
 }

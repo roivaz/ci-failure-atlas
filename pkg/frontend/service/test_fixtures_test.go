@@ -81,7 +81,7 @@ type storeWithClose = storecontracts.Store
 
 func currentMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
 				SchemaVersion:                semanticcontracts.SchemaVersionV1,
 				Environment:                  "dev",
@@ -127,7 +127,7 @@ func currentMaterializedWeek() storecontracts.MaterializedWeek {
 
 func previousMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
-		GlobalClusters: []semanticcontracts.GlobalClusterRecord{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
 				SchemaVersion:                semanticcontracts.SchemaVersionV1,
 				Environment:                  "dev",

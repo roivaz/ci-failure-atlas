@@ -13,26 +13,25 @@
 - `pkg/cli`: command wiring and shared option binding
 - `pkg/run`, `pkg/controllers`, `pkg/source`: continuous ingestion runtime and source clients
 - `pkg/semantic/...`: phase1/2/3 engines, materialization workflow, history/query helpers
-- `pkg/frontend/...`: HTTP server, API handlers, and app service layer
-- `pkg/report/...`: HTML/report and static-site rendering
+- `pkg/frontend/...`: HTTP server, readmodel helpers, shared UI, and the report/failure-patterns/run-log/review surface packages
 - `pkg/store/contracts`, `pkg/store/postgres`: store abstraction, PostgreSQL runtime, migrations, init/bootstrap
 - `deploy/`: standalone Helm chart for Postgres, app, controllers, and cronjobs
 - `Dockerfile`: container image build
 - `infra/azure/`: Azure static-site storage infrastructure
-- `.cursor/skills/`: project-local skills for review/triage workflows
+- `.cursor/skills/`: project-local skills for review/failure-pattern workflows
 
 ## Invariants
 
 - Semantic weeks are Sunday-starting UTC weeks keyed by `YYYY-MM-DD`.
 - Materialization replaces a full stored semantic week; partial per-environment semantic partitions are not supported.
 - `cfa app export-site` reads existing PostgreSQL data only; it does not run semantic materialization.
-- User-facing docs say "triage", but some internal files and symbols still use older `global` names.
+- User-facing docs say "failure patterns" and "run log", but some internal files and symbols still use older phase-oriented `global` names.
 
 ## Validation
 
 - Default repo validation: `make check`
 - Semantic/materialization changes: `go test ./pkg/semantic/...`
-- App/report changes: `go test ./pkg/frontend/... ./pkg/report/...`
+- App/report changes: `go test ./pkg/frontend/...`
 - Store or migration changes: `go test ./pkg/store/postgres/...`
 - Useful smoke commands: `make app`, `make semantic-materialize`, `make run-controllers`
 

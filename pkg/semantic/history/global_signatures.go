@@ -14,33 +14,33 @@ import (
 const defaultLookbackWeeks = 4
 
 type BuildOptions struct {
-	CurrentWeek                  string
-	GlobalSignatureLookbackWeeks int
-	ListWeeks                    func(context.Context) ([]string, error)
-	OpenStore                    func(context.Context, string) (storecontracts.Store, error)
+	CurrentWeek                        string
+	FailurePatternHistoryLookbackWeeks int
+	ListWeeks                          func(context.Context) ([]string, error)
+	OpenStore                          func(context.Context, string) (storecontracts.Store, error)
 }
 
-type SignatureKey struct {
+type FailurePatternKey struct {
 	Environment string
 	Phrase      string
 	SearchQuery string
 }
 
-type SignaturePresence struct {
+type FailurePatternPresence struct {
 	PriorWeeksPresent int
 	PriorWeekStarts   []string
 	PriorJobsAffected int
 	PriorLastSeenAt   time.Time
 }
 
-type GlobalSignatureResolver interface {
-	PresenceFor(SignatureKey) SignaturePresence
-	PresenceForPhase3Cluster(environment string, phase3ClusterID string) SignaturePresence
+type FailurePatternHistoryResolver interface {
+	PresenceFor(FailurePatternKey) FailurePatternPresence
+	PresenceForPhase3Cluster(environment string, phase3ClusterID string) FailurePatternPresence
 }
 
 type globalSignatureResolver struct {
-	byKey              map[string]SignaturePresence
-	byPhase3ClusterKey map[string]SignaturePresence
+	byKey              map[string]FailurePatternPresence
+	byPhase3ClusterKey map[string]FailurePatternPresence
 }
 
 type signaturePresenceAggregate struct {
@@ -49,46 +49,46 @@ type signaturePresenceAggregate struct {
 	lastSeen time.Time
 }
 
-func (r *globalSignatureResolver) PresenceFor(key SignatureKey) SignaturePresence {
+func (r *globalSignatureResolver) PresenceFor(key FailurePatternKey) FailurePatternPresence {
 	if r == nil || len(r.byKey) == 0 {
-		return SignaturePresence{}
+		return FailurePatternPresence{}
 	}
 	presence, ok := r.byKey[signatureHistoryKey(key.Environment, key.Phrase, key.SearchQuery)]
 	if !ok {
-		return SignaturePresence{}
+		return FailurePatternPresence{}
 	}
 	return presence
 }
 
-func (r *globalSignatureResolver) PresenceForPhase3Cluster(environment string, phase3ClusterID string) SignaturePresence {
+func (r *globalSignatureResolver) PresenceForPhase3Cluster(environment string, phase3ClusterID string) FailurePatternPresence {
 	if r == nil || len(r.byPhase3ClusterKey) == 0 {
-		return SignaturePresence{}
+		return FailurePatternPresence{}
 	}
 	presence, ok := r.byPhase3ClusterKey[phase3ClusterHistoryKey(environment, phase3ClusterID)]
 	if !ok {
-		return SignaturePresence{}
+		return FailurePatternPresence{}
 	}
 	return presence
 }
 
-func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (GlobalSignatureResolver, error) {
+func BuildFailurePatternHistoryResolver(ctx context.Context, opts BuildOptions) (FailurePatternHistoryResolver, error) {
 	currentWeekLabel := strings.TrimSpace(opts.CurrentWeek)
 	if currentWeekLabel == "" {
 		return &globalSignatureResolver{
-			byKey:              map[string]SignaturePresence{},
-			byPhase3ClusterKey: map[string]SignaturePresence{},
+			byKey:              map[string]FailurePatternPresence{},
+			byPhase3ClusterKey: map[string]FailurePatternPresence{},
 		}, nil
 	}
 
 	currentWeek, ok := parseWeekStart(currentWeekLabel)
 	if !ok {
 		return &globalSignatureResolver{
-			byKey:              map[string]SignaturePresence{},
-			byPhase3ClusterKey: map[string]SignaturePresence{},
+			byKey:              map[string]FailurePatternPresence{},
+			byPhase3ClusterKey: map[string]FailurePatternPresence{},
 		}, nil
 	}
 
-	lookbackWeeks := opts.GlobalSignatureLookbackWeeks
+	lookbackWeeks := opts.FailurePatternHistoryLookbackWeeks
 	if lookbackWeeks <= 0 {
 		lookbackWeeks = defaultLookbackWeeks
 	}
@@ -97,8 +97,8 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 	semanticWeeksLister := opts.ListWeeks
 	if semanticWeeksLister == nil {
 		return &globalSignatureResolver{
-			byKey:              map[string]SignaturePresence{},
-			byPhase3ClusterKey: map[string]SignaturePresence{},
+			byKey:              map[string]FailurePatternPresence{},
+			byPhase3ClusterKey: map[string]FailurePatternPresence{},
 		}, nil
 	}
 	weekNames, err := semanticWeeksLister(ctx)
@@ -109,8 +109,8 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 	storeOpener := opts.OpenStore
 	if storeOpener == nil {
 		return &globalSignatureResolver{
-			byKey:              map[string]SignaturePresence{},
-			byPhase3ClusterKey: map[string]SignaturePresence{},
+			byKey:              map[string]FailurePatternPresence{},
+			byPhase3ClusterKey: map[string]FailurePatternPresence{},
 		}, nil
 	}
 
@@ -136,44 +136,44 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 		if err != nil {
 			return nil, fmt.Errorf("open semantic store for week %q: %w", weekName, err)
 		}
-		rows, err := weekStore.ListGlobalClusters(ctx)
+		rows, err := weekStore.ListFailurePatterns(ctx)
 		if err != nil {
 			_ = weekStore.Close()
-			return nil, fmt.Errorf("list global clusters for week %q: %w", weekName, err)
+			return nil, fmt.Errorf("list failure patterns for week %q: %w", weekName, err)
 		}
 		phase3Links, err := weekStore.ListPhase3Links(ctx)
 		_ = weekStore.Close()
 		if err != nil {
 			return nil, fmt.Errorf("list phase3 links for week %q: %w", weekName, err)
 		}
-		collectGlobalSignaturePresence(rows, weekName, signatureAggregates)
+		collectGlobalFailurePatternPresence(rows, weekName, signatureAggregates)
 		if err := collectPhase3ClusterPresence(rows, phase3Links, weekName, phase3ClusterAggregates); err != nil {
 			return nil, fmt.Errorf("collect phase3-cluster presence for week %q: %w", weekName, err)
 		}
 	}
 
-	byKey := map[string]SignaturePresence{}
+	byKey := map[string]FailurePatternPresence{}
 	for key, item := range signatureAggregates {
 		weeks := make([]string, 0, len(item.weeks))
 		for week := range item.weeks {
 			weeks = append(weeks, week)
 		}
 		sort.Strings(weeks)
-		byKey[key] = SignaturePresence{
+		byKey[key] = FailurePatternPresence{
 			PriorWeeksPresent: len(weeks),
 			PriorWeekStarts:   weeks,
 			PriorJobsAffected: len(item.jobs),
 			PriorLastSeenAt:   item.lastSeen,
 		}
 	}
-	byPhase3ClusterKey := map[string]SignaturePresence{}
+	byPhase3ClusterKey := map[string]FailurePatternPresence{}
 	for key, item := range phase3ClusterAggregates {
 		weeks := make([]string, 0, len(item.weeks))
 		for week := range item.weeks {
 			weeks = append(weeks, week)
 		}
 		sort.Strings(weeks)
-		byPhase3ClusterKey[key] = SignaturePresence{
+		byPhase3ClusterKey[key] = FailurePatternPresence{
 			PriorWeeksPresent: len(weeks),
 			PriorWeekStarts:   weeks,
 			PriorJobsAffected: len(item.jobs),
@@ -186,7 +186,7 @@ func BuildGlobalSignatureResolver(ctx context.Context, opts BuildOptions) (Globa
 	}, nil
 }
 
-func collectGlobalSignaturePresence(rows []semanticcontracts.GlobalClusterRecord, weekName string, aggregates map[string]*signaturePresenceAggregate) {
+func collectGlobalFailurePatternPresence(rows []semanticcontracts.FailurePatternRecord, weekName string, aggregates map[string]*signaturePresenceAggregate) {
 	for _, row := range rows {
 		key := signatureHistoryKey(row.Environment, row.CanonicalEvidencePhrase, row.SearchQueryPhrase)
 		if key == "" {
@@ -221,7 +221,7 @@ func collectGlobalSignaturePresence(rows []semanticcontracts.GlobalClusterRecord
 }
 
 func collectPhase3ClusterPresence(
-	rows []semanticcontracts.GlobalClusterRecord,
+	rows []semanticcontracts.FailurePatternRecord,
 	phase3Links []semanticcontracts.Phase3LinkRecord,
 	weekName string,
 	aggregates map[string]*signaturePresenceAggregate,
@@ -265,7 +265,7 @@ func collectPhase3ClusterPresence(
 		sort.Strings(phase3ClusterIDs)
 		if len(phase3ClusterIDs) > 1 {
 			return fmt.Errorf(
-				"phase3 conflict: global cluster %s resolves to multiple phase3 cluster IDs (%s)",
+				"phase3 conflict: failure pattern %s resolves to multiple phase3 cluster IDs (%s)",
 				strings.TrimSpace(row.Phase2ClusterID),
 				strings.Join(phase3ClusterIDs, ", "),
 			)

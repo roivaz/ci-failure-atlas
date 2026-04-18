@@ -11,10 +11,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 	"ci-failure-atlas/pkg/store/postgres/initdb"
 	"ci-failure-atlas/pkg/store/postgres/migrations"
-	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	"ci-failure-atlas/pkg/testsupport/pgtest"
 )
 
@@ -300,7 +300,7 @@ func TestRunPhase1FailsWhenRunMetadataMissing(t *testing.T) {
 	}
 }
 
-func TestRunPhase2BuildsGlobalClustersAndMergedReview(t *testing.T) {
+func TestRunPhase2BuildsFailurePatternsAndMergedReview(t *testing.T) {
 	t.Parallel()
 
 	phase2Result, err := RunPhase2(Phase1Result{
@@ -360,8 +360,8 @@ func TestRunPhase2BuildsGlobalClustersAndMergedReview(t *testing.T) {
 		t.Fatalf("run phase2: %v", err)
 	}
 
-	if len(phase2Result.GlobalClusters) != 2 {
-		t.Fatalf("unexpected global cluster size: got=%d want=2", len(phase2Result.GlobalClusters))
+	if len(phase2Result.FailurePatterns) != 2 {
+		t.Fatalf("unexpected failure-pattern count: got=%d want=2", len(phase2Result.FailurePatterns))
 	}
 	if len(phase2Result.ReviewQueue) != 2 {
 		t.Fatalf("unexpected review queue size: got=%d want=2", len(phase2Result.ReviewQueue))

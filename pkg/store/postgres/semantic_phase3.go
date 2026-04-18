@@ -14,7 +14,7 @@ import (
 )
 
 func (s *Store) replaceMaterializedWeekImpl(ctx context.Context, week storecontracts.MaterializedWeek) error {
-	globalRows, err := normalizeGlobalClusterRows(week.GlobalClusters)
+	globalRows, err := normalizeGlobalClusterRows(week.FailurePatterns)
 	if err != nil {
 		return err
 	}
@@ -37,9 +37,9 @@ WHERE semantic_subdir = $1
 DELETE FROM cfa_sem_global_clusters
 WHERE semantic_subdir = $1
 `, currentWeek); err != nil {
-			return fmt.Errorf("delete global clusters for week %q: %w", currentWeek, err)
+			return fmt.Errorf("delete failure patterns for week %q: %w", currentWeek, err)
 		}
-		if err := insertGlobalClustersTx(ctx, tx, currentWeek, globalRows); err != nil {
+		if err := insertFailurePatternsTx(ctx, tx, currentWeek, globalRows); err != nil {
 			return err
 		}
 		if err := insertReviewQueueTx(ctx, tx, currentWeek, reviewRows); err != nil {
@@ -49,7 +49,7 @@ WHERE semantic_subdir = $1
 	})
 }
 
-func (s *Store) listGlobalClustersImpl(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error) {
+func (s *Store) listFailurePatternsImpl(ctx context.Context) ([]semanticcontracts.FailurePatternRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT payload
 FROM cfa_sem_global_clusters
@@ -57,38 +57,38 @@ WHERE semantic_subdir = $1
 ORDER BY support_count DESC, contributing_tests_count DESC, environment, phase2_cluster_id
 `, weekScope(s.week))
 	if err != nil {
-		return nil, fmt.Errorf("query global clusters: %w", err)
+		return nil, fmt.Errorf("query failure patterns: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]semanticcontracts.GlobalClusterRecord, 0)
+	out := make([]semanticcontracts.FailurePatternRecord, 0)
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			return nil, fmt.Errorf("scan global cluster payload: %w", err)
+			return nil, fmt.Errorf("scan failure-pattern payload: %w", err)
 		}
-		var row semanticcontracts.GlobalClusterRecord
+		var row semanticcontracts.FailurePatternRecord
 		if err := json.Unmarshal(payload, &row); err != nil {
-			return nil, fmt.Errorf("decode global cluster payload: %w", err)
+			return nil, fmt.Errorf("decode failure-pattern payload: %w", err)
 		}
-		normalized := normalizeGlobalClusterRecord(row)
+		normalized := normalizeFailurePatternRecord(row)
 		if globalClusterKey(normalized) == "" {
 			continue
 		}
 		out = append(out, normalized)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate global clusters: %w", err)
+		return nil, fmt.Errorf("iterate failure patterns: %w", err)
 	}
 	return out, nil
 }
 
-func normalizeGlobalClusterRows(rows []semanticcontracts.GlobalClusterRecord) ([]semanticcontracts.GlobalClusterRecord, error) {
-	normalizedRows := make([]semanticcontracts.GlobalClusterRecord, 0, len(rows))
+func normalizeGlobalClusterRows(rows []semanticcontracts.FailurePatternRecord) ([]semanticcontracts.FailurePatternRecord, error) {
+	normalizedRows := make([]semanticcontracts.FailurePatternRecord, 0, len(rows))
 	for _, row := range rows {
-		normalized := normalizeGlobalClusterRecord(row)
+		normalized := normalizeFailurePatternRecord(row)
 		if globalClusterKey(normalized) == "" {
-			return nil, fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
+			return nil, fmt.Errorf("failure-pattern record missing environment and/or phase2_cluster_id")
 		}
 		normalizedRows = append(normalizedRows, normalized)
 	}
@@ -107,7 +107,7 @@ func normalizeReviewQueueRows(rows []semanticcontracts.ReviewItemRecord) ([]sema
 	return normalizedRows, nil
 }
 
-func insertGlobalClustersTx(ctx context.Context, tx pgx.Tx, currentWeek string, rows []semanticcontracts.GlobalClusterRecord) error {
+func insertFailurePatternsTx(ctx context.Context, tx pgx.Tx, currentWeek string, rows []semanticcontracts.FailurePatternRecord) error {
 	for _, row := range rows {
 		payload, err := marshalPayload(row)
 		if err != nil {
@@ -126,7 +126,7 @@ DO UPDATE SET
   payload = EXCLUDED.payload
 `, currentWeek, row.Environment, row.Phase2ClusterID, row.SupportCount, row.ContributingTestsCount, payload)
 		if err != nil {
-			return fmt.Errorf("upsert global cluster (%s,%s): %w", row.Environment, row.Phase2ClusterID, err)
+			return fmt.Errorf("upsert failure pattern (%s,%s): %w", row.Environment, row.Phase2ClusterID, err)
 		}
 	}
 	return nil
@@ -194,11 +194,11 @@ ORDER BY environment, phase, reason, review_item_id
 func (s *Store) getSemanticWeekSummaryImpl(ctx context.Context) (storecontracts.SemanticWeekSummary, error) {
 	currentWeek := weekScope(s.week)
 	summary := storecontracts.SemanticWeekSummary{
-		TestClusterCountsByEnv:   map[string]int{},
-		ReviewQueueCountsByEnv:   map[string]int{},
-		GlobalClusterCountsByEnv: map[string]int{},
-		GlobalSupportTotalsByEnv: map[string]int{},
-		AvailableEnvironments:    []string{},
+		TestClusterCountsByEnv:    map[string]int{},
+		ReviewQueueCountsByEnv:    map[string]int{},
+		FailurePatternCountsByEnv: map[string]int{},
+		OccurrenceTotalsByEnv:     map[string]int{},
+		AvailableEnvironments:     []string{},
 	}
 
 	globalRows, err := s.pool.Query(ctx, `
@@ -219,8 +219,8 @@ ORDER BY environment
 			return storecontracts.SemanticWeekSummary{}, fmt.Errorf("scan semantic global summary row: %w", err)
 		}
 		normalizedEnvironment := normalizeSemanticEnvironment(environment)
-		summary.GlobalClusterCountsByEnv[normalizedEnvironment] = int(clusterCount)
-		summary.GlobalSupportTotalsByEnv[normalizedEnvironment] = int(supportTotal)
+		summary.FailurePatternCountsByEnv[normalizedEnvironment] = int(clusterCount)
+		summary.OccurrenceTotalsByEnv[normalizedEnvironment] = int(supportTotal)
 		summary.TestClusterCountsByEnv[normalizedEnvironment] = 0
 	}
 	if err := globalRows.Err(); err != nil {
@@ -294,7 +294,7 @@ ORDER BY environment
 	reviewRows.Close()
 
 	availableEnvironmentSet := map[string]struct{}{}
-	for environment := range summary.GlobalClusterCountsByEnv {
+	for environment := range summary.FailurePatternCountsByEnv {
 		availableEnvironmentSet[environment] = struct{}{}
 	}
 	for environment := range summary.ReviewQueueCountsByEnv {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"ci-failure-atlas/pkg/report/triagehtml"
+	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
@@ -41,7 +41,7 @@ type WeeklyReportBuildOptions struct {
 	TargetRate          float64
 	Week                string
 	HistoryHorizonWeeks int
-	HistoryResolver     semhistory.GlobalSignatureResolver
+	HistoryResolver     semhistory.FailurePatternHistoryResolver
 }
 
 type WeeklyCounts struct {
@@ -85,7 +85,7 @@ type WeeklyEnvReport struct {
 type envReport = WeeklyEnvReport
 
 type WeeklySemanticEnvSummary struct {
-	TriageClusters int
+	FailurePatternClusters int
 	TestClusters   int
 	ReviewItems    int
 	TopPhrase      string
@@ -151,7 +151,7 @@ type WeeklyReportData struct {
 	PreviousSemantic      WeeklySemanticSnapshot
 	TestsBelowTargetByEnv map[string][]WeeklyBelowTargetTest
 	TopSignaturesByEnv    map[string][]WeeklyTopSignature
-	HistoryResolver       semhistory.GlobalSignatureResolver
+	HistoryResolver       semhistory.FailurePatternHistoryResolver
 }
 
 func BuildWeeklyReportData(
@@ -228,9 +228,9 @@ func BuildWeeklyReportData(
 		if lookbackWeeks <= 0 {
 			lookbackWeeks = DefaultHistoryWeeks
 		}
-		historyResolver, err = semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-			CurrentWeek:                  strings.TrimSpace(opts.Week),
-			GlobalSignatureLookbackWeeks: lookbackWeeks,
+		historyResolver, err = semhistory.BuildFailurePatternHistoryResolver(ctx, semhistory.BuildOptions{
+			CurrentWeek:                        strings.TrimSpace(opts.Week),
+			FailurePatternHistoryLookbackWeeks: lookbackWeeks,
 		})
 		if err != nil {
 			return WeeklyReportData{}, fmt.Errorf("build signature history resolver: %w", err)
@@ -337,20 +337,20 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		PhraseFullErrorsByEnv:            map[string]map[string][]string{},
 	}
 
-	sourceClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	sourceClusters := append([]semanticcontracts.FailurePatternRecord(nil), weekData.SourceFailurePatterns...)
 	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
 	linkedChildrenByMergedClusterKey, err := weeklyLinkedChildrenByMergedClusterKey(sourceClusters, phase3Links)
 	if err != nil {
 		return out, err
 	}
-	materializedClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
+	materializedClusters := append([]semanticcontracts.FailurePatternRecord(nil), weekData.FailurePatterns...)
 	for _, row := range materializedClusters {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
 			continue
 		}
 		summary := out.ByEnvironment[environment]
-		summary.TriageClusters++
+		summary.FailurePatternClusters++
 
 		phrase := strings.TrimSpace(row.CanonicalEvidencePhrase)
 		if phrase == "" {
@@ -387,7 +387,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		}
 		out.PhraseReferencesByEnv[environment][phrase] = append(
 			out.PhraseReferencesByEnv[environment][phrase],
-			toTriageRunReferences(row.References)...,
+			toFailurePatternRunReferences(row.References)...,
 		)
 		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
 			out.PhraseReferencesByEnv[environment][phrase] = append(
@@ -402,9 +402,9 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		if _, ok := out.PhraseContributingTestsByEnv[environment]; !ok {
 			out.PhraseContributingTestsByEnv[environment] = map[string][]triagehtml.ContributingTest{}
 		}
-		out.PhraseContributingTestsByEnv[environment][phrase] = mergeTriageContributingTests(
+		out.PhraseContributingTestsByEnv[environment][phrase] = mergeFailurePatternContributingTests(
 			out.PhraseContributingTestsByEnv[environment][phrase],
-			toTriageContributingTests(row.ContributingTests),
+			toFailurePatternContributingTests(row.ContributingTests),
 		)
 
 		if _, ok := out.PhraseRepresentativeSupportByEnv[environment]; !ok {
@@ -456,9 +456,9 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		linkedChildren := []topSignature(nil)
 		linkedChildrenRaw := linkedChildrenByMergedClusterKey[weeklyClusterGroupKey(environment, row.Phase2ClusterID)]
 		if len(linkedChildrenRaw) > 0 {
-			linkedChildren = topSignaturesFromTriageClusters(linkedChildrenRaw)
+			linkedChildren = topSignaturesFromFailurePatternClusters(linkedChildrenRaw)
 		}
-		rowReferences := toTriageRunReferences(row.References)
+		rowReferences := toFailurePatternRunReferences(row.References)
 		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
 			rowReferences = append(rowReferences, triagehtml.RunReference{
 				RunURL:      sourceRunURL,
@@ -474,7 +474,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 			PostGoodCount:     postGood,
 			QualityScore:      triagehtml.QualityScore(qualityCodes),
 			QualityNoteLabels: qualityLabels,
-			ContributingTests: triagehtml.OrderedContributingTests(toTriageContributingTests(row.ContributingTests)),
+			ContributingTests: triagehtml.OrderedContributingTests(toFailurePatternContributingTests(row.ContributingTests)),
 			References:        rowReferences,
 			LinkedChildren:    linkedChildren,
 		})
@@ -742,11 +742,11 @@ func rankTopSignaturesByEnvironmentFromClusters(snapshot semanticSnapshot, limit
 				continue
 			}
 			references := append([]triagehtml.RunReference(nil), source.References...)
-			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.SignatureRow{
-				Environment:   environment,
-				PostGoodCount: source.PostGoodCount,
-				AlsoSeenIn:    otherEnvironments,
-				References:    references,
+			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.FailurePatternRow{
+				Environment:        environment,
+				AfterLastPushCount: source.PostGoodCount,
+				AlsoIn:             otherEnvironments,
+				AffectedRuns:       references,
 			})
 			linkedChildren := make([]topSignature, 0, len(source.LinkedChildren))
 			for _, child := range source.LinkedChildren {
@@ -845,11 +845,11 @@ func rankTopSignaturesByEnvironmentFromPhrases(snapshot semanticSnapshot, limit 
 				qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
 			}
 			references := append([]triagehtml.RunReference(nil), snapshot.PhraseReferencesByEnv[environment][phrase]...)
-			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.SignatureRow{
-				Environment:   environment,
-				PostGoodCount: postGoodByPhrase[phrase],
-				AlsoSeenIn:    otherEnvironments,
-				References:    references,
+			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.FailurePatternRow{
+				Environment:        environment,
+				AfterLastPushCount: postGoodByPhrase[phrase],
+				AlsoIn:             otherEnvironments,
+				AffectedRuns:       references,
 			})
 			rows = append(rows, topSignature{
 				Environment:       environment,
@@ -892,7 +892,7 @@ func sortTopSignatures(rows []topSignature) {
 	})
 }
 
-func topSignaturesFromTriageClusters(rows []semanticcontracts.GlobalClusterRecord) []topSignature {
+func topSignaturesFromFailurePatternClusters(rows []semanticcontracts.FailurePatternRecord) []topSignature {
 	out := make([]topSignature, 0, len(rows))
 	for _, row := range rows {
 		environment := normalizeReportEnvironment(row.Environment)
@@ -916,7 +916,7 @@ func topSignaturesFromTriageClusters(rows []semanticcontracts.GlobalClusterRecor
 		for _, code := range qualityCodes {
 			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
 		}
-		references := toTriageRunReferences(row.References)
+		references := toFailurePatternRunReferences(row.References)
 		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
 			references = append(references, triagehtml.RunReference{
 				RunURL:      sourceRunURL,
@@ -932,7 +932,7 @@ func topSignaturesFromTriageClusters(rows []semanticcontracts.GlobalClusterRecor
 			PostGoodCount:     postGood,
 			QualityScore:      triagehtml.QualityScore(qualityCodes),
 			QualityNoteLabels: qualityLabels,
-			ContributingTests: triagehtml.OrderedContributingTests(toTriageContributingTests(row.ContributingTests)),
+			ContributingTests: triagehtml.OrderedContributingTests(toFailurePatternContributingTests(row.ContributingTests)),
 			References:        references,
 		})
 	}
@@ -940,11 +940,11 @@ func topSignaturesFromTriageClusters(rows []semanticcontracts.GlobalClusterRecor
 }
 
 func weeklyLinkedChildrenByMergedClusterKey(
-	clusters []semanticcontracts.GlobalClusterRecord,
+	clusters []semanticcontracts.FailurePatternRecord,
 	phase3Links []semanticcontracts.Phase3LinkRecord,
-) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
+) (map[string][]semanticcontracts.FailurePatternRecord, error) {
 	if len(clusters) == 0 || len(phase3Links) == 0 {
-		return map[string][]semanticcontracts.GlobalClusterRecord{}, nil
+		return map[string][]semanticcontracts.FailurePatternRecord{}, nil
 	}
 	phase3ClusterByAnchor := make(map[string]string, len(phase3Links))
 	for _, link := range phase3Links {
@@ -956,7 +956,7 @@ func weeklyLinkedChildrenByMergedClusterKey(
 		phase3ClusterByAnchor[anchor] = clusterID
 	}
 
-	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
+	grouped := map[string][]semanticcontracts.FailurePatternRecord{}
 	for _, cluster := range clusters {
 		clusterIDs := weeklyPhase3ClusterIDsForCluster(cluster, phase3ClusterByAnchor)
 		if len(clusterIDs) == 0 {
@@ -985,7 +985,7 @@ func weeklyLinkedChildrenByMergedClusterKey(
 }
 
 func weeklyPhase3ClusterIDsForCluster(
-	cluster semanticcontracts.GlobalClusterRecord,
+	cluster semanticcontracts.FailurePatternRecord,
 	phase3ClusterByAnchor map[string]string,
 ) []string {
 	seen := map[string]struct{}{}
@@ -1022,7 +1022,7 @@ func weeklyClusterGroupKey(environment string, clusterID string) string {
 	return env + "|" + cluster
 }
 
-func toTriageRunReferences(rows []semanticcontracts.ReferenceRecord) []triagehtml.RunReference {
+func toFailurePatternRunReferences(rows []semanticcontracts.ReferenceRecord) []triagehtml.RunReference {
 	out := make([]triagehtml.RunReference, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, triagehtml.RunReference{
@@ -1035,20 +1035,20 @@ func toTriageRunReferences(rows []semanticcontracts.ReferenceRecord) []triagehtm
 	return out
 }
 
-func toTriageContributingTests(rows []semanticcontracts.ContributingTestRecord) []triagehtml.ContributingTest {
+func toFailurePatternContributingTests(rows []semanticcontracts.ContributingTestRecord) []triagehtml.ContributingTest {
 	out := make([]triagehtml.ContributingTest, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, triagehtml.ContributingTest{
-			Lane:         strings.TrimSpace(row.Lane),
-			JobName:      strings.TrimSpace(row.JobName),
-			TestName:     strings.TrimSpace(row.TestName),
-			SupportCount: row.SupportCount,
+			FailedAt:    strings.TrimSpace(row.Lane),
+			JobName:     strings.TrimSpace(row.JobName),
+			TestName:    strings.TrimSpace(row.TestName),
+			Occurrences: row.SupportCount,
 		})
 	}
 	return out
 }
 
-func mergeTriageContributingTests(existing []triagehtml.ContributingTest, incoming []triagehtml.ContributingTest) []triagehtml.ContributingTest {
+func mergeFailurePatternContributingTests(existing []triagehtml.ContributingTest, incoming []triagehtml.ContributingTest) []triagehtml.ContributingTest {
 	if len(incoming) == 0 {
 		return existing
 	}
@@ -1060,14 +1060,14 @@ func mergeTriageContributingTests(existing []triagehtml.ContributingTest, incomi
 	merged := make(map[mergeKey]triagehtml.ContributingTest, len(existing)+len(incoming))
 	for _, item := range existing {
 		merged[mergeKey{
-			lane: strings.TrimSpace(item.Lane),
+			lane: strings.TrimSpace(item.FailedAt),
 			job:  strings.TrimSpace(item.JobName),
 			test: strings.TrimSpace(item.TestName),
 		}] = item
 	}
 	for _, item := range incoming {
 		key := mergeKey{
-			lane: strings.TrimSpace(item.Lane),
+			lane: strings.TrimSpace(item.FailedAt),
 			job:  strings.TrimSpace(item.JobName),
 			test: strings.TrimSpace(item.TestName),
 		}
@@ -1076,7 +1076,7 @@ func mergeTriageContributingTests(existing []triagehtml.ContributingTest, incomi
 			merged[key] = item
 			continue
 		}
-		existingItem.SupportCount += item.SupportCount
+		existingItem.Occurrences += item.Occurrences
 		merged[key] = existingItem
 	}
 	out := make([]triagehtml.ContributingTest, 0, len(merged))

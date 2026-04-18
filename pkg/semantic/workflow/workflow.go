@@ -43,8 +43,8 @@ type Phase1Result struct {
 }
 
 type Phase2Result struct {
-	GlobalClusters []semanticcontracts.GlobalClusterRecord
-	ReviewQueue    []semanticcontracts.ReviewItemRecord
+	FailurePatterns []semanticcontracts.FailurePatternRecord
+	ReviewQueue     []semanticcontracts.ReviewItemRecord
 }
 
 type Result struct {
@@ -137,8 +137,8 @@ func RunPhase2(phase1Result Phase1Result) (Phase2Result, error) {
 		return Phase2Result{}, fmt.Errorf("merge phase2 clusters: %w", err)
 	}
 	return Phase2Result{
-		GlobalClusters: globalClusters,
-		ReviewQueue:    mergedReviewQueue,
+		FailurePatterns: globalClusters,
+		ReviewQueue:     mergedReviewQueue,
 	}, nil
 }
 
@@ -175,8 +175,8 @@ func MaterializeWeek(ctx context.Context, store storecontracts.Store, weekStart 
 		return Result{}, err
 	}
 	if err := store.ReplaceMaterializedWeek(ctx, storecontracts.MaterializedWeek{
-		GlobalClusters: result.Phase2.GlobalClusters,
-		ReviewQueue:    result.Phase2.ReviewQueue,
+		FailurePatterns: result.Phase2.FailurePatterns,
+		ReviewQueue:     result.Phase2.ReviewQueue,
 	}); err != nil {
 		return Result{}, fmt.Errorf("replace materialized week: %w", err)
 	}

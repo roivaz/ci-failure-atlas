@@ -1,17 +1,17 @@
-package frontend
+package runlog
 
 import (
 	"strings"
 	"testing"
 
-	frontservice "ci-failure-atlas/pkg/frontend/service"
+	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
 func TestDayRunHistoryFailureDetailsHTMLSkipsNonArtifactBackedFailures(t *testing.T) {
 	t.Parallel()
 
-	rendered := dayRunHistoryFailureDetailsHTML(frontservice.JobHistoryRunRow{
+	rendered := runLogDayFailureDetailsHTML(frontservice.JobHistoryRunRow{
 		FailureRows: []frontservice.JobHistoryFailureRow{
 			{
 				FailureText:       "job failed and CFA synthesized a non-artifact-backed row",
@@ -27,7 +27,7 @@ func TestDayRunHistoryFailureDetailsHTMLSkipsNonArtifactBackedFailures(t *testin
 func TestDayRunHistoryFailureDetailsHTMLRendersArtifactBackedFailures(t *testing.T) {
 	t.Parallel()
 
-	rendered := dayRunHistoryFailureDetailsHTML(frontservice.JobHistoryRunRow{
+	rendered := runLogDayFailureDetailsHTML(frontservice.JobHistoryRunRow{
 		FailureRows: []frontservice.JobHistoryFailureRow{
 			{
 				FailureText:       "real junit-backed failure text",
@@ -43,7 +43,7 @@ func TestDayRunHistoryFailureDetailsHTMLRendersArtifactBackedFailures(t *testing
 func TestDayRunHistoryPRHTMLShowsBadPRFlagForLikelyBadPR(t *testing.T) {
 	t.Parallel()
 
-	rendered := dayRunHistoryPRHTML(frontservice.JobHistoryRunRow{
+	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
 		Run: storecontracts.RunRecord{
 			Environment: "dev",
 			RunURL:      "https://prow.example.com/view/run-1",
@@ -69,7 +69,7 @@ func TestDayRunHistoryPRHTMLShowsBadPRFlagForLikelyBadPR(t *testing.T) {
 func TestDayRunHistoryPRHTMLDoesNotUseRunLocalBadPRApproximation(t *testing.T) {
 	t.Parallel()
 
-	rendered := dayRunHistoryPRHTML(frontservice.JobHistoryRunRow{
+	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
 		Run: storecontracts.RunRecord{
 			Environment: "dev",
 			RunURL:      "https://prow.example.com/view/run-1b",
@@ -90,7 +90,7 @@ func TestDayRunHistoryPRHTMLDoesNotUseRunLocalBadPRApproximation(t *testing.T) {
 func TestDayRunHistoryPRHTMLUsesMergedStateWhenMergedPR(t *testing.T) {
 	t.Parallel()
 
-	rendered := dayRunHistoryPRHTML(frontservice.JobHistoryRunRow{
+	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
 		Run: storecontracts.RunRecord{
 			Environment:    "dev",
 			RunURL:         "https://prow.example.com/view/run-2",
@@ -111,7 +111,7 @@ func TestDayRunHistoryPRHTMLUsesMergedStateWhenMergedPR(t *testing.T) {
 func TestDayRunHistoryPRHTMLUsesClosedStateWhenNotMerged(t *testing.T) {
 	t.Parallel()
 
-	rendered := dayRunHistoryPRHTML(frontservice.JobHistoryRunRow{
+	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
 		Run: storecontracts.RunRecord{
 			Environment:    "int",
 			RunURL:         "https://prow.example.com/view/run-3",
@@ -129,7 +129,7 @@ func TestDayRunHistoryPRHTMLUsesClosedStateWhenNotMerged(t *testing.T) {
 func TestDayRunHistoryPRHTMLDoesNotShowBadPRFlagForPassedRun(t *testing.T) {
 	t.Parallel()
 
-	rendered := dayRunHistoryPRHTML(frontservice.JobHistoryRunRow{
+	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
 		Run: storecontracts.RunRecord{
 			Environment: "dev",
 			RunURL:      "https://prow.example.com/view/run-4",
@@ -151,7 +151,7 @@ func TestDayRunHistoryPRHTMLDoesNotShowBadPRFlagForPassedRun(t *testing.T) {
 func TestDayRunHistoryPRHTMLDoesNotShowBadPRFlagForUnmatchedFailure(t *testing.T) {
 	t.Parallel()
 
-	rendered := dayRunHistoryPRHTML(frontservice.JobHistoryRunRow{
+	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
 		Run: storecontracts.RunRecord{
 			Environment: "dev",
 			RunURL:      "https://prow.example.com/view/run-5",

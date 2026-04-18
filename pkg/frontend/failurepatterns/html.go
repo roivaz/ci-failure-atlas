@@ -1,4 +1,4 @@
-package frontend
+package failurepatterns
 
 import (
 	"fmt"
@@ -7,24 +7,24 @@ import (
 	"strings"
 	"time"
 
-	frontservice "ci-failure-atlas/pkg/frontend/service"
-	"ci-failure-atlas/pkg/report/triagehtml"
+	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
+	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	sourceoptions "ci-failure-atlas/pkg/source/options"
 )
 
 const (
-	windowedTriageLoadedRowsLimit    = 50
-	windowedTriageInitialVisibleRows = 25
+	failurePatternsLoadedRowsLimit    = 50
+	failurePatternsInitialVisibleRows = 25
 )
 
-type windowedTriagePageOptions struct {
+type PageOptions struct {
 	Chrome triagehtml.ReportChromeOptions
-	Query  frontservice.WindowedTriageQuery
+	Query  frontservice.FailurePatternsQuery
 }
 
-func buildWindowedTriageReportHTML(
-	data frontservice.WindowedTriageData,
-	options windowedTriagePageOptions,
+func RenderHTML(
+	data frontservice.FailurePatternsData,
+	options PageOptions,
 ) string {
 	totalRows := 0
 	totalMatchedFailures := 0
@@ -33,7 +33,7 @@ func buildWindowedTriageReportHTML(
 		totalMatchedFailures += environment.Summary.MatchedFailureCount
 	}
 
-	startDate, endDate, hasWindow := parseWindowedTriageDates(data.Meta.StartDate, data.Meta.EndDate)
+	startDate, endDate, hasWindow := parseFailurePatternsDates(data.Meta.StartDate, data.Meta.EndDate)
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n")
 	b.WriteString("<html lang=\"en\">\n")
@@ -86,25 +86,25 @@ func buildWindowedTriageReportHTML(
 			"  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
 			html.EscapeString(startDate.Format("2006-01-02")),
 			html.EscapeString(endDate.Format("2006-01-02")),
-			windowedTriageInclusiveDays(startDate, endDate),
+			failurePatternsInclusiveDays(startDate, endDate),
 		))
 	}
-	b.WriteString("  <p class=\"meta\">Runs affected, run impact, and seen-in are recomputed across the selected window. <span class=\"triage-header-help\" title=\"Flake signal and trend stay anchored to the most recent weekly data for each failure pattern, keeping the signal stable across longer date ranges.\">?</span></p>\n")
-	b.WriteString(windowedTriageControlsHTML(options.Query))
+	b.WriteString("  <p class=\"meta\">Runs affected, run impact, and seen-in are recomputed across the selected window. <span class=\"failure-patterns-header-help\" title=\"Flake signal and trend stay anchored to the most recent weekly data for each failure pattern, keeping the signal stable across longer date ranges.\">?</span></p>\n")
+	b.WriteString(failurePatternsControlsHTML(options.Query))
 	b.WriteString("  <div class=\"cards\">\n")
-	b.WriteString(windowedTriageCardHTML("Environments", fmt.Sprintf("%d", len(data.Environments))))
-	b.WriteString(windowedTriageCardHTML("Failure patterns", fmt.Sprintf("%d", totalRows)))
-	b.WriteString(windowedTriageCardHTML("Failures matched", fmt.Sprintf("%d", totalMatchedFailures)))
+	b.WriteString(failurePatternsCardHTML("Environments", fmt.Sprintf("%d", len(data.Environments))))
+	b.WriteString(failurePatternsCardHTML("Failure patterns", fmt.Sprintf("%d", totalRows)))
+	b.WriteString(failurePatternsCardHTML("Failures matched", fmt.Sprintf("%d", totalMatchedFailures)))
 	if hasWindow {
-		b.WriteString(windowedTriageCardHTML("Window", fmt.Sprintf("%d days", windowedTriageInclusiveDays(startDate, endDate))))
+		b.WriteString(failurePatternsCardHTML("Window", fmt.Sprintf("%d days", failurePatternsInclusiveDays(startDate, endDate))))
 	}
 	b.WriteString("  </div>\n")
 
 	for _, environment := range data.Environments {
-		signatureRows := windowedTriageSignatureRows(environment.Rows, environment.Summary.MatchedFailureCount)
+		failurePatternRows := failurePatternsFailurePatternRows(environment.Rows, environment.Summary.MatchedFailureCount)
 		b.WriteString(fmt.Sprintf("  <section id=\"window-%s\" class=\"section\">\n", html.EscapeString(strings.TrimSpace(environment.Environment))))
 		b.WriteString(fmt.Sprintf("    <h2>Environment: %s</h2>\n", html.EscapeString(strings.ToUpper(strings.TrimSpace(environment.Environment)))))
-		if len(signatureRows) == 0 {
+		if len(failurePatternRows) == 0 {
 			b.WriteString(fmt.Sprintf(
 				"    <p class=\"section-note\">Failure patterns: 0 &middot; Failures matched: %d &middot; Total runs: %d</p>\n",
 				environment.Summary.MatchedFailureCount,
@@ -116,18 +116,18 @@ func buildWindowedTriageReportHTML(
 		}
 		b.WriteString(fmt.Sprintf(
 			"    <p class=\"section-note\">Failure patterns: %d &middot; Failures matched: %d &middot; Total runs: %d &middot; Runs affected: %d</p>\n",
-			len(signatureRows),
+			len(failurePatternRows),
 			environment.Summary.MatchedFailureCount,
 			environment.Summary.TotalRuns,
 			environment.Summary.JobsAffected,
 		))
-		b.WriteString(triagehtml.RenderTable(signatureRows, triagehtml.TableOptions{
+		b.WriteString(triagehtml.RenderTable(failurePatternRows, triagehtml.TableOptions{
 			IncludeTrend:       true,
 			GitHubRepoOwner:    sourceoptions.DefaultGitHubRepoOwner(),
 			GitHubRepoName:     sourceoptions.DefaultGitHubRepoName(),
 			ImpactTotalJobs:    environment.Summary.TotalRuns,
-			LoadedRowsLimit:    windowedTriageLoadedRowsLimit,
-			InitialVisibleRows: windowedTriageInitialVisibleRows,
+			LoadedRowsLimit:    failurePatternsLoadedRowsLimit,
+			InitialVisibleRows: failurePatternsInitialVisibleRows,
 		}))
 		b.WriteString("  </section>\n")
 	}
@@ -138,51 +138,51 @@ func buildWindowedTriageReportHTML(
 	return b.String()
 }
 
-func windowedTriageSignatureRows(
-	rows []frontservice.WindowedTriageRow,
+func failurePatternsFailurePatternRows(
+	rows []frontservice.FailurePatternsRow,
 	totalEnvironmentFailures int,
-) []triagehtml.SignatureRow {
-	out := make([]triagehtml.SignatureRow, 0, len(rows))
+) []triagehtml.FailurePatternRow {
+	out := make([]triagehtml.FailurePatternRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.SignatureRow{
-			Environment:       strings.TrimSpace(row.Environment),
-			Lane:              strings.TrimSpace(row.Lane),
-			JobName:           strings.TrimSpace(row.JobName),
-			TestName:          strings.TrimSpace(row.TestName),
-			TestSuite:         strings.TrimSpace(row.TestSuite),
-			Phrase:            strings.TrimSpace(row.CanonicalEvidencePhrase),
-			ClusterID:         strings.TrimSpace(row.ClusterID),
-			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
-			SupportCount:      row.WindowFailureCount,
-			TrendCounts:       append([]int(nil), row.TrendCounts...),
-			TrendRange:        strings.TrimSpace(row.TrendRange),
-			SupportShare:      windowedTriagePercent(row.WindowFailureCount, totalEnvironmentFailures),
-			PostGoodCount:     row.WeeklyPostGoodCount,
-			AlsoSeenIn:        append([]string(nil), row.SeenIn...),
-			ContributingTests: windowedTriageContributingTests(row.ContributingTests),
-			FullErrorSamples:  append([]string(nil), row.FullErrorSamples...),
-			References:        windowedTriageRunReferences(row.References),
-			ScoringReferences: windowedTriageRunReferences(row.ScoringReferences),
-			PriorWeeksPresent: row.PriorWeeksPresent,
-			PriorWeekStarts:   append([]string(nil), row.PriorWeekStarts...),
-			PriorJobsAffected: row.PriorJobsAffected,
-			PriorLastSeenAt:   strings.TrimSpace(row.PriorLastSeenAt),
-			LinkedChildren:    windowedTriageSignatureRows(row.LinkedChildren, totalEnvironmentFailures),
+		out = append(out, triagehtml.FailurePatternRow{
+			Environment:        strings.TrimSpace(row.Environment),
+			FailedAt:           strings.TrimSpace(row.Lane),
+			JobName:            strings.TrimSpace(row.JobName),
+			TestName:           strings.TrimSpace(row.TestName),
+			TestSuite:          strings.TrimSpace(row.TestSuite),
+			FailurePattern:     strings.TrimSpace(row.CanonicalEvidencePhrase),
+			FailurePatternID:   strings.TrimSpace(row.ClusterID),
+			SearchQuery:        strings.TrimSpace(row.SearchQueryPhrase),
+			Occurrences:        row.WindowFailureCount,
+			TrendCounts:        append([]int(nil), row.TrendCounts...),
+			TrendRange:         strings.TrimSpace(row.TrendRange),
+			OccurrenceShare:    failurePatternsPercent(row.WindowFailureCount, totalEnvironmentFailures),
+			AfterLastPushCount: row.WeeklyPostGoodCount,
+			AlsoIn:             append([]string(nil), row.SeenIn...),
+			ContributingTests:  failurePatternsContributingTests(row.ContributingTests),
+			FullErrorSamples:   append([]string(nil), row.FullErrorSamples...),
+			AffectedRuns:       failurePatternsRunReferences(row.References),
+			ScoringReferences:  failurePatternsRunReferences(row.ScoringReferences),
+			PriorWeeksPresent:  row.PriorWeeksPresent,
+			PriorWeekStarts:    append([]string(nil), row.PriorWeekStarts...),
+			PriorRunsAffected:  row.PriorJobsAffected,
+			PriorLastSeenAt:    strings.TrimSpace(row.PriorLastSeenAt),
+			LinkedPatterns:     failurePatternsFailurePatternRows(row.LinkedChildren, totalEnvironmentFailures),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].SupportCount != out[j].SupportCount {
-			return out[i].SupportCount > out[j].SupportCount
+		if out[i].Occurrences != out[j].Occurrences {
+			return out[i].Occurrences > out[j].Occurrences
 		}
-		if out[i].ClusterID != out[j].ClusterID {
-			return out[i].ClusterID < out[j].ClusterID
+		if out[i].FailurePatternID != out[j].FailurePatternID {
+			return out[i].FailurePatternID < out[j].FailurePatternID
 		}
-		return out[i].Phrase < out[j].Phrase
+		return out[i].FailurePattern < out[j].FailurePattern
 	})
 	return out
 }
 
-func windowedTriageRunReferences(rows []frontservice.TriageReportReference) []triagehtml.RunReference {
+func failurePatternsRunReferences(rows []frontservice.FailurePatternReportReference) []triagehtml.RunReference {
 	out := make([]triagehtml.RunReference, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, triagehtml.RunReference{
@@ -195,20 +195,20 @@ func windowedTriageRunReferences(rows []frontservice.TriageReportReference) []tr
 	return out
 }
 
-func windowedTriageContributingTests(rows []frontservice.TriageReportContributingTest) []triagehtml.ContributingTest {
+func failurePatternsContributingTests(rows []frontservice.FailurePatternReportContributingTest) []triagehtml.ContributingTest {
 	out := make([]triagehtml.ContributingTest, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, triagehtml.ContributingTest{
-			Lane:         strings.TrimSpace(row.Lane),
-			JobName:      strings.TrimSpace(row.JobName),
-			TestName:     strings.TrimSpace(row.TestName),
-			SupportCount: row.SupportCount,
+			FailedAt:    strings.TrimSpace(row.Lane),
+			JobName:     strings.TrimSpace(row.JobName),
+			TestName:    strings.TrimSpace(row.TestName),
+			Occurrences: row.SupportCount,
 		})
 	}
 	return out
 }
 
-func windowedTriageCardHTML(label string, value string) string {
+func failurePatternsCardHTML(label string, value string) string {
 	return fmt.Sprintf(
 		"    <div class=\"card\"><div class=\"label\">%s</div><div class=\"value\">%s</div></div>\n",
 		html.EscapeString(strings.TrimSpace(label)),
@@ -216,14 +216,14 @@ func windowedTriageCardHTML(label string, value string) string {
 	)
 }
 
-func windowedTriagePercent(value int, total int) float64 {
+func failurePatternsPercent(value int, total int) float64 {
 	if total <= 0 {
 		return 0
 	}
 	return (float64(value) * 100.0) / float64(total)
 }
 
-func parseWindowedTriageDates(startDate string, endDate string) (time.Time, time.Time, bool) {
+func parseFailurePatternsDates(startDate string, endDate string) (time.Time, time.Time, bool) {
 	start, err := time.Parse("2006-01-02", strings.TrimSpace(startDate))
 	if err != nil {
 		return time.Time{}, time.Time{}, false
@@ -235,7 +235,7 @@ func parseWindowedTriageDates(startDate string, endDate string) (time.Time, time
 	return start.UTC(), end.UTC(), true
 }
 
-func windowedTriageInclusiveDays(startDate time.Time, endDate time.Time) int {
+func failurePatternsInclusiveDays(startDate time.Time, endDate time.Time) int {
 	startDay := startDate.UTC().Truncate(24 * time.Hour)
 	endDay := endDate.UTC().Truncate(24 * time.Hour)
 	if endDay.Before(startDay) {
@@ -244,22 +244,22 @@ func windowedTriageInclusiveDays(startDate time.Time, endDate time.Time) int {
 	return int(endDay.Sub(startDay)/(24*time.Hour)) + 1
 }
 
-func windowedTriageControlsHTML(query frontservice.WindowedTriageQuery) string {
-	resetHref := "/triage"
+func failurePatternsControlsHTML(query frontservice.FailurePatternsQuery) string {
+	resetHref := "/failure-patterns"
 	var b strings.Builder
 	b.WriteString("  <section class=\"window-controls\">\n")
-	b.WriteString("    <form class=\"window-form\" method=\"get\" action=\"/triage\">\n")
+	b.WriteString("    <form class=\"window-form\" method=\"get\" action=\"/failure-patterns\">\n")
 	b.WriteString("      <div class=\"window-field\">\n")
-	b.WriteString("        <label for=\"triage-start-date\">Start date</label>\n")
-	b.WriteString(fmt.Sprintf("        <input id=\"triage-start-date\" type=\"date\" name=\"start_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.StartDate))))
+	b.WriteString("        <label for=\"failure-patterns-start-date\">Start date</label>\n")
+	b.WriteString(fmt.Sprintf("        <input id=\"failure-patterns-start-date\" type=\"date\" name=\"start_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.StartDate))))
 	b.WriteString("      </div>\n")
 	b.WriteString("      <div class=\"window-field\">\n")
-	b.WriteString("        <label for=\"triage-end-date\">End date</label>\n")
-	b.WriteString(fmt.Sprintf("        <input id=\"triage-end-date\" type=\"date\" name=\"end_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.EndDate))))
+	b.WriteString("        <label for=\"failure-patterns-end-date\">End date</label>\n")
+	b.WriteString(fmt.Sprintf("        <input id=\"failure-patterns-end-date\" type=\"date\" name=\"end_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.EndDate))))
 	b.WriteString("      </div>\n")
 	b.WriteString("      <div class=\"window-field\">\n")
-	b.WriteString("        <label for=\"triage-env-filter\">Environment filter</label>\n")
-	b.WriteString(fmt.Sprintf("        <input id=\"triage-env-filter\" type=\"text\" name=\"env\" value=\"%s\" placeholder=\"dev,int\" />\n", html.EscapeString(strings.Join(normalizedQueryEnvironments(query.Environments), ","))))
+	b.WriteString("        <label for=\"failure-patterns-env-filter\">Environment filter</label>\n")
+	b.WriteString(fmt.Sprintf("        <input id=\"failure-patterns-env-filter\" type=\"text\" name=\"env\" value=\"%s\" placeholder=\"dev,int\" />\n", html.EscapeString(strings.Join(normalizedQueryEnvironments(query.Environments), ","))))
 	b.WriteString("      </div>\n")
 	b.WriteString("      <div class=\"window-actions\">\n")
 	b.WriteString("        <button class=\"window-apply\" type=\"submit\">Apply window</button>\n")
@@ -269,4 +269,24 @@ func windowedTriageControlsHTML(query frontservice.WindowedTriageQuery) string {
 	b.WriteString("    <p class=\"window-help\">Choose any inclusive UTC date range. Leave the environment filter blank to show all environments.</p>\n")
 	b.WriteString("  </section>\n")
 	return b.String()
+}
+
+func normalizedQueryEnvironments(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "" {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }

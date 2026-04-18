@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"ci-failure-atlas/pkg/report/triagehtml"
+	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
@@ -35,7 +35,7 @@ type ReviewWeekSnapshot struct {
 	Week                 string
 	PreviousWeek         string
 	NextWeek             string
-	Rows                 []triagehtml.SignatureRow
+	Rows                 []triagehtml.FailurePatternRow
 	OverallJobsByEnv     map[string]int
 	AnchorsByClusterID   map[string][]ReviewPhase3Anchor
 	LaneKeysByClusterID  map[string][]string
@@ -72,7 +72,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 		return ReviewWeekSnapshot{}, err
 	}
 
-	sourceClusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	sourceClusters := append([]semanticcontracts.FailurePatternRecord(nil), weekData.SourceFailurePatterns...)
 	reviewQueue := append([]semanticcontracts.ReviewItemRecord(nil), weekData.ReviewQueue...)
 	links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
 
@@ -100,7 +100,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 		return ReviewWeekSnapshot{}, fmt.Errorf("build linked child clusters: %w", err)
 	}
 
-	clusters := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
+	clusters := append([]semanticcontracts.FailurePatternRecord(nil), weekData.FailurePatterns...)
 	reviewIndex := buildReviewSignalIndex(reviewQueue)
 	rawTextIndex := semanticquery.RawFailureTextByEnvironmentRow(weekData.RawFailures)
 	phase3ClusterByAnchor := map[string]string{}
@@ -164,7 +164,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 		trendAnchor = weekStart.AddDate(0, 0, reviewTrendWindowDays-1).UTC()
 	}
 
-	rows := make([]triagehtml.SignatureRow, 0, len(clusters))
+	rows := make([]triagehtml.FailurePatternRow, 0, len(clusters))
 	anchorsByClusterID := map[string][]ReviewPhase3Anchor{}
 	for key, anchors := range childAnchorsByClusterID {
 		anchorsByClusterID[key] = append([]ReviewPhase3Anchor(nil), anchors...)
@@ -231,7 +231,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 			environment,
 		)
 		primary := primaryContributingTest(cluster.ContributingTests)
-		linkedChildren := reviewBuildLinkedChildSignatureRows(
+		linkedChildren := reviewBuildLinkedChildFailurePatternRows(
 			manualIssueID,
 			linkedChildrenBySelectionID[selectionID],
 			totalSupportByEnvironment[environment],
@@ -266,7 +266,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 			}
 		}
 
-		historyPresence := semhistory.SignaturePresence{}
+		historyPresence := semhistory.FailurePatternPresence{}
 		if historyResolver != nil && isAggregatedRow {
 			historyPresence = historyResolver.PresenceForPhase3Cluster(environment, manualIssueID)
 		}
@@ -275,36 +275,36 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 			priorLastSeenAt = historyPresence.PriorLastSeenAt.UTC().Format(time.RFC3339)
 		}
 
-		rows = append(rows, triagehtml.SignatureRow{
+		rows = append(rows, triagehtml.FailurePatternRow{
 			Environment:         environment,
-			Lane:                strings.TrimSpace(primary.Lane),
+			FailedAt:            strings.TrimSpace(primary.Lane),
 			JobName:             strings.TrimSpace(primary.JobName),
 			TestName:            strings.TrimSpace(primary.TestName),
-			Phrase:              strings.TrimSpace(cluster.CanonicalEvidencePhrase),
-			ClusterID:           clusterID,
+			FailurePattern:      strings.TrimSpace(cluster.CanonicalEvidencePhrase),
+			FailurePatternID:    clusterID,
 			SearchQuery:         strings.TrimSpace(cluster.SearchQueryPhrase),
-			SupportCount:        cluster.SupportCount,
-			SupportShare:        reviewSupportShare(cluster.SupportCount, totalSupportByEnvironment[environment]),
-			PostGoodCount:       cluster.PostGoodCommitCount,
-			AlsoSeenIn:          alsoSeenIn,
+			Occurrences:         cluster.SupportCount,
+			OccurrenceShare:     reviewSupportShare(cluster.SupportCount, totalSupportByEnvironment[environment]),
+			AfterLastPushCount:  cluster.PostGoodCommitCount,
+			AlsoIn:              alsoSeenIn,
 			QualityScore:        qualityScore,
 			QualityNoteLabels:   qualityLabels,
 			ReviewNoteLabels:    reviewReasons,
 			ContributingTests:   reviewToContributingTests(cluster.ContributingTests),
 			FullErrorSamples:    reviewFullErrorSamplesForReferences(environment, cluster.References, rawTextIndex, 0),
-			References:          displayReferences,
+			AffectedRuns:        displayReferences,
 			ScoringReferences:   scoreReferences,
 			TrendSparkline:      trendSparkline,
 			TrendCounts:         trendCounts,
 			TrendRange:          trendRange,
 			PriorWeeksPresent:   historyPresence.PriorWeeksPresent,
 			PriorWeekStarts:     append([]string(nil), historyPresence.PriorWeekStarts...),
-			PriorJobsAffected:   historyPresence.PriorJobsAffected,
+			PriorRunsAffected:   historyPresence.PriorJobsAffected,
 			PriorLastSeenAt:     priorLastSeenAt,
 			ManualIssueID:       manualIssueID,
 			ManualIssueConflict: false,
 			SelectionValue:      selectionID,
-			LinkedChildren:      linkedChildren,
+			LinkedPatterns:      linkedChildren,
 			SearchIndex: strings.Join([]string{
 				environment,
 				strings.TrimSpace(primary.Lane),
@@ -375,7 +375,7 @@ func buildReviewSignalIndex(rows []semanticcontracts.ReviewItemRecord) reviewSig
 	return index
 }
 
-func reviewReasonsForCluster(cluster semanticcontracts.GlobalClusterRecord, index reviewSignalIndex) []string {
+func reviewReasonsForCluster(cluster semanticcontracts.FailurePatternRecord, index reviewSignalIndex) []string {
 	set := map[string]struct{}{}
 	for _, phase1ID := range cluster.MemberPhase1ClusterIDs {
 		for reason := range index.ByPhase1ClusterID[strings.TrimSpace(phase1ID)] {
@@ -515,10 +515,10 @@ func reviewToContributingTests(rows []semanticcontracts.ContributingTestRecord) 
 	out := make([]triagehtml.ContributingTest, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, triagehtml.ContributingTest{
-			Lane:         strings.TrimSpace(row.Lane),
-			JobName:      strings.TrimSpace(row.JobName),
-			TestName:     strings.TrimSpace(row.TestName),
-			SupportCount: row.SupportCount,
+			FailedAt:    strings.TrimSpace(row.Lane),
+			JobName:     strings.TrimSpace(row.JobName),
+			TestName:    strings.TrimSpace(row.TestName),
+			Occurrences: row.SupportCount,
 		})
 	}
 	return out
@@ -537,9 +537,9 @@ func reviewPhase3ClusterIDsForAnchors(anchors []ReviewPhase3Anchor, phase3Cluste
 }
 
 func reviewLinkedChildrenByMergedSelectionID(
-	clusters []semanticcontracts.GlobalClusterRecord,
+	clusters []semanticcontracts.FailurePatternRecord,
 	phase3Links []semanticcontracts.Phase3LinkRecord,
-) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
+) (map[string][]semanticcontracts.FailurePatternRecord, error) {
 	phase3ClusterByAnchor := map[string]string{}
 	for _, row := range phase3Links {
 		phase3ClusterID := strings.TrimSpace(row.IssueID)
@@ -553,7 +553,7 @@ func reviewLinkedChildrenByMergedSelectionID(
 		phase3ClusterByAnchor[key] = phase3ClusterID
 	}
 
-	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
+	grouped := map[string][]semanticcontracts.FailurePatternRecord{}
 	for _, cluster := range clusters {
 		environment := normalizeEnvironment(cluster.Environment)
 		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
@@ -592,17 +592,17 @@ func reviewLinkedChildrenByMergedSelectionID(
 	return grouped, nil
 }
 
-func reviewBuildLinkedChildSignatureRows(
+func reviewBuildLinkedChildFailurePatternRows(
 	manualIssueID string,
-	childClusters []semanticcontracts.GlobalClusterRecord,
+	childClusters []semanticcontracts.FailurePatternRecord,
 	totalSupportByEnvironment int,
 	reviewIndex reviewSignalIndex,
 	rawTextIndex map[string]string,
-) []triagehtml.SignatureRow {
+) []triagehtml.FailurePatternRow {
 	if strings.TrimSpace(manualIssueID) == "" || len(childClusters) == 0 {
 		return nil
 	}
-	out := make([]triagehtml.SignatureRow, 0, len(childClusters))
+	out := make([]triagehtml.FailurePatternRow, 0, len(childClusters))
 	for _, cluster := range childClusters {
 		environment := normalizeEnvironment(cluster.Environment)
 		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
@@ -615,39 +615,39 @@ func reviewBuildLinkedChildSignatureRows(
 		qualityScore := triagehtml.QualityScore(qualityCodes) + (len(reviewReasons) * 2)
 		primary := primaryContributingTest(cluster.ContributingTests)
 
-		out = append(out, triagehtml.SignatureRow{
+		out = append(out, triagehtml.FailurePatternRow{
 			Environment:         environment,
-			Lane:                strings.TrimSpace(primary.Lane),
+			FailedAt:            strings.TrimSpace(primary.Lane),
 			JobName:             strings.TrimSpace(primary.JobName),
 			TestName:            strings.TrimSpace(primary.TestName),
-			Phrase:              strings.TrimSpace(cluster.CanonicalEvidencePhrase),
-			ClusterID:           clusterID,
+			FailurePattern:      strings.TrimSpace(cluster.CanonicalEvidencePhrase),
+			FailurePatternID:    clusterID,
 			SearchQuery:         strings.TrimSpace(cluster.SearchQueryPhrase),
-			SupportCount:        cluster.SupportCount,
-			SupportShare:        reviewSupportShare(cluster.SupportCount, totalSupportByEnvironment),
-			PostGoodCount:       cluster.PostGoodCommitCount,
+			Occurrences:         cluster.SupportCount,
+			OccurrenceShare:     reviewSupportShare(cluster.SupportCount, totalSupportByEnvironment),
+			AfterLastPushCount:  cluster.PostGoodCommitCount,
 			QualityScore:        qualityScore,
 			QualityNoteLabels:   qualityLabels,
 			ReviewNoteLabels:    reviewReasons,
 			ContributingTests:   reviewToContributingTests(cluster.ContributingTests),
 			FullErrorSamples:    reviewFullErrorSamplesForReferences(environment, cluster.References, rawTextIndex, 0),
-			References:          reviewToRunReferences(cluster.References, 0),
+			AffectedRuns:        reviewToRunReferences(cluster.References, 0),
 			ManualIssueID:       strings.TrimSpace(manualIssueID),
 			ManualIssueConflict: false,
 			SelectionValue:      reviewRowSelectionID(environment, clusterID),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].SupportCount != out[j].SupportCount {
-			return out[i].SupportCount > out[j].SupportCount
+		if out[i].Occurrences != out[j].Occurrences {
+			return out[i].Occurrences > out[j].Occurrences
 		}
-		if out[i].PostGoodCount != out[j].PostGoodCount {
-			return out[i].PostGoodCount > out[j].PostGoodCount
+		if out[i].AfterLastPushCount != out[j].AfterLastPushCount {
+			return out[i].AfterLastPushCount > out[j].AfterLastPushCount
 		}
-		if strings.TrimSpace(out[i].Phrase) != strings.TrimSpace(out[j].Phrase) {
-			return strings.TrimSpace(out[i].Phrase) < strings.TrimSpace(out[j].Phrase)
+		if strings.TrimSpace(out[i].FailurePattern) != strings.TrimSpace(out[j].FailurePattern) {
+			return strings.TrimSpace(out[i].FailurePattern) < strings.TrimSpace(out[j].FailurePattern)
 		}
-		return strings.TrimSpace(out[i].ClusterID) < strings.TrimSpace(out[j].ClusterID)
+		return strings.TrimSpace(out[i].FailurePatternID) < strings.TrimSpace(out[j].FailurePatternID)
 	})
 	return out
 }

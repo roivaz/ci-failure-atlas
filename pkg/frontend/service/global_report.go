@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"ci-failure-atlas/pkg/report/triagehtml"
+	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
@@ -15,93 +15,93 @@ import (
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 )
 
-const triageReportFullErrorExamplesLimit = 3
+const failurePatternReportFullErrorExamplesLimit = 3
 
-type TriageReportBuildOptions struct {
+type FailurePatternReportBuildOptions struct {
 	Week                string
 	Environments        []string
 	HistoryHorizonWeeks int
-	HistoryResolver     semhistory.GlobalSignatureResolver
+	HistoryResolver     semhistory.FailurePatternHistoryResolver
 }
 
-type TriageReportReference struct {
+type FailurePatternReportReference struct {
 	RunURL         string `json:"run_url"`
 	OccurredAt     string `json:"occurred_at"`
 	SignatureID    string `json:"signature_id"`
 	PRNumber       int    `json:"pr_number"`
-	PostGoodCommit bool   `json:"post_good_commit"`
+	PostGoodCommit bool   `json:"after_last_push_of_merged_pr"`
 }
 
-type TriageReportContributingTest struct {
-	Lane         string `json:"lane"`
+type FailurePatternReportContributingTest struct {
+	Lane         string `json:"failed_at"`
 	JobName      string `json:"job_name"`
 	TestName     string `json:"test_name"`
-	SupportCount int    `json:"support_count"`
+	SupportCount int    `json:"occurrences"`
 }
 
-type TriageReportCluster struct {
-	Environment             string                         `json:"environment"`
-	SchemaVersion           string                         `json:"schema_version"`
-	Phase2ClusterID         string                         `json:"phase2_cluster_id"`
-	CanonicalEvidencePhrase string                         `json:"canonical_evidence_phrase"`
-	SearchQueryPhrase       string                         `json:"search_query_phrase"`
-	SupportCount            int                            `json:"support_count"`
-	SeenPostGoodCommit      bool                           `json:"seen_post_good_commit"`
-	PostGoodCommitCount     int                            `json:"post_good_commit_count"`
-	ContributingTestsCount  int                            `json:"contributing_tests_count"`
-	ContributingTests       []TriageReportContributingTest `json:"contributing_tests"`
-	MemberPhase1ClusterIDs  []string                       `json:"member_phase1_cluster_ids"`
-	MemberSignatureIDs      []string                       `json:"member_signature_ids"`
-	References              []TriageReportReference        `json:"references"`
-	FullErrorSamples        []string                       `json:"full_error_samples,omitempty"`
-	LinkedChildren          []TriageReportCluster          `json:"linked_children,omitempty"`
+type FailurePatternReportCluster struct {
+	Environment             string                                 `json:"environment"`
+	SchemaVersion           string                                 `json:"schema_version"`
+	Phase2ClusterID         string                                 `json:"failure_pattern_id"`
+	CanonicalEvidencePhrase string                                 `json:"failure_pattern"`
+	SearchQueryPhrase       string                                 `json:"search_query"`
+	SupportCount            int                                    `json:"occurrences"`
+	SeenPostGoodCommit      bool                                   `json:"after_last_push_seen"`
+	PostGoodCommitCount     int                                    `json:"after_last_push_count"`
+	ContributingTestsCount  int                                    `json:"contributing_test_count"`
+	ContributingTests       []FailurePatternReportContributingTest `json:"contributing_tests"`
+	MemberPhase1ClusterIDs  []string                               `json:"member_phase1_cluster_ids"`
+	MemberSignatureIDs      []string                               `json:"member_signature_ids"`
+	References              []FailurePatternReportReference        `json:"affected_runs"`
+	FullErrorSamples        []string                               `json:"full_error_samples,omitempty"`
+	LinkedChildren          []FailurePatternReportCluster          `json:"linked_failure_patterns,omitempty"`
 }
 
-type TriageReportData struct {
-	TriageClusters                 []TriageReportCluster
+type FailurePatternReportData struct {
+	FailurePatternClusters         []FailurePatternReportCluster
 	TargetEnvironments             []string
 	OverallJobsByEnvironment       map[string]int
 	WindowStartRaw                 string
 	WindowEndRaw                   string
-	HistoryResolver                semhistory.GlobalSignatureResolver
+	HistoryResolver                semhistory.FailurePatternHistoryResolver
 	GeneratedAt                    time.Time
 	TestClusterCountsByEnvironment map[string]int
 	ReviewItemCountsByEnvironment  map[string]int
 }
 
-func BuildTriageReportData(ctx context.Context, store storecontracts.Store, opts TriageReportBuildOptions) (TriageReportData, error) {
+func BuildFailurePatternReportData(ctx context.Context, store storecontracts.Store, opts FailurePatternReportBuildOptions) (FailurePatternReportData, error) {
 	if store == nil {
-		return TriageReportData{}, fmt.Errorf("store is required")
+		return FailurePatternReportData{}, fmt.Errorf("store is required")
 	}
 
 	weekData, err := semanticquery.LoadWeekData(ctx, store, semanticquery.LoadWeekDataOptions{
 		IncludeRawFailures: true,
 	})
 	if err != nil {
-		return TriageReportData{}, err
+		return FailurePatternReportData{}, err
 	}
 
-	sourceClusterRows := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.SourceGlobalClusters...)
+	sourceClusterRows := append([]semanticcontracts.FailurePatternRecord(nil), weekData.SourceFailurePatterns...)
 	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
-	materializedClusterRows := append([]semanticcontracts.GlobalClusterRecord(nil), weekData.GlobalClusters...)
-	linkedChildrenByClusterKey, err := triageReportLinkedChildrenByMergedClusterKey(sourceClusterRows, phase3Links)
+	materializedClusterRows := append([]semanticcontracts.FailurePatternRecord(nil), weekData.FailurePatterns...)
+	linkedChildrenByClusterKey, err := failurePatternReportLinkedChildrenByMergedClusterKey(sourceClusterRows, phase3Links)
 	if err != nil {
-		return TriageReportData{}, fmt.Errorf("build linked child clusters: %w", err)
+		return FailurePatternReportData{}, fmt.Errorf("build linked child clusters: %w", err)
 	}
 
-	reportRows := toTriageReportClusters(materializedClusterRows)
-	reportLinkedChildrenByClusterKey := toTriageReportClusterGroupMap(linkedChildrenByClusterKey)
-	rawFailuresByRun := triageReportIndexRawFailuresByEnvironmentRun(weekData.RawFailures)
-	reportLinkedChildrenByClusterKey = triageReportAttachFullErrorSamplesByGroup(
+	reportRows := toFailurePatternReportClusters(materializedClusterRows)
+	reportLinkedChildrenByClusterKey := toFailurePatternReportClusterGroupMap(linkedChildrenByClusterKey)
+	rawFailuresByRun := failurePatternReportIndexRawFailuresByEnvironmentRun(weekData.RawFailures)
+	reportLinkedChildrenByClusterKey = failurePatternReportAttachFullErrorSamplesByGroup(
 		reportLinkedChildrenByClusterKey,
-		triageReportFullErrorExamplesLimit,
+		failurePatternReportFullErrorExamplesLimit,
 		rawFailuresByRun,
 	)
 
 	targetEnvironments := semanticquery.ResolveTargetEnvironments(opts.Environments, weekData)
-	metricWindowStart, metricWindowEnd := triageReportMetricWindowBounds(opts.Week)
-	windowStartRaw, windowEndRaw := triageReportMetricWindowStrings(metricWindowStart, metricWindowEnd)
-	overallJobsByEnvironment, err := triageReportMetricRunTotalsByEnvironment(
+	metricWindowStart, metricWindowEnd := failurePatternReportMetricWindowBounds(opts.Week)
+	windowStartRaw, windowEndRaw := failurePatternReportMetricWindowStrings(metricWindowStart, metricWindowEnd)
+	overallJobsByEnvironment, err := failurePatternReportMetricRunTotalsByEnvironment(
 		ctx,
 		store,
 		targetEnvironments,
@@ -109,7 +109,7 @@ func BuildTriageReportData(ctx context.Context, store storecontracts.Store, opts
 		metricWindowEnd,
 	)
 	if err != nil {
-		return TriageReportData{}, fmt.Errorf("load overall metric run counts: %w", err)
+		return FailurePatternReportData{}, fmt.Errorf("load overall metric run counts: %w", err)
 	}
 
 	historyResolver := opts.HistoryResolver
@@ -118,20 +118,20 @@ func BuildTriageReportData(ctx context.Context, store storecontracts.Store, opts
 		if lookbackWeeks <= 0 {
 			lookbackWeeks = DefaultHistoryWeeks
 		}
-		historyResolver, err = semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-			CurrentWeek:                  strings.TrimSpace(opts.Week),
-			GlobalSignatureLookbackWeeks: lookbackWeeks,
+		historyResolver, err = semhistory.BuildFailurePatternHistoryResolver(ctx, semhistory.BuildOptions{
+			CurrentWeek:                        strings.TrimSpace(opts.Week),
+			FailurePatternHistoryLookbackWeeks: lookbackWeeks,
 		})
 		if err != nil {
-			return TriageReportData{}, fmt.Errorf("build triage history resolver: %w", err)
+			return FailurePatternReportData{}, fmt.Errorf("build failure-pattern history resolver: %w", err)
 		}
 	}
 
-	triageRows := triageReportAttachFullErrorSamples(reportRows, triageReportFullErrorExamplesLimit, rawFailuresByRun)
-	triageRows = triageReportAttachLinkedChildren(triageRows, reportLinkedChildrenByClusterKey)
+	failurePatternRows := failurePatternReportAttachFullErrorSamples(reportRows, failurePatternReportFullErrorExamplesLimit, rawFailuresByRun)
+	failurePatternRows = failurePatternReportAttachLinkedChildren(failurePatternRows, reportLinkedChildrenByClusterKey)
 
-	return TriageReportData{
-		TriageClusters:                 triageRows,
+	return FailurePatternReportData{
+		FailurePatternClusters:         failurePatternRows,
 		TargetEnvironments:             append([]string(nil), targetEnvironments...),
 		OverallJobsByEnvironment:       cloneIntMap(overallJobsByEnvironment),
 		WindowStartRaw:                 windowStartRaw,
@@ -154,7 +154,7 @@ func cloneIntMap(source map[string]int) map[string]int {
 	return out
 }
 
-func triageReportMetricWindowBounds(week string) (time.Time, time.Time) {
+func failurePatternReportMetricWindowBounds(week string) (time.Time, time.Time) {
 	normalizedWeek, err := postgresstore.NormalizeWeek(week)
 	if err != nil || normalizedWeek == "" {
 		return time.Time{}, time.Time{}
@@ -167,14 +167,14 @@ func triageReportMetricWindowBounds(week string) (time.Time, time.Time) {
 	return start, start.AddDate(0, 0, 7)
 }
 
-func triageReportMetricWindowStrings(start time.Time, end time.Time) (string, string) {
+func failurePatternReportMetricWindowStrings(start time.Time, end time.Time) (string, string) {
 	if start.IsZero() || end.IsZero() || !start.Before(end) {
 		return "", ""
 	}
 	return start.Format(time.RFC3339), end.Format(time.RFC3339)
 }
 
-func triageReportMetricRunTotalsByEnvironment(
+func failurePatternReportMetricRunTotalsByEnvironment(
 	ctx context.Context,
 	store storecontracts.Store,
 	environments []string,
@@ -206,7 +206,7 @@ func triageReportMetricRunTotalsByEnvironment(
 			continue
 		}
 		if !windowStart.IsZero() && !windowEnd.IsZero() {
-			dateValue, ok := triageReportParseMetricDate(row.Date)
+			dateValue, ok := failurePatternReportParseMetricDate(row.Date)
 			if !ok {
 				continue
 			}
@@ -223,7 +223,7 @@ func triageReportMetricRunTotalsByEnvironment(
 	return totals, nil
 }
 
-func triageReportParseMetricDate(value string) (time.Time, bool) {
+func failurePatternReportParseMetricDate(value string) (time.Time, bool) {
 	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
 	if err != nil {
 		return time.Time{}, false
@@ -231,10 +231,10 @@ func triageReportParseMetricDate(value string) (time.Time, bool) {
 	return parsed.UTC(), true
 }
 
-func triageReportLinkedChildrenByMergedClusterKey(
-	sourceClusters []semanticcontracts.GlobalClusterRecord,
+func failurePatternReportLinkedChildrenByMergedClusterKey(
+	sourceClusters []semanticcontracts.FailurePatternRecord,
 	phase3Links []semanticcontracts.Phase3LinkRecord,
-) (map[string][]semanticcontracts.GlobalClusterRecord, error) {
+) (map[string][]semanticcontracts.FailurePatternRecord, error) {
 	phase3ClusterByAnchor := map[string]string{}
 	for _, row := range phase3Links {
 		phase3ClusterID := strings.TrimSpace(row.IssueID)
@@ -248,14 +248,14 @@ func triageReportLinkedChildrenByMergedClusterKey(
 		phase3ClusterByAnchor[key] = phase3ClusterID
 	}
 
-	grouped := map[string][]semanticcontracts.GlobalClusterRecord{}
+	grouped := map[string][]semanticcontracts.FailurePatternRecord{}
 	for _, cluster := range sourceClusters {
 		environment := normalizeEnvironment(cluster.Environment)
 		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
 		if environment == "" || clusterID == "" {
 			return nil, fmt.Errorf("phase2 cluster record missing environment and/or phase2_cluster_id")
 		}
-		phase3ClusterIDs := triageReportPhase3ClusterIDsForCluster(cluster, phase3ClusterByAnchor)
+		phase3ClusterIDs := failurePatternReportPhase3ClusterIDsForCluster(cluster, phase3ClusterByAnchor)
 		if len(phase3ClusterIDs) > 1 {
 			return nil, fmt.Errorf(
 				"phase3 conflict: semantic cluster %s resolves to multiple phase3 cluster IDs (%s)",
@@ -266,7 +266,7 @@ func triageReportLinkedChildrenByMergedClusterKey(
 		if len(phase3ClusterIDs) == 0 {
 			continue
 		}
-		groupKey := triageReportClusterKey(environment, phase3ClusterIDs[0])
+		groupKey := failurePatternReportClusterKey(environment, phase3ClusterIDs[0])
 		grouped[groupKey] = append(grouped[groupKey], cluster)
 	}
 
@@ -286,8 +286,8 @@ func triageReportLinkedChildrenByMergedClusterKey(
 	return grouped, nil
 }
 
-func triageReportPhase3ClusterIDsForCluster(
-	cluster semanticcontracts.GlobalClusterRecord,
+func failurePatternReportPhase3ClusterIDsForCluster(
+	cluster semanticcontracts.FailurePatternRecord,
 	phase3ClusterByAnchor map[string]string,
 ) []string {
 	set := map[string]struct{}{}
@@ -306,7 +306,7 @@ func triageReportPhase3ClusterIDsForCluster(
 	return sortedStringSet(set)
 }
 
-func triageReportClusterKey(environment string, clusterID string) string {
+func failurePatternReportClusterKey(environment string, clusterID string) string {
 	normalizedEnvironment := normalizeEnvironment(environment)
 	trimmedClusterID := strings.TrimSpace(clusterID)
 	if normalizedEnvironment == "" || trimmedClusterID == "" {
@@ -315,21 +315,21 @@ func triageReportClusterKey(environment string, clusterID string) string {
 	return normalizedEnvironment + "|" + trimmedClusterID
 }
 
-func toTriageReportClusterGroupMap(groups map[string][]semanticcontracts.GlobalClusterRecord) map[string][]TriageReportCluster {
+func toFailurePatternReportClusterGroupMap(groups map[string][]semanticcontracts.FailurePatternRecord) map[string][]FailurePatternReportCluster {
 	if len(groups) == 0 {
 		return nil
 	}
-	out := make(map[string][]TriageReportCluster, len(groups))
+	out := make(map[string][]FailurePatternReportCluster, len(groups))
 	for key, rows := range groups {
-		out[key] = toTriageReportClusters(rows)
+		out[key] = toFailurePatternReportClusters(rows)
 	}
 	return out
 }
 
-func toTriageReportClusters(rows []semanticcontracts.GlobalClusterRecord) []TriageReportCluster {
-	out := make([]TriageReportCluster, 0, len(rows))
+func toFailurePatternReportClusters(rows []semanticcontracts.FailurePatternRecord) []FailurePatternReportCluster {
+	out := make([]FailurePatternReportCluster, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, TriageReportCluster{
+		out = append(out, FailurePatternReportCluster{
 			Environment:             normalizeEnvironment(row.Environment),
 			SchemaVersion:           strings.TrimSpace(row.SchemaVersion),
 			Phase2ClusterID:         strings.TrimSpace(row.Phase2ClusterID),
@@ -339,19 +339,19 @@ func toTriageReportClusters(rows []semanticcontracts.GlobalClusterRecord) []Tria
 			SeenPostGoodCommit:      row.SeenPostGoodCommit,
 			PostGoodCommitCount:     row.PostGoodCommitCount,
 			ContributingTestsCount:  row.ContributingTestsCount,
-			ContributingTests:       toTriageReportContributingTests(row.ContributingTests),
+			ContributingTests:       toFailurePatternReportContributingTests(row.ContributingTests),
 			MemberPhase1ClusterIDs:  append([]string(nil), row.MemberPhase1ClusterIDs...),
 			MemberSignatureIDs:      append([]string(nil), row.MemberSignatureIDs...),
-			References:              toTriageReportReferences(row.References),
+			References:              toFailurePatternReportReferences(row.References),
 		})
 	}
 	return out
 }
 
-func toTriageReportContributingTests(rows []semanticcontracts.ContributingTestRecord) []TriageReportContributingTest {
-	out := make([]TriageReportContributingTest, 0, len(rows))
+func toFailurePatternReportContributingTests(rows []semanticcontracts.ContributingTestRecord) []FailurePatternReportContributingTest {
+	out := make([]FailurePatternReportContributingTest, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, TriageReportContributingTest{
+		out = append(out, FailurePatternReportContributingTest{
 			Lane:         strings.TrimSpace(row.Lane),
 			JobName:      strings.TrimSpace(row.JobName),
 			TestName:     strings.TrimSpace(row.TestName),
@@ -361,10 +361,10 @@ func toTriageReportContributingTests(rows []semanticcontracts.ContributingTestRe
 	return out
 }
 
-func toTriageReportReferences(rows []semanticcontracts.ReferenceRecord) []TriageReportReference {
-	out := make([]TriageReportReference, 0, len(rows))
+func toFailurePatternReportReferences(rows []semanticcontracts.ReferenceRecord) []FailurePatternReportReference {
+	out := make([]FailurePatternReportReference, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, TriageReportReference{
+		out = append(out, FailurePatternReportReference{
 			RunURL:         strings.TrimSpace(row.RunURL),
 			OccurredAt:     strings.TrimSpace(row.OccurredAt),
 			SignatureID:    strings.TrimSpace(row.SignatureID),
@@ -375,7 +375,7 @@ func toTriageReportReferences(rows []semanticcontracts.ReferenceRecord) []Triage
 	return out
 }
 
-func triageReportIndexRawFailuresByEnvironmentRun(rows []storecontracts.RawFailureRecord) map[string][]storecontracts.RawFailureRecord {
+func failurePatternReportIndexRawFailuresByEnvironmentRun(rows []storecontracts.RawFailureRecord) map[string][]storecontracts.RawFailureRecord {
 	byRun := map[string][]storecontracts.RawFailureRecord{}
 	for _, row := range rows {
 		environment := normalizeEnvironment(row.Environment)
@@ -402,15 +402,15 @@ func triageReportIndexRawFailuresByEnvironmentRun(rows []storecontracts.RawFailu
 	return byRun
 }
 
-func triageReportAttachFullErrorSamples(
-	clusters []TriageReportCluster,
+func failurePatternReportAttachFullErrorSamples(
+	clusters []FailurePatternReportCluster,
 	limit int,
 	runFailuresByRun map[string][]storecontracts.RawFailureRecord,
-) []TriageReportCluster {
+) []FailurePatternReportCluster {
 	if len(clusters) == 0 || limit <= 0 {
-		return append([]TriageReportCluster(nil), clusters...)
+		return append([]FailurePatternReportCluster(nil), clusters...)
 	}
-	out := append([]TriageReportCluster(nil), clusters...)
+	out := append([]FailurePatternReportCluster(nil), clusters...)
 	for index := range out {
 		cluster := out[index]
 		signatureIDs := map[string]struct{}{}
@@ -430,7 +430,7 @@ func triageReportAttachFullErrorSamples(
 		}
 
 		samples := make([]string, 0, limit)
-		orderedRefs := append([]TriageReportReference(nil), cluster.References...)
+		orderedRefs := append([]FailurePatternReportReference(nil), cluster.References...)
 		sort.Slice(orderedRefs, func(i, j int) bool {
 			ti, okI := triagehtml.ParseReferenceTimestamp(orderedRefs[i].OccurredAt)
 			tj, okJ := triagehtml.ParseReferenceTimestamp(orderedRefs[j].OccurredAt)
@@ -467,7 +467,7 @@ func triageReportAttachFullErrorSamples(
 				if sample == "" {
 					sample = strings.TrimSpace(runRow.NormalizedText)
 				}
-				samples = triageReportAppendUniqueLimitedSample(samples, sample, limit)
+				samples = failurePatternReportAppendUniqueLimitedSample(samples, sample, limit)
 			}
 		}
 		out[index].FullErrorSamples = samples
@@ -475,46 +475,46 @@ func triageReportAttachFullErrorSamples(
 	return out
 }
 
-func triageReportAttachFullErrorSamplesByGroup(
-	groups map[string][]TriageReportCluster,
+func failurePatternReportAttachFullErrorSamplesByGroup(
+	groups map[string][]FailurePatternReportCluster,
 	limit int,
 	runFailuresByRun map[string][]storecontracts.RawFailureRecord,
-) map[string][]TriageReportCluster {
+) map[string][]FailurePatternReportCluster {
 	if len(groups) == 0 {
 		return nil
 	}
-	out := make(map[string][]TriageReportCluster, len(groups))
+	out := make(map[string][]FailurePatternReportCluster, len(groups))
 	keys := make([]string, 0, len(groups))
 	for key := range groups {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		out[key] = triageReportAttachFullErrorSamples(groups[key], limit, runFailuresByRun)
+		out[key] = failurePatternReportAttachFullErrorSamples(groups[key], limit, runFailuresByRun)
 	}
 	return out
 }
 
-func triageReportAttachLinkedChildren(
-	rows []TriageReportCluster,
-	linkedChildrenByClusterKey map[string][]TriageReportCluster,
-) []TriageReportCluster {
+func failurePatternReportAttachLinkedChildren(
+	rows []FailurePatternReportCluster,
+	linkedChildrenByClusterKey map[string][]FailurePatternReportCluster,
+) []FailurePatternReportCluster {
 	if len(rows) == 0 || len(linkedChildrenByClusterKey) == 0 {
 		return rows
 	}
-	out := append([]TriageReportCluster(nil), rows...)
+	out := append([]FailurePatternReportCluster(nil), rows...)
 	for index := range out {
-		key := triageReportClusterKey(out[index].Environment, out[index].Phase2ClusterID)
+		key := failurePatternReportClusterKey(out[index].Environment, out[index].Phase2ClusterID)
 		children := linkedChildrenByClusterKey[key]
 		if len(children) == 0 {
 			continue
 		}
-		out[index].LinkedChildren = append([]TriageReportCluster(nil), children...)
+		out[index].LinkedChildren = append([]FailurePatternReportCluster(nil), children...)
 	}
 	return out
 }
 
-func triageReportAppendUniqueLimitedSample(existing []string, candidate string, limit int) []string {
+func failurePatternReportAppendUniqueLimitedSample(existing []string, candidate string, limit int) []string {
 	trimmedCandidate := strings.TrimSpace(candidate)
 	if trimmedCandidate == "" {
 		return existing

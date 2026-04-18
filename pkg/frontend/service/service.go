@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"ci-failure-atlas/pkg/report/weeknav"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
@@ -98,7 +97,7 @@ func (s *Service) ResolveWeekWindow(ctx context.Context, requestedWeek string, n
 	if err != nil {
 		return WeekWindow{}, err
 	}
-	week, previousWeek, nextWeek, index := weeknav.ResolveWindow(weeks, strings.TrimSpace(requestedWeek), s.defaultWeek, now.UTC())
+	week, previousWeek, nextWeek, index := ResolveWindow(weeks, strings.TrimSpace(requestedWeek), s.defaultWeek, now.UTC())
 	if strings.TrimSpace(week) == "" {
 		return WeekWindow{}, ErrNoSemanticWeeks
 	}
@@ -131,13 +130,13 @@ func (s *Service) OpenStoreForWeek(week string) (storecontracts.Store, error) {
 	return store, nil
 }
 
-func (s *Service) BuildHistoryResolver(ctx context.Context, week string) (semhistory.GlobalSignatureResolver, error) {
+func (s *Service) BuildHistoryResolver(ctx context.Context, week string) (semhistory.FailurePatternHistoryResolver, error) {
 	if s == nil {
 		return nil, fmt.Errorf("service is required")
 	}
-	return semhistory.BuildGlobalSignatureResolver(ctx, semhistory.BuildOptions{
-		CurrentWeek:                  strings.TrimSpace(week),
-		GlobalSignatureLookbackWeeks: s.historyWeeks,
+	return semhistory.BuildFailurePatternHistoryResolver(ctx, semhistory.BuildOptions{
+		CurrentWeek:                        strings.TrimSpace(week),
+		FailurePatternHistoryLookbackWeeks: s.historyWeeks,
 		ListWeeks: func(ctx context.Context) ([]string, error) {
 			return s.DiscoverSemanticWeeks(ctx)
 		},

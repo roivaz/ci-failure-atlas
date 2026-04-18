@@ -11,7 +11,7 @@ func TestMergeGroupsLinkedClustersAndPreservesUnlinked(t *testing.T) {
 	t.Parallel()
 
 	merged, err := Merge(
-		[]semanticcontracts.GlobalClusterRecord{
+		[]semanticcontracts.FailurePatternRecord{
 			{
 				SchemaVersion:           semanticcontracts.SchemaVersionV1,
 				Environment:             "dev",
@@ -92,7 +92,7 @@ func TestMergeGroupsLinkedClustersAndPreservesUnlinked(t *testing.T) {
 		t.Fatalf("expected 3 merged rows, got=%d rows=%+v", len(merged), merged)
 	}
 
-	byKey := map[string]semanticcontracts.GlobalClusterRecord{}
+	byKey := map[string]semanticcontracts.FailurePatternRecord{}
 	for _, row := range merged {
 		byKey[row.Environment+"|"+row.Phase2ClusterID] = row
 	}
@@ -127,7 +127,7 @@ func TestMergeFailsWhenClusterResolvesToMultiplePhase3Clusters(t *testing.T) {
 	t.Parallel()
 
 	_, err := Merge(
-		[]semanticcontracts.GlobalClusterRecord{
+		[]semanticcontracts.FailurePatternRecord{
 			{
 				SchemaVersion:           semanticcontracts.SchemaVersionV1,
 				Environment:             "dev",

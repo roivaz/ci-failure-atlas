@@ -154,11 +154,11 @@ type TestMetadataDailyStore interface {
 }
 
 type SemanticWeekSummary struct {
-	TestClusterCountsByEnv   map[string]int
-	ReviewQueueCountsByEnv   map[string]int
-	GlobalClusterCountsByEnv map[string]int
-	GlobalSupportTotalsByEnv map[string]int
-	AvailableEnvironments    []string
+	TestClusterCountsByEnv    map[string]int
+	ReviewQueueCountsByEnv    map[string]int
+	FailurePatternCountsByEnv map[string]int
+	OccurrenceTotalsByEnv     map[string]int
+	AvailableEnvironments     []string
 }
 
 type CheckpointStore interface {
@@ -172,13 +172,13 @@ type DeadLetterStore interface {
 }
 
 type MaterializedWeek struct {
-	GlobalClusters []semanticcontracts.GlobalClusterRecord
-	ReviewQueue    []semanticcontracts.ReviewItemRecord
+	FailurePatterns []semanticcontracts.FailurePatternRecord
+	ReviewQueue     []semanticcontracts.ReviewItemRecord
 }
 
 type SemanticStore interface {
 	ReplaceMaterializedWeek(ctx context.Context, week MaterializedWeek) error
-	ListGlobalClusters(ctx context.Context) ([]semanticcontracts.GlobalClusterRecord, error)
+	ListFailurePatterns(ctx context.Context) ([]semanticcontracts.FailurePatternRecord, error)
 	GetSemanticWeekSummary(ctx context.Context) (SemanticWeekSummary, error)
 
 	ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error)

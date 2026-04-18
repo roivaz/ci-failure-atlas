@@ -7,25 +7,25 @@ import (
 	"strings"
 	"time"
 
-	"ci-failure-atlas/pkg/report/triagehtml"
+	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
-type JobHistoryDayQuery struct {
+type RunLogDayQuery struct {
 	Date         string
 	Week         string
 	Environments []string
 	GeneratedAt  time.Time
 }
 
-type JobHistoryDayData struct {
-	Meta         JobHistoryDayMeta          `json:"meta"`
-	Environments []JobHistoryDayEnvironment `json:"environments"`
+type RunLogDayData struct {
+	Meta         RunLogDayMeta          `json:"meta"`
+	Environments []RunLogDayEnvironment `json:"environments"`
 }
 
-type JobHistoryDayMeta struct {
+type RunLogDayMeta struct {
 	Date         string   `json:"date"`
 	AnchorWeek   string   `json:"-"`
 	Timezone     string   `json:"timezone"`
@@ -33,43 +33,43 @@ type JobHistoryDayMeta struct {
 	Environments []string `json:"environments"`
 }
 
-type JobHistoryDayEnvironment struct {
-	Environment string               `json:"environment"`
-	Summary     JobHistoryDaySummary `json:"summary"`
-	Runs        []JobHistoryRunRow   `json:"runs"`
+type RunLogDayEnvironment struct {
+	Environment string             `json:"environment"`
+	Summary     RunLogDaySummary   `json:"summary"`
+	Runs        []JobHistoryRunRow `json:"runs"`
 }
 
-type JobHistoryDaySummary struct {
+type RunLogDaySummary struct {
 	TotalRuns                  int `json:"total_runs"`
 	FailedRuns                 int `json:"failed_runs"`
-	RunsWithRawFailures        int `json:"runs_with_raw_failures"`
-	RunsWithSemanticAttachment int `json:"runs_with_semantic_attachment"`
-	RunsUnmatchedSignatures    int `json:"runs_unmatched_signatures"`
-	RunsNoFailureRows          int `json:"runs_no_failure_rows"`
-	FailedRunsWithoutRawRows   int `json:"failed_runs_without_raw_rows"`
+	RunsWithRawFailures        int `json:"runs_with_occurrences"`
+	RunsWithSemanticAttachment int `json:"runs_with_failure_pattern_matches"`
+	RunsUnmatchedSignatures    int `json:"runs_with_unmatched_occurrences"`
+	RunsNoFailureRows          int `json:"runs_without_occurrence_rows"`
+	FailedRunsWithoutRawRows   int `json:"failed_runs_without_occurrence_rows"`
 }
 
 type JobHistoryRunRow struct {
 	Run             storecontracts.RunRecord  `json:"run"`
-	Lanes           []string                  `json:"lanes,omitempty"`
+	Lanes           []string                  `json:"failed_at,omitempty"`
 	FailedTestCount int                       `json:"failed_test_count"`
-	FailureRows     []JobHistoryFailureRow    `json:"failure_rows,omitempty"`
-	SemanticRollups JobHistorySemanticRollups `json:"semantic_rollups"`
-	BadPRScore      int                       `json:"bad_pr_score,omitempty"`
-	BadPRReasons    []string                  `json:"bad_pr_reasons,omitempty"`
+	FailureRows     []JobHistoryFailureRow    `json:"occurrences,omitempty"`
+	SemanticRollups JobHistorySemanticRollups `json:"failure_pattern_summary"`
+	BadPRScore      int                       `json:"pr_caused_score,omitempty"`
+	BadPRReasons    []string                  `json:"pr_caused_reasons,omitempty"`
 }
 
 type JobHistoryFailureRow struct {
 	RowID              string                       `json:"row_id"`
 	RunURL             string                       `json:"run_url"`
 	OccurredAt         string                       `json:"occurred_at"`
-	Lane               string                       `json:"lane,omitempty"`
+	Lane               string                       `json:"failed_at,omitempty"`
 	SignatureID        string                       `json:"signature_id,omitempty"`
 	TestName           string                       `json:"test_name,omitempty"`
 	TestSuite          string                       `json:"test_suite,omitempty"`
 	FailureText        string                       `json:"failure_text,omitempty"`
 	NonArtifactBacked  bool                         `json:"non_artifact_backed,omitempty"`
-	SemanticAttachment JobHistorySemanticAttachment `json:"semantic_attachment"`
+	SemanticAttachment JobHistorySemanticAttachment `json:"failure_pattern_match"`
 	Phase3IssueID      string                       `json:"phase3_issue_id,omitempty"`
 	BadPRScore         int                          `json:"-"`
 	BadPRReasons       []string                     `json:"-"`
@@ -77,20 +77,20 @@ type JobHistoryFailureRow struct {
 
 type JobHistorySemanticAttachment struct {
 	Status                  string `json:"status"`
-	ClusterID               string `json:"cluster_id,omitempty"`
-	CanonicalEvidencePhrase string `json:"canonical_evidence_phrase,omitempty"`
-	SearchQueryPhrase       string `json:"search_query_phrase,omitempty"`
+	ClusterID               string `json:"failure_pattern_id,omitempty"`
+	CanonicalEvidencePhrase string `json:"failure_pattern,omitempty"`
+	SearchQueryPhrase       string `json:"search_query,omitempty"`
 }
 
 type JobHistorySemanticRollups struct {
 	SignatureCount     int      `json:"signature_count"`
-	DistinctClusterIDs []string `json:"distinct_cluster_ids,omitempty"`
-	ClusteredRows      int      `json:"clustered_rows"`
-	UnmatchedRows      int      `json:"unmatched_rows"`
-	AttachmentSummary  string   `json:"attachment_summary"`
+	DistinctClusterIDs []string `json:"failure_pattern_ids,omitempty"`
+	ClusteredRows      int      `json:"matched_occurrences"`
+	UnmatchedRows      int      `json:"unmatched_occurrences"`
+	AttachmentSummary  string   `json:"match_summary"`
 }
 
-type jobHistoryDayScope struct {
+type runLogDayScope struct {
 	Date         string
 	DateValue    time.Time
 	ResolvedWeek string
@@ -106,13 +106,13 @@ type jobHistorySignatureCluster struct {
 	BadPRReasons            []string
 }
 
-func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQuery) (JobHistoryDayData, error) {
+func (s *Service) BuildRunLogDay(ctx context.Context, query RunLogDayQuery) (RunLogDayData, error) {
 	if s == nil {
-		return JobHistoryDayData{}, fmt.Errorf("service is required")
+		return RunLogDayData{}, fmt.Errorf("service is required")
 	}
 	dateLabel, _, err := normalizeDateLabel(query.Date)
 	if err != nil {
-		return JobHistoryDayData{}, fmt.Errorf("invalid date: %w", err)
+		return RunLogDayData{}, fmt.Errorf("invalid date: %w", err)
 	}
 
 	window, err := s.resolvePresentationWindow(ctx, presentationWindowRequest{
@@ -120,12 +120,12 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 		Week: query.Week,
 	})
 	if err != nil {
-		return JobHistoryDayData{}, err
+		return RunLogDayData{}, err
 	}
 
 	store, err := s.OpenStoreForWeek(window.AnchorWeek)
 	if err != nil {
-		return JobHistoryDayData{}, err
+		return RunLogDayData{}, err
 	}
 	defer func() {
 		_ = store.Close()
@@ -133,7 +133,7 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 
 	weekData, err := semanticquery.LoadWeekData(ctx, store, semanticquery.LoadWeekDataOptions{})
 	if err != nil {
-		return JobHistoryDayData{}, fmt.Errorf("load semantic week data for run history: %w", err)
+		return RunLogDayData{}, fmt.Errorf("load semantic week data for run history: %w", err)
 	}
 
 	targetEnvironments := semanticquery.ResolveTargetEnvironments(query.Environments, weekData)
@@ -141,12 +141,12 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 		targetEnvironments = normalizeStringSlice(query.Environments)
 	}
 
-	factsByEnvironment, err := loadWindowedTriageFacts(ctx, store, targetEnvironments, window)
+	factsByEnvironment, err := loadFailurePatternsFacts(ctx, store, targetEnvironments, window)
 	if err != nil {
-		return JobHistoryDayData{}, fmt.Errorf("load run history day facts: %w", err)
+		return RunLogDayData{}, fmt.Errorf("load run history day facts: %w", err)
 	}
 
-	clusterBySignature := buildJobHistorySignatureIndex(weekData.GlobalClusters)
+	clusterBySignature := buildJobHistorySignatureIndex(weekData.FailurePatterns)
 	phase3IssueByAnchor := buildJobHistoryPhase3IssueIndex(weekData.Phase3Links)
 
 	generatedAt := query.GeneratedAt
@@ -154,7 +154,7 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 		generatedAt = time.Now().UTC()
 	}
 
-	environments := make([]JobHistoryDayEnvironment, 0, len(targetEnvironments))
+	environments := make([]RunLogDayEnvironment, 0, len(targetEnvironments))
 	for _, environment := range targetEnvironments {
 		normalizedEnvironment := normalizeEnvironment(environment)
 		if normalizedEnvironment == "" {
@@ -166,15 +166,15 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 			clusterBySignature,
 			phase3IssueByAnchor,
 		)
-		environments = append(environments, JobHistoryDayEnvironment{
+		environments = append(environments, RunLogDayEnvironment{
 			Environment: normalizedEnvironment,
-			Summary:     buildJobHistoryDaySummary(runs),
+			Summary:     buildRunLogDaySummary(runs),
 			Runs:        runs,
 		})
 	}
 
-	return JobHistoryDayData{
-		Meta: JobHistoryDayMeta{
+	return RunLogDayData{
+		Meta: RunLogDayMeta{
 			Date:         window.StartDate,
 			AnchorWeek:   window.AnchorWeek,
 			Timezone:     "UTC",
@@ -185,16 +185,16 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 	}, nil
 }
 
-func resolveJobHistoryDayScope(query JobHistoryDayQuery) (jobHistoryDayScope, error) {
+func resolveRunLogDayScope(query RunLogDayQuery) (runLogDayScope, error) {
 	dateLabel, dateValue, err := normalizeDateLabel(query.Date)
 	if err != nil {
-		return jobHistoryDayScope{}, fmt.Errorf("invalid date: %w", err)
+		return runLogDayScope{}, fmt.Errorf("invalid date: %w", err)
 	}
-	resolvedWeek, err := resolveWindowedTriageWeekLabel(dateValue, dateValue, query.Week)
+	resolvedWeek, err := resolveFailurePatternsWeekLabel(dateValue, dateValue, query.Week)
 	if err != nil {
-		return jobHistoryDayScope{}, err
+		return runLogDayScope{}, err
 	}
-	return jobHistoryDayScope{
+	return runLogDayScope{
 		Date:         dateLabel,
 		DateValue:    dateValue,
 		ResolvedWeek: resolvedWeek,
@@ -203,7 +203,7 @@ func resolveJobHistoryDayScope(query JobHistoryDayQuery) (jobHistoryDayScope, er
 
 func buildJobHistoryRunRows(
 	environment string,
-	facts windowedTriageEnvironmentFacts,
+	facts failurePatternsEnvironmentFacts,
 	clusterBySignature map[string]jobHistorySignatureCluster,
 	phase3IssueByAnchor map[string]string,
 ) []JobHistoryRunRow {
@@ -253,7 +253,7 @@ func buildJobHistoryFailureRows(
 	rows := make([]JobHistoryFailureRow, 0, len(rawFailures))
 	for _, row := range rawFailures {
 		signatureID := strings.TrimSpace(row.SignatureID)
-		signatureKey := jobHistorySignatureKey(environment, signatureID)
+		signatureKey := jobHistoryFailurePatternKey(environment, signatureID)
 		cluster, matched := clusterBySignature[signatureKey]
 
 		attachment := JobHistorySemanticAttachment{
@@ -344,8 +344,8 @@ func buildJobHistoryAttachmentSummary(
 	return "multiple_clustered"
 }
 
-func buildJobHistoryDaySummary(runs []JobHistoryRunRow) JobHistoryDaySummary {
-	summary := JobHistoryDaySummary{
+func buildRunLogDaySummary(runs []JobHistoryRunRow) RunLogDaySummary {
+	summary := RunLogDaySummary{
 		TotalRuns: len(runs),
 	}
 	for _, row := range runs {
@@ -370,7 +370,7 @@ func buildJobHistoryDaySummary(runs []JobHistoryRunRow) JobHistoryDaySummary {
 	return summary
 }
 
-func buildJobHistorySignatureIndex(clusters []semanticcontracts.GlobalClusterRecord) map[string]jobHistorySignatureCluster {
+func buildJobHistorySignatureIndex(clusters []semanticcontracts.FailurePatternRecord) map[string]jobHistorySignatureCluster {
 	index := map[string]jobHistorySignatureCluster{}
 	phraseEnvironments := jobHistoryPhraseEnvironments(clusters)
 	for _, cluster := range clusters {
@@ -382,11 +382,11 @@ func buildJobHistorySignatureIndex(clusters []semanticcontracts.GlobalClusterRec
 			phraseEnvironments[normalizePhrase(cluster.CanonicalEvidencePhrase)],
 			environment,
 		)
-		badPRScore, badPRReasons := triagehtml.BadPRScoreAndReasons(triagehtml.SignatureRow{
-			Environment:   environment,
-			PostGoodCount: cluster.PostGoodCommitCount,
-			AlsoSeenIn:    otherEnvironments,
-			References:    jobHistoryRunReferences(cluster.References),
+		badPRScore, badPRReasons := triagehtml.BadPRScoreAndReasons(triagehtml.FailurePatternRow{
+			Environment:        environment,
+			AfterLastPushCount: cluster.PostGoodCommitCount,
+			AlsoIn:             otherEnvironments,
+			AffectedRuns:       jobHistoryRunReferences(cluster.References),
 		})
 		candidate := jobHistorySignatureCluster{
 			ClusterID:               strings.TrimSpace(cluster.Phase2ClusterID),
@@ -398,7 +398,7 @@ func buildJobHistorySignatureIndex(clusters []semanticcontracts.GlobalClusterRec
 			BadPRReasons:            append([]string(nil), badPRReasons...),
 		}
 		for _, signatureID := range cluster.MemberSignatureIDs {
-			key := jobHistorySignatureKey(environment, signatureID)
+			key := jobHistoryFailurePatternKey(environment, signatureID)
 			if key == "" {
 				continue
 			}
@@ -411,7 +411,7 @@ func buildJobHistorySignatureIndex(clusters []semanticcontracts.GlobalClusterRec
 	return index
 }
 
-func jobHistoryPhraseEnvironments(clusters []semanticcontracts.GlobalClusterRecord) map[string]map[string]struct{} {
+func jobHistoryPhraseEnvironments(clusters []semanticcontracts.FailurePatternRecord) map[string]map[string]struct{} {
 	out := map[string]map[string]struct{}{}
 	for _, cluster := range clusters {
 		environment := normalizeEnvironment(cluster.Environment)
@@ -467,7 +467,7 @@ func jobHistoryPrefersClusterCandidate(current jobHistorySignatureCluster, candi
 	return strings.TrimSpace(candidate.ClusterID) < strings.TrimSpace(current.ClusterID)
 }
 
-func jobHistorySignatureKey(environment string, signatureID string) string {
+func jobHistoryFailurePatternKey(environment string, signatureID string) string {
 	normalizedEnvironment := normalizeEnvironment(environment)
 	trimmedSignatureID := strings.TrimSpace(signatureID)
 	if normalizedEnvironment == "" || trimmedSignatureID == "" {

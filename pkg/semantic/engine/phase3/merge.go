@@ -11,16 +11,16 @@ import (
 type mergeGroup struct {
 	Environment     string
 	OutputClusterID string
-	Members         []semanticcontracts.GlobalClusterRecord
+	Members         []semanticcontracts.FailurePatternRecord
 }
 
-// Merge applies manual phase3 links on top of phase2 global clusters.
+// Merge applies manual phase3 links on top of phase2 failure patterns.
 // Linked clusters are merged by environment + phase3 cluster ID; unlinked
 // clusters are preserved as standalone entries.
 func Merge(
-	globalClusters []semanticcontracts.GlobalClusterRecord,
+	globalClusters []semanticcontracts.FailurePatternRecord,
 	phase3Links []semanticcontracts.Phase3LinkRecord,
-) ([]semanticcontracts.GlobalClusterRecord, error) {
+) ([]semanticcontracts.FailurePatternRecord, error) {
 	if len(globalClusters) == 0 {
 		return nil, nil
 	}
@@ -44,7 +44,7 @@ func Merge(
 		environment := strings.TrimSpace(normalized.Environment)
 		phase2ClusterID := strings.TrimSpace(normalized.Phase2ClusterID)
 		if environment == "" || phase2ClusterID == "" {
-			return nil, fmt.Errorf("global cluster record missing environment and/or phase2_cluster_id")
+			return nil, fmt.Errorf("failure-pattern record missing environment and/or phase2_cluster_id")
 		}
 
 		phase3ClusterIDs := phase3ClusterIDsForCluster(normalized, phase3ClusterByAnchor)
@@ -68,22 +68,22 @@ func Merge(
 			group = &mergeGroup{
 				Environment:     environment,
 				OutputClusterID: outputClusterID,
-				Members:         make([]semanticcontracts.GlobalClusterRecord, 0, 1),
+				Members:         make([]semanticcontracts.FailurePatternRecord, 0, 1),
 			}
 			groupByKey[groupKey] = group
 		}
 		group.Members = append(group.Members, normalized)
 	}
 
-	merged := make([]semanticcontracts.GlobalClusterRecord, 0, len(groupByKey))
+	merged := make([]semanticcontracts.FailurePatternRecord, 0, len(groupByKey))
 	for _, group := range groupByKey {
 		merged = append(merged, compileMergedGroup(*group))
 	}
-	sortGlobalClusters(merged)
+	sortFailurePatterns(merged)
 	return merged, nil
 }
 
-func compileMergedGroup(group mergeGroup) semanticcontracts.GlobalClusterRecord {
+func compileMergedGroup(group mergeGroup) semanticcontracts.FailurePatternRecord {
 	representative := representativeCluster(group.Members)
 	memberPhase1Set := map[string]struct{}{}
 	memberSignatureSet := map[string]struct{}{}
@@ -175,7 +175,7 @@ func compileMergedGroup(group mergeGroup) semanticcontracts.GlobalClusterRecord 
 		searchQuerySourceSignatureID = strings.TrimSpace(references[0].SignatureID)
 	}
 
-	return semanticcontracts.GlobalClusterRecord{
+	return semanticcontracts.FailurePatternRecord{
 		SchemaVersion:                semanticcontracts.SchemaVersionV1,
 		Environment:                  group.Environment,
 		Phase2ClusterID:              strings.TrimSpace(group.OutputClusterID),
@@ -194,11 +194,11 @@ func compileMergedGroup(group mergeGroup) semanticcontracts.GlobalClusterRecord 
 	}
 }
 
-func representativeCluster(rows []semanticcontracts.GlobalClusterRecord) semanticcontracts.GlobalClusterRecord {
+func representativeCluster(rows []semanticcontracts.FailurePatternRecord) semanticcontracts.FailurePatternRecord {
 	if len(rows) == 0 {
-		return semanticcontracts.GlobalClusterRecord{}
+		return semanticcontracts.FailurePatternRecord{}
 	}
-	sorted := append([]semanticcontracts.GlobalClusterRecord(nil), rows...)
+	sorted := append([]semanticcontracts.FailurePatternRecord(nil), rows...)
 	sort.Slice(sorted, func(i, j int) bool {
 		if sorted[i].SupportCount != sorted[j].SupportCount {
 			return sorted[i].SupportCount > sorted[j].SupportCount
@@ -212,7 +212,7 @@ func representativeCluster(rows []semanticcontracts.GlobalClusterRecord) semanti
 }
 
 func phase3ClusterIDsForCluster(
-	cluster semanticcontracts.GlobalClusterRecord,
+	cluster semanticcontracts.FailurePatternRecord,
 	phase3ClusterByAnchor map[string]string,
 ) []string {
 	set := map[string]struct{}{}
@@ -241,7 +241,7 @@ func phase3AnchorKey(environment string, runURL string, rowID string) string {
 	return normalizedEnvironment + "|" + trimmedRunURL + "|" + trimmedRowID
 }
 
-func normalizeGlobalCluster(row semanticcontracts.GlobalClusterRecord) semanticcontracts.GlobalClusterRecord {
+func normalizeGlobalCluster(row semanticcontracts.FailurePatternRecord) semanticcontracts.FailurePatternRecord {
 	normalized := row
 	normalized.SchemaVersion = semanticcontracts.SchemaVersionV1
 	normalized.Environment = normalizeEnvironment(row.Environment)
@@ -331,7 +331,7 @@ func sortedStringSet(set map[string]struct{}) []string {
 	return out
 }
 
-func sortGlobalClusters(rows []semanticcontracts.GlobalClusterRecord) {
+func sortFailurePatterns(rows []semanticcontracts.FailurePatternRecord) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].SupportCount != rows[j].SupportCount {
 			return rows[i].SupportCount > rows[j].SupportCount

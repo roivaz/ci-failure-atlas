@@ -103,7 +103,7 @@ func printMaterializeSummary(cmd *cobra.Command, scope materializeScope, result 
 	cmd.Printf("  raw failures: %d included of %d total\n", diagnostics.RowsIncluded, diagnostics.RawRowsTotal)
 	cmd.Printf("  test clusters: %d\n", len(result.Phase1.TestClusters))
 	cmd.Printf("  review queue: %d\n", len(result.Phase2.ReviewQueue))
-	cmd.Printf("  global clusters: %d\n", len(result.Phase2.GlobalClusters))
+	cmd.Printf("  failure patterns: %d\n", len(result.Phase2.FailurePatterns))
 	if diagnostics.RowsSkippedOutsideWindow > 0 || diagnostics.RowsSkippedNonArtifact > 0 || diagnostics.RowsSkippedInvalid > 0 {
 		cmd.Printf(
 			"  skipped: outside_window=%d non_artifact=%d invalid=%d\n",
