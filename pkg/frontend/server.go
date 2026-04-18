@@ -15,7 +15,6 @@ import (
 	reportreview "ci-failure-atlas/pkg/report/review"
 	"ci-failure-atlas/pkg/report/triagehtml"
 	reportweekly "ci-failure-atlas/pkg/report/weekly"
-	storecontracts "ci-failure-atlas/pkg/store/contracts"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -29,6 +28,13 @@ type HandlerOptions struct {
 type handler struct {
 	service *frontservice.Service
 }
+
+type reportPageMode string
+
+const (
+	reportPageModeReport  reportPageMode = "report"
+	reportPageModeRolling reportPageMode = "rolling"
+)
 
 func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	service, err := frontservice.New(frontservice.Options{
@@ -44,7 +50,7 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 		HistoryHorizonWeeks: service.HistoryHorizonWeeks(),
 		PostgresPool:        opts.PostgresPool,
 		RoutePrefix:         "/review",
-		WeeklyPath:          "/weekly",
+		WeeklyPath:          "/report",
 		TriagePath:          "/triage",
 	})
 	if err != nil {
@@ -58,10 +64,10 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	mux.HandleFunc("/", h.handleRoot)
 	mux.HandleFunc("/api/runs/day", h.handleAPIRunsDay)
 	mux.HandleFunc("/api/triage/window", h.handleAPIWindowedTriage)
+	mux.HandleFunc("/report", h.handleReportPage)
 	mux.HandleFunc("/runs", h.handleRunsPage)
 	mux.HandleFunc("/triage", h.handleTriagePage)
 	mux.HandleFunc("/global", h.handleLegacyGlobalRedirect)
-	mux.HandleFunc("/weekly", h.handleWeeklyPage)
 	mux.HandleFunc("/review", h.handleReviewRoot)
 	mux.Handle("/review/", http.StripPrefix("/review", reviewHandler))
 	return mux, nil
@@ -76,7 +82,16 @@ func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.Redirect(w, r, viewHref("/weekly", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusFound)
+	href, err := h.currentRollingReportHref(r.Context())
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
+			statusCode = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+	http.Redirect(w, r, href, http.StatusFound)
 }
 
 func (h *handler) handleTriagePage(w http.ResponseWriter, r *http.Request) {
@@ -124,19 +139,27 @@ func (h *handler) handleLegacyGlobalRedirect(w http.ResponseWriter, r *http.Requ
 	http.Redirect(w, r, viewHref("/triage", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusMovedPermanently)
 }
 
-func (h *handler) handleWeeklyPage(w http.ResponseWriter, r *http.Request) {
+func (h *handler) handleReportPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	window, err := h.service.ResolveWeekWindow(r.Context(), strings.TrimSpace(r.URL.Query().Get("week")), time.Time{})
+	query, mode, err := h.resolveReportPageQuery(
+		r.Context(),
+		reportQueryFromRequest(r),
+		normalizeReportPageMode(strings.TrimSpace(r.URL.Query().Get("mode"))),
+	)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		statusCode := http.StatusBadRequest
+		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
+			statusCode = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), statusCode)
 		return
 	}
-	reportHTML, err := h.generateWeeklyReport(r.Context(), window)
+	reportHTML, err := h.generateReportPage(r.Context(), query, mode)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("generate weekly report: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("generate report: %v", err), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -190,27 +213,28 @@ func (h *handler) generateWindowedTriageReport(ctx context.Context, query fronts
 	if err != nil {
 		return "", err
 	}
-	window, err := h.service.ResolveWeekWindow(ctx, data.Meta.ResolvedWeek, time.Time{})
+	scope, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		StartDate: data.Meta.StartDate,
+		EndDate:   data.Meta.EndDate,
+	})
 	if err != nil {
 		return "", err
 	}
-	week := strings.TrimSpace(data.Meta.ResolvedWeek)
-	runsHref := ""
-	if isSingleDayWindow(data.Meta.StartDate, data.Meta.EndDate) {
-		runsHref = dayRunHistoryHref("/runs", data.Meta.StartDate, week, query.Environments)
+	rollingHref, err := h.currentRollingReportHref(ctx)
+	if err != nil {
+		return "", err
 	}
 	return buildWindowedTriageReportHTML(data, windowedTriagePageOptions{
 		Query: query,
 		Chrome: triagehtml.ReportChromeOptions{
-			CurrentWeek:  week,
+			WindowLabel:  formatWindowLabel(scope.StartDate, scope.EndDate),
 			CurrentView:  triagehtml.ReportViewTriage,
-			PreviousWeek: strings.TrimSpace(window.PreviousWeek),
-			PreviousHref: shiftedWindowedTriageHref("/triage", window.PreviousWeek, week, data.Meta.StartDate, data.Meta.EndDate, query.Environments),
-			NextWeek:     strings.TrimSpace(window.NextWeek),
-			NextHref:     shiftedWindowedTriageHref("/triage", window.NextWeek, week, data.Meta.StartDate, data.Meta.EndDate, query.Environments),
-			WeeklyHref:   viewHref("/weekly", week),
-			TriageHref:   windowedTriageHref("/triage", week, data.Meta.StartDate, data.Meta.EndDate, query.Environments),
-			RunsHref:     runsHref,
+			PreviousHref: h.shiftedTriageHref(ctx, scope.StartDate, scope.EndDate, -7, query.Environments),
+			NextHref:     h.shiftedTriageHref(ctx, scope.StartDate, scope.EndDate, 7, query.Environments),
+			RollingHref:  rollingHref,
+			ReportHref:   reportHref("/report", scope.StartDate, scope.EndDate, reportPageModeReport),
+			TriageHref:   windowedTriageHref("/triage", "", scope.StartDate, scope.EndDate, query.Environments),
+			RunsHref:     dayRunHistoryHref("/runs", scope.EndDate, "", query.Environments),
 		},
 	}), nil
 }
@@ -220,74 +244,76 @@ func (h *handler) generateDayRunHistoryPage(ctx context.Context, query frontserv
 	if err != nil {
 		return "", err
 	}
-	window, err := h.service.ResolveWeekWindow(ctx, data.Meta.ResolvedWeek, time.Time{})
+	scope, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		Date: data.Meta.Date,
+	})
 	if err != nil {
 		return "", err
 	}
-	week := strings.TrimSpace(data.Meta.ResolvedWeek)
+	rollingHref, err := h.currentRollingReportHref(ctx)
+	if err != nil {
+		return "", err
+	}
 	environments := query.Environments
 	return buildDayRunHistoryPageHTML(data, dayRunHistoryPageOptions{
 		Query:      query,
-		TriageHref: windowedTriageHref("/triage", week, data.Meta.Date, data.Meta.Date, environments),
-		APIHref:    dayRunHistoryHref("/api/runs/day", data.Meta.Date, week, environments),
+		TriageHref: windowedTriageHref("/triage", "", scope.StartDate, scope.EndDate, environments),
+		APIHref:    dayRunHistoryHref("/api/runs/day", data.Meta.Date, "", environments),
 		Chrome: triagehtml.ReportChromeOptions{
-			CurrentWeek:  week,
+			WindowLabel:  formatWindowLabel(scope.StartDate, scope.EndDate),
 			CurrentView:  triagehtml.ReportViewRuns,
-			PreviousWeek: strings.TrimSpace(window.PreviousWeek),
-			PreviousHref: shiftedDayRunHistoryHref("/runs", window.PreviousWeek, data.Meta.Date, week, environments),
-			NextWeek:     strings.TrimSpace(window.NextWeek),
-			NextHref:     shiftedDayRunHistoryHref("/runs", window.NextWeek, data.Meta.Date, week, environments),
-			WeeklyHref:   viewHref("/weekly", week),
-			TriageHref:   windowedTriageHref("/triage", week, data.Meta.Date, data.Meta.Date, environments),
-			RunsHref:     dayRunHistoryHref("/runs", data.Meta.Date, week, environments),
+			PreviousHref: h.shiftedRunsHref(ctx, data.Meta.Date, -1, environments),
+			NextHref:     h.shiftedRunsHref(ctx, data.Meta.Date, 1, environments),
+			RollingHref:  rollingHref,
+			ReportHref:   reportHref("/report", scope.StartDate, scope.EndDate, reportPageModeReport),
+			TriageHref:   windowedTriageHref("/triage", "", scope.StartDate, scope.EndDate, environments),
+			RunsHref:     dayRunHistoryHref("/runs", data.Meta.Date, "", environments),
 		},
 	}), nil
 }
 
-func (h *handler) generateWeeklyReport(ctx context.Context, window frontservice.WeekWindow) (string, error) {
-	week := strings.TrimSpace(window.CurrentWeek)
-	store, err := h.service.OpenStoreForWeek(week)
+func (h *handler) generateReportPage(
+	ctx context.Context,
+	query frontservice.ReportQuery,
+	mode reportPageMode,
+) (string, error) {
+	data, err := h.service.BuildReportData(ctx, query)
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		_ = store.Close()
-	}()
-
-	var previousStore storecontracts.Store
-	if strings.TrimSpace(window.PreviousWeek) != "" {
-		openedPreviousStore, openErr := h.service.OpenStoreForWeek(window.PreviousWeek)
-		if openErr != nil {
-			return "", openErr
-		}
-		previousStore = openedPreviousStore
-		defer func() {
-			_ = previousStore.Close()
-		}()
-	}
-
-	historyResolver, err := h.service.BuildHistoryResolver(ctx, week)
+	scope, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		StartDate: query.StartDate,
+		EndDate:   query.EndDate,
+	})
 	if err != nil {
-		return "", fmt.Errorf("build weekly history resolver: %w", err)
+		return "", err
 	}
-
+	rollingHref, err := h.currentRollingReportHref(ctx)
+	if err != nil {
+		return "", err
+	}
+	reportHrefValue := reportHref("/report", scope.StartDate, scope.EndDate, reportPageModeReport)
+	if mode == reportPageModeRolling {
+		reportStart, reportEnd := semanticWeekDateRange(data.NavigationAnchorWeek)
+		reportHrefValue = reportHref("/report", reportStart, reportEnd, reportPageModeReport)
+	}
 	opts := reportweekly.DefaultOptions()
-	opts.StartDate = week
-	opts.Week = week
-	opts.HistoryHorizonWeeks = h.service.HistoryHorizonWeeks()
-	opts.HistoryResolver = historyResolver
 	opts.DayRunHistoryBasePath = "/runs"
 	opts.Chrome = triagehtml.ReportChromeOptions{
-		CurrentWeek:  week,
-		CurrentView:  triagehtml.ReportViewWeekly,
-		PreviousWeek: strings.TrimSpace(window.PreviousWeek),
-		PreviousHref: navigationHref("/weekly", window.PreviousWeek),
-		NextWeek:     strings.TrimSpace(window.NextWeek),
-		NextHref:     navigationHref("/weekly", window.NextWeek),
-		WeeklyHref:   viewHref("/weekly", week),
-		TriageHref:   viewHref("/triage", week),
+		WindowLabel:  formatWindowLabel(scope.StartDate, scope.EndDate),
+		CurrentView:  reportChromeView(mode),
+		PreviousHref: h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, -7, mode),
+		NextHref:     h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, 7, mode),
+		RollingHref:  rollingHref,
+		ReportHref:   reportHrefValue,
+		TriageHref:   windowedTriageHref("/triage", "", scope.StartDate, scope.EndDate, nil),
+		RunsHref:     dayRunHistoryHref("/runs", scope.EndDate, "", nil),
 	}
-	return reportweekly.GenerateHTMLWithComparison(ctx, store, previousStore, opts)
+	if mode == reportPageModeRolling {
+		opts.Chrome.PreviousHref = ""
+		opts.Chrome.NextHref = ""
+	}
+	return reportweekly.RenderHTML(data, opts), nil
 }
 
 func viewHref(path string, week string) string {
@@ -358,32 +384,207 @@ func windowedTriageQueryFromRequest(r *http.Request) frontservice.WindowedTriage
 	}
 }
 
+func reportQueryFromRequest(r *http.Request) frontservice.ReportQuery {
+	if r == nil {
+		return frontservice.ReportQuery{}
+	}
+	return frontservice.ReportQuery{
+		StartDate: strings.TrimSpace(r.URL.Query().Get("start_date")),
+		EndDate:   strings.TrimSpace(r.URL.Query().Get("end_date")),
+		Week:      strings.TrimSpace(r.URL.Query().Get("week")),
+	}
+}
+
 func (h *handler) resolveWindowedTriagePageQuery(
 	ctx context.Context,
 	query frontservice.WindowedTriageQuery,
 ) (frontservice.WindowedTriageQuery, error) {
-	startDate := strings.TrimSpace(query.StartDate)
-	endDate := strings.TrimSpace(query.EndDate)
-	switch {
-	case startDate == "" && endDate == "":
-		window, err := h.service.ResolveWeekWindow(ctx, strings.TrimSpace(query.Week), time.Time{})
-		if err != nil {
-			return frontservice.WindowedTriageQuery{}, err
-		}
-		query.Week = strings.TrimSpace(window.CurrentWeek)
-		query.StartDate, query.EndDate = semanticWeekDateRange(query.Week)
-	case startDate == "" || endDate == "":
-		return frontservice.WindowedTriageQuery{}, fmt.Errorf("start_date and end_date must both be set when filtering the triage window")
-	default:
-		inferredWeek, err := semanticWeekForDateWindow(startDate, endDate)
-		if err != nil {
-			return frontservice.WindowedTriageQuery{}, err
-		}
-		query.Week = inferredWeek
-		query.StartDate = startDate
-		query.EndDate = endDate
+	window, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		StartDate:   query.StartDate,
+		EndDate:     query.EndDate,
+		Week:        query.Week,
+		DefaultMode: frontservice.WindowDefaultLatestWeek,
+	})
+	if err != nil {
+		return frontservice.WindowedTriageQuery{}, err
 	}
+	query.Week = ""
+	query.StartDate = window.StartDate
+	query.EndDate = window.EndDate
 	return query, nil
+}
+
+func (h *handler) resolveReportPageQuery(
+	ctx context.Context,
+	query frontservice.ReportQuery,
+	mode reportPageMode,
+) (frontservice.ReportQuery, reportPageMode, error) {
+	defaultMode := frontservice.WindowDefaultLatestWeek
+	if mode == reportPageModeRolling {
+		defaultMode = frontservice.WindowDefaultRolling
+	}
+	window, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		StartDate:   query.StartDate,
+		EndDate:     query.EndDate,
+		Week:        query.Week,
+		DefaultMode: defaultMode,
+		RollingDays: 7,
+	})
+	if err != nil {
+		return frontservice.ReportQuery{}, "", err
+	}
+	query.Week = ""
+	query.StartDate = window.StartDate
+	query.EndDate = window.EndDate
+	return query, mode, nil
+}
+
+func reportHref(path string, startDate string, endDate string, mode reportPageMode) string {
+	trimmedPath := strings.TrimSpace(path)
+	if trimmedPath == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmedPath, "/") {
+		trimmedPath = "/" + trimmedPath
+	}
+	q := url.Values{}
+	if strings.TrimSpace(startDate) != "" {
+		q.Set("start_date", strings.TrimSpace(startDate))
+	}
+	if strings.TrimSpace(endDate) != "" {
+		q.Set("end_date", strings.TrimSpace(endDate))
+	}
+	if normalizeReportPageMode(string(mode)) == reportPageModeRolling {
+		q.Set("mode", string(reportPageModeRolling))
+	}
+	if encoded := q.Encode(); encoded != "" {
+		return trimmedPath + "?" + encoded
+	}
+	return trimmedPath
+}
+
+func normalizeReportPageMode(value string) reportPageMode {
+	if strings.EqualFold(strings.TrimSpace(value), string(reportPageModeRolling)) {
+		return reportPageModeRolling
+	}
+	return reportPageModeReport
+}
+
+func reportChromeView(mode reportPageMode) triagehtml.ReportView {
+	if mode == reportPageModeRolling {
+		return triagehtml.ReportViewRolling
+	}
+	return triagehtml.ReportViewReport
+}
+
+func formatWindowLabel(startDate string, endDate string) string {
+	trimmedStart := strings.TrimSpace(startDate)
+	trimmedEnd := strings.TrimSpace(endDate)
+	switch {
+	case trimmedStart == "" && trimmedEnd == "":
+		return ""
+	case trimmedStart == trimmedEnd:
+		return trimmedStart + " UTC"
+	case trimmedStart == "":
+		return trimmedEnd + " UTC"
+	case trimmedEnd == "":
+		return trimmedStart + " UTC"
+	default:
+		return trimmedStart + " to " + trimmedEnd + " UTC"
+	}
+}
+
+func (h *handler) currentRollingReportHref(ctx context.Context) (string, error) {
+	window, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		DefaultMode: frontservice.WindowDefaultRolling,
+		RollingDays: 7,
+	})
+	if err == nil {
+		return reportHref("/report", window.StartDate, window.EndDate, reportPageModeRolling), nil
+	}
+	weekWindow, weekErr := h.service.ResolveWeekWindow(ctx, "", time.Time{})
+	if weekErr != nil {
+		return "", err
+	}
+	fallbackStart, fallbackEnd := semanticWeekDateRange(weekWindow.CurrentWeek)
+	if fallbackStart == "" || fallbackEnd == "" {
+		return "", err
+	}
+	return reportHref("/report", fallbackStart, fallbackEnd, reportPageModeRolling), nil
+}
+
+func (h *handler) shiftedReportHref(
+	ctx context.Context,
+	startDate string,
+	endDate string,
+	days int,
+	mode reportPageMode,
+) string {
+	if mode == reportPageModeRolling {
+		return ""
+	}
+	targetStart, targetEnd, err := shiftDateWindow(startDate, endDate, days)
+	if err != nil {
+		return ""
+	}
+	if _, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		StartDate: targetStart,
+		EndDate:   targetEnd,
+	}); err != nil {
+		return ""
+	}
+	return reportHref("/report", targetStart, targetEnd, reportPageModeReport)
+}
+
+func (h *handler) shiftedTriageHref(
+	ctx context.Context,
+	startDate string,
+	endDate string,
+	days int,
+	environments []string,
+) string {
+	targetStart, targetEnd, err := shiftDateWindow(startDate, endDate, days)
+	if err != nil {
+		return ""
+	}
+	if _, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		StartDate: targetStart,
+		EndDate:   targetEnd,
+	}); err != nil {
+		return ""
+	}
+	return windowedTriageHref("/triage", "", targetStart, targetEnd, environments)
+}
+
+func (h *handler) shiftedRunsHref(
+	ctx context.Context,
+	currentDate string,
+	days int,
+	environments []string,
+) string {
+	dateValue, err := parseDateInputValue("date", currentDate)
+	if err != nil {
+		return ""
+	}
+	targetDate := dateValue.AddDate(0, 0, days).Format("2006-01-02")
+	if _, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		Date: targetDate,
+	}); err != nil {
+		return ""
+	}
+	return dayRunHistoryHref("/runs", targetDate, "", environments)
+}
+
+func shiftDateWindow(startDate string, endDate string, days int) (string, string, error) {
+	startValue, err := parseDateInputValue("start_date", startDate)
+	if err != nil {
+		return "", "", err
+	}
+	endValue, err := parseDateInputValue("end_date", endDate)
+	if err != nil {
+		return "", "", err
+	}
+	return startValue.AddDate(0, 0, days).Format("2006-01-02"), endValue.AddDate(0, 0, days).Format("2006-01-02"), nil
 }
 
 func semanticWeekDateRange(week string) (string, string) {

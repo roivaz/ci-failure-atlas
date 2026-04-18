@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -58,6 +59,7 @@ type semanticEnvSummary = frontservice.WeeklySemanticEnvSummary
 type semanticSnapshot = frontservice.WeeklySemanticSnapshot
 type belowTargetTest = frontservice.WeeklyBelowTargetTest
 type topSignature = frontservice.WeeklyTopSignature
+type reportData = frontservice.ReportData
 
 func DefaultOptions() Options {
 	return Options{
@@ -74,6 +76,20 @@ func Generate(ctx context.Context, store storecontracts.Store, opts Options) err
 
 func GenerateHTML(ctx context.Context, store storecontracts.Store, opts Options) (string, error) {
 	return GenerateHTMLWithComparison(ctx, store, nil, opts)
+}
+
+func RenderHTML(data reportData, opts Options) string {
+	return buildHTML(
+		data.StartDate,
+		data.EndDate,
+		data.CurrentReports,
+		data.PreviousReports,
+		data.TargetRate,
+		data.TestsBelowTargetByEnv,
+		reportWindowedSignatureRowsByEnv(data.TopSignaturesByEnv),
+		strings.TrimSpace(opts.DayRunHistoryBasePath),
+		opts.Chrome,
+	)
 }
 
 func GenerateWithComparison(
@@ -106,11 +122,8 @@ func GenerateWithComparison(
 		data.CurrentReports,
 		data.PreviousReports,
 		data.TargetRate,
-		data.CurrentSemantic,
-		data.PreviousSemantic,
 		data.TestsBelowTargetByEnv,
-		data.TopSignaturesByEnv,
-		data.HistoryResolver,
+		legacyWeeklySignatureRowsByEnv(data.TopSignaturesByEnv, data.HistoryResolver, data.EndDate),
 		validated.DayRunHistoryBasePath,
 		validated.Chrome,
 	)
@@ -203,11 +216,8 @@ func buildHTML(
 	reports []envReport,
 	previousReports []envReport,
 	targetRate float64,
-	currentSemantic semanticSnapshot,
-	previousSemantic semanticSnapshot,
 	testsBelowTargetByEnv map[string][]belowTargetTest,
-	topSignaturesByEnv map[string][]topSignature,
-	historyResolver semhistory.GlobalSignatureResolver,
+	topSignaturesByEnv map[string][]triagehtml.SignatureRow,
 	dayRunHistoryBasePath string,
 	chrome triagehtml.ReportChromeOptions,
 ) string {
@@ -221,7 +231,7 @@ func buildHTML(
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Weekly Report</title>\n")
+	b.WriteString("  <title>CI Report</title>\n")
 	b.WriteString(triagehtml.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
@@ -286,10 +296,11 @@ func buildHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body data-chart-mode=\"count\">\n")
 	b.WriteString(triagehtml.ReportChromeHTML(chrome))
-	b.WriteString("  <h1>CI Weekly Report</h1>\n")
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (7 days)</p>\n",
+	b.WriteString("  <h1>CI Report</h1>\n")
+	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
 		startDate.Format("2006-01-02"),
 		endDate.Format("2006-01-02"),
+		reportInclusiveDays(startDate, endDate),
 	))
 	b.WriteString("  <div class=\"meta\">Goals:<br/>- e2e-integration, e2e-stage, e2e-prod job runs should each succeed 95% of the time<br/>- e2e-dev job runs should succeed 95% of the time after the last push of a PR that merges</div>\n")
 
@@ -299,7 +310,7 @@ func buildHTML(
 	}
 
 	b.WriteString("  <section class=\"env\">\n")
-	b.WriteString("    <h2>Executive Status (Week-over-Week)</h2>\n")
+	b.WriteString("    <h2>Executive Status</h2>\n")
 	b.WriteString("    <table class=\"overview-table\">\n")
 	b.WriteString("      <thead><tr>")
 	b.WriteString(executiveHeaderHTML("Env", "Environment partition: dev, int, stg, or prod."))
@@ -307,15 +318,13 @@ func buildHTML(
 	b.WriteString(executiveHeaderHTML("Runs", "Number of job runs in the selected goal basis for this environment."))
 	b.WriteString(executiveHeaderHTML("Success", "Success rate on the goal basis: (runs - failed runs) / runs * 100."))
 	b.WriteString(executiveHeaderHTML("Gap vs target", "Difference in percentage points between current success and the configured target rate."))
-	b.WriteString(executiveHeaderHTML("Change WoW", "How much the success rate changed compared with last week, using the same run scope as this row."))
+	b.WriteString(executiveHeaderHTML("Change vs prev", "How much the success rate changed compared with the immediately preceding equal-length window, using the same run scope as this row."))
 	b.WriteString(executiveHeaderHTML("Provision success", "DEV-only provision-step estimate on runs after last push of a merged PR. INT/STG/PROD show n/a because provisioning is not part of those environments. Formula: (successful + e2e_failed) / (successful + provision_failed + e2e_failed)."))
-	b.WriteString(executiveHeaderHTML("Provision change WoW", "DEV-only week-over-week change in provision-step success, in percentage points. INT/STG/PROD show n/a."))
+	b.WriteString(executiveHeaderHTML("Provision change vs prev", "DEV-only change in provision-step success, in percentage points, compared with the immediately preceding equal-length window. INT/STG/PROD show n/a."))
 	b.WriteString(executiveHeaderHTML("E2E success", "E2E-step success on the same goal basis used in this row (DEV: runs after last push of a merged PR; INT/STG/PROD: all runs). Formula: successful / (successful + e2e_failed)."))
-	b.WriteString(executiveHeaderHTML("E2E success WoW", "Week-over-week change in E2E-step success, in percentage points, using the same goal basis as this row."))
+	b.WriteString(executiveHeaderHTML("E2E success vs prev", "Change in E2E-step success, in percentage points, compared with the immediately preceding equal-length window, using the same goal basis as this row."))
 	b.WriteString("</tr></thead>\n")
 	b.WriteString("      <tbody>\n")
-	_ = currentSemantic
-	_ = previousSemantic
 	for _, report := range reports {
 		environment := normalizeReportEnvironment(report.Environment)
 		goalBasis, goalRuns, currentSuccess, goalAvailable := goalBasisKPI(report)
@@ -456,7 +465,7 @@ func buildHTML(
 			b.WriteString("      <div class=\"outcome-row\">")
 			b.WriteString(fmt.Sprintf(
 				"<div class=\"outcome-date\">%s</div>",
-				weeklyOutcomeDateHTML(day.Date, report.Environment, dayRunHistoryBasePath, startDate.Format("2006-01-02")),
+				weeklyOutcomeDateHTML(day.Date, report.Environment, dayRunHistoryBasePath),
 			))
 			if totalRuns <= 0 {
 				b.WriteString("<div class=\"outcome-bar outcome-bar-empty\">No runs</div>")
@@ -505,7 +514,7 @@ func buildHTML(
 				b.WriteString("      <div class=\"outcome-row\">")
 				b.WriteString(fmt.Sprintf(
 					"<div class=\"outcome-date\">%s</div>",
-					weeklyOutcomeDateHTML(day.Date, report.Environment, dayRunHistoryBasePath, startDate.Format("2006-01-02")),
+					weeklyOutcomeDateHTML(day.Date, report.Environment, dayRunHistoryBasePath),
 				))
 				if totalRuns <= 0 {
 					b.WriteString("<div class=\"outcome-bar outcome-bar-empty\">No runs</div>")
@@ -574,59 +583,26 @@ func buildHTML(
 		))
 		if triageReportHref := triageReportEnvironmentHref(triageBaseHref, environment); triageReportHref != "" {
 			b.WriteString(fmt.Sprintf(
-				"      <p class=\"panel-note\"><a href=\"%s\">Jump to Triage report for this week</a></p>\n",
+				"      <p class=\"panel-note\"><a href=\"%s\">Jump to the full Triage view for this window</a></p>\n",
 				html.EscapeString(triageReportHref),
 			))
 		}
-		signatures := topSignaturesByEnv[environment]
-		if len(signatures) == 0 {
-			b.WriteString("      <p class=\"panel-empty\">No semantic signatures available for this environment in the selected semantic week.</p>\n")
+		signatureRows := make([]triagehtml.SignatureRow, 0, len(topSignaturesByEnv[environment]))
+		for _, row := range topSignaturesByEnv[environment] {
+			if weeklyTriageRowImpactPercent(row, report.Totals.RunCount) < weeklySignatureMinImpactPct {
+				continue
+			}
+			signatureRows = append(signatureRows, row)
+		}
+		if len(signatureRows) == 0 {
+			b.WriteString("      <p class=\"panel-empty\">No semantic signatures available for this environment in the selected window.</p>\n")
 		} else {
-			triageRows := make([]triagehtml.SignatureRow, 0, len(signatures))
-			for _, item := range signatures {
-				if weeklyTopSignatureImpactPercent(item, report.Totals.RunCount) < weeklySignatureMinImpactPct {
-					continue
-				}
-				triageRow := topSignatureToTriageRow(item)
-				if historyResolver != nil {
-					presence := semhistory.SignaturePresence{}
-					if len(triageRow.LinkedChildren) > 0 && strings.TrimSpace(item.ClusterID) != "" {
-						presence = historyResolver.PresenceForPhase3Cluster(item.Environment, item.ClusterID)
-					} else {
-						presence = historyResolver.PresenceFor(semhistory.SignatureKey{
-							Environment: item.Environment,
-							Phrase:      item.Phrase,
-							SearchQuery: item.SearchQuery,
-						})
-					}
-					triageRow.PriorWeeksPresent = presence.PriorWeeksPresent
-					triageRow.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
-					triageRow.PriorJobsAffected = presence.PriorJobsAffected
-					if !presence.PriorLastSeenAt.IsZero() {
-						triageRow.PriorLastSeenAt = presence.PriorLastSeenAt.UTC().Format(time.RFC3339)
-					}
-				}
-				if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(
-					triageRow.References,
-					windowDays,
-					endDate,
-				); ok {
-					triageRow.TrendSparkline = sparkline
-					triageRow.TrendCounts = append([]int(nil), counts...)
-					triageRow.TrendRange = sparkRange
-				}
-				triageRows = append(triageRows, triageRow)
-			}
-			if len(triageRows) == 0 {
-				b.WriteString(fmt.Sprintf("      <p class=\"panel-empty\">No failures meet the minimum %.2f%% impact threshold in this environment.</p>\n", weeklySignatureMinImpactPct))
-			} else {
-				b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
-					IncludeTrend:       true,
-					ImpactTotalJobs:    report.Totals.RunCount,
-					LoadedRowsLimit:    weeklySignatureLoadedRowsLimit,
-					InitialVisibleRows: weeklySignatureVisibleRows,
-				}))
-			}
+			b.WriteString(triagehtml.RenderTable(signatureRows, triagehtml.TableOptions{
+				IncludeTrend:       true,
+				ImpactTotalJobs:    report.Totals.RunCount,
+				LoadedRowsLimit:    weeklySignatureLoadedRowsLimit,
+				InitialVisibleRows: weeklySignatureVisibleRows,
+			}))
 		}
 		b.WriteString("    </div>\n")
 		b.WriteString("  </section>\n")
@@ -750,6 +726,177 @@ func topSignatureToTriageRow(item topSignature) triagehtml.SignatureRow {
 		row.LinkedChildren = append(row.LinkedChildren, childRow)
 	}
 	return row
+}
+
+func legacyWeeklySignatureRowsByEnv(
+	source map[string][]topSignature,
+	historyResolver semhistory.GlobalSignatureResolver,
+	endDate time.Time,
+) map[string][]triagehtml.SignatureRow {
+	out := make(map[string][]triagehtml.SignatureRow, len(source))
+	for environment, items := range source {
+		rows := make([]triagehtml.SignatureRow, 0, len(items))
+		for _, item := range items {
+			triageRow := topSignatureToTriageRow(item)
+			if historyResolver != nil {
+				presence := semhistory.SignaturePresence{}
+				if len(triageRow.LinkedChildren) > 0 && strings.TrimSpace(item.ClusterID) != "" {
+					presence = historyResolver.PresenceForPhase3Cluster(item.Environment, item.ClusterID)
+				} else {
+					presence = historyResolver.PresenceFor(semhistory.SignatureKey{
+						Environment: item.Environment,
+						Phrase:      item.Phrase,
+						SearchQuery: item.SearchQuery,
+					})
+				}
+				triageRow.PriorWeeksPresent = presence.PriorWeeksPresent
+				triageRow.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
+				triageRow.PriorJobsAffected = presence.PriorJobsAffected
+				if !presence.PriorLastSeenAt.IsZero() {
+					triageRow.PriorLastSeenAt = presence.PriorLastSeenAt.UTC().Format(time.RFC3339)
+				}
+			}
+			if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(
+				triageRow.References,
+				windowDays,
+				endDate,
+			); ok {
+				triageRow.TrendSparkline = sparkline
+				triageRow.TrendCounts = append([]int(nil), counts...)
+				triageRow.TrendRange = sparkRange
+			}
+			rows = append(rows, triageRow)
+		}
+		out[environment] = rows
+	}
+	return out
+}
+
+func reportWindowedSignatureRowsByEnv(
+	source map[string][]frontservice.WindowedTriageRow,
+) map[string][]triagehtml.SignatureRow {
+	out := make(map[string][]triagehtml.SignatureRow, len(source))
+	for environment, rows := range source {
+		out[environment] = reportWindowedSignatureRows(rows, reportWindowedFailureTotal(rows))
+	}
+	return out
+}
+
+func reportWindowedSignatureRows(
+	rows []frontservice.WindowedTriageRow,
+	totalEnvironmentFailures int,
+) []triagehtml.SignatureRow {
+	out := make([]triagehtml.SignatureRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.SignatureRow{
+			Environment:       strings.TrimSpace(row.Environment),
+			Lane:              strings.TrimSpace(row.Lane),
+			JobName:           strings.TrimSpace(row.JobName),
+			TestName:          strings.TrimSpace(row.TestName),
+			TestSuite:         strings.TrimSpace(row.TestSuite),
+			Phrase:            strings.TrimSpace(row.CanonicalEvidencePhrase),
+			ClusterID:         strings.TrimSpace(row.ClusterID),
+			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
+			SupportCount:      row.WindowFailureCount,
+			TrendCounts:       append([]int(nil), row.TrendCounts...),
+			TrendRange:        strings.TrimSpace(row.TrendRange),
+			SupportShare:      reportWindowedPercent(row.WindowFailureCount, totalEnvironmentFailures),
+			PostGoodCount:     row.WeeklyPostGoodCount,
+			AlsoSeenIn:        append([]string(nil), row.SeenIn...),
+			ContributingTests: reportWindowedContributingTests(row.ContributingTests),
+			FullErrorSamples:  append([]string(nil), row.FullErrorSamples...),
+			References:        reportWindowedRunReferences(row.References),
+			ScoringReferences: reportWindowedRunReferences(row.ScoringReferences),
+			PriorWeeksPresent: row.PriorWeeksPresent,
+			PriorWeekStarts:   append([]string(nil), row.PriorWeekStarts...),
+			PriorJobsAffected: row.PriorJobsAffected,
+			PriorLastSeenAt:   strings.TrimSpace(row.PriorLastSeenAt),
+			LinkedChildren:    reportWindowedSignatureRows(row.LinkedChildren, totalEnvironmentFailures),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SupportCount != out[j].SupportCount {
+			return out[i].SupportCount > out[j].SupportCount
+		}
+		if out[i].ClusterID != out[j].ClusterID {
+			return out[i].ClusterID < out[j].ClusterID
+		}
+		return out[i].Phrase < out[j].Phrase
+	})
+	return out
+}
+
+func reportWindowedRunReferences(rows []frontservice.TriageReportReference) []triagehtml.RunReference {
+	out := make([]triagehtml.RunReference, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.RunReference{
+			RunURL:      strings.TrimSpace(row.RunURL),
+			OccurredAt:  strings.TrimSpace(row.OccurredAt),
+			SignatureID: strings.TrimSpace(row.SignatureID),
+			PRNumber:    row.PRNumber,
+		})
+	}
+	return out
+}
+
+func reportWindowedContributingTests(rows []frontservice.TriageReportContributingTest) []triagehtml.ContributingTest {
+	out := make([]triagehtml.ContributingTest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, triagehtml.ContributingTest{
+			Lane:         strings.TrimSpace(row.Lane),
+			JobName:      strings.TrimSpace(row.JobName),
+			TestName:     strings.TrimSpace(row.TestName),
+			SupportCount: row.SupportCount,
+		})
+	}
+	return out
+}
+
+func reportWindowedFailureTotal(rows []frontservice.WindowedTriageRow) int {
+	total := 0
+	for _, row := range rows {
+		total += row.WindowFailureCount
+	}
+	return total
+}
+
+func reportWindowedPercent(value int, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return (float64(value) * 100.0) / float64(total)
+}
+
+func reportInclusiveDays(startDate time.Time, endDate time.Time) int {
+	if startDate.IsZero() || endDate.IsZero() || endDate.Before(startDate) {
+		return 0
+	}
+	return int(endDate.Sub(startDate)/(24*time.Hour)) + 1
+}
+
+func weeklyTriageRowImpactPercent(item triagehtml.SignatureRow, overallJobs int) float64 {
+	if overallJobs <= 0 {
+		return 0
+	}
+	jobsAffected := weeklyTriageRowJobsAffected(item)
+	if jobsAffected <= 0 {
+		return 0
+	}
+	return (float64(jobsAffected) * 100.0) / float64(overallJobs)
+}
+
+func weeklyTriageRowJobsAffected(item triagehtml.SignatureRow) int {
+	if len(item.LinkedChildren) == 0 {
+		return len(triagehtml.OrderedUniqueReferences(item.References))
+	}
+	total := 0
+	for _, child := range item.LinkedChildren {
+		total += len(triagehtml.OrderedUniqueReferences(child.References))
+	}
+	if total > 0 {
+		return total
+	}
+	return len(triagehtml.OrderedUniqueReferences(item.References))
 }
 
 func dailyRunOutcomeCounts(day counts) (successfulRuns int, ciInfraFailedRuns int, provisionFailedRuns int, e2eFailedRuns int) {
@@ -1121,20 +1268,20 @@ func triageReportEnvironmentHref(baseHref string, environment string) string {
 	return trimmedBase + "#env-" + normalizedEnvironment
 }
 
-func weeklyOutcomeDateHTML(date string, environment string, basePath string, week string) string {
+func weeklyOutcomeDateHTML(date string, environment string, basePath string) string {
 	trimmedDate := strings.TrimSpace(date)
 	if trimmedDate == "" {
 		return ""
 	}
 	label := trimmedDate + " UTC"
-	href := weeklyRunsDayHref(basePath, trimmedDate, week, environment)
+	href := weeklyRunsDayHref(basePath, trimmedDate, environment)
 	if strings.TrimSpace(href) == "" {
 		return html.EscapeString(label)
 	}
 	return fmt.Sprintf("<a href=\"%s\">%s</a>", html.EscapeString(href), html.EscapeString(label))
 }
 
-func weeklyRunsDayHref(basePath string, date string, week string, environment string) string {
+func weeklyRunsDayHref(basePath string, date string, environment string) string {
 	trimmedBasePath := strings.TrimSpace(basePath)
 	if trimmedBasePath == "" {
 		return ""
@@ -1145,9 +1292,6 @@ func weeklyRunsDayHref(basePath string, date string, week string, environment st
 	values := url.Values{}
 	if trimmedDate := strings.TrimSpace(date); trimmedDate != "" {
 		values.Set("date", trimmedDate)
-	}
-	if trimmedWeek := strings.TrimSpace(week); trimmedWeek != "" {
-		values.Set("week", trimmedWeek)
 	}
 	if normalizedEnvironment := normalizeReportEnvironment(environment); normalizedEnvironment != "" {
 		values.Add("env", normalizedEnvironment)

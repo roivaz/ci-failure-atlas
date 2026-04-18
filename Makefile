@@ -34,7 +34,7 @@ LOCAL_PGDATABASE ?= postgres
 
 SITE_ROOT ?= site
 HISTORY_WEEKS ?= 4
-EXPORT_SITE_ARGS ?=
+SITE_REDIRECT_URL ?= https://cihealth.tools.hcpsvc.osadev.cloud/
 
 SOURCE_ENVS ?= dev,int,stg,prod
 SEMANTIC_WEEK ?=
@@ -60,7 +60,7 @@ AZ_STATIC_WEBSITE_ENABLED ?= true
 AZ_STATIC_INDEX_DOCUMENT ?= index.html
 AZ_STATIC_ERROR_DOCUMENT ?= 404.html
 
-.PHONY: help fmt fmt-check vet test test-race test-cover build image build-and-push show-image run tidy check clean clean-site distclean semantic-materialize semantic-backfill app export-site site-upload deploy-static-website-storage run-controllers run-once sync-once migrate-legacy-data db-dump-remote db-restore-local
+.PHONY: help fmt fmt-check vet test test-race test-cover build image build-and-push show-image run tidy check clean clean-site distclean semantic-materialize semantic-backfill app site-redirect site-upload deploy-static-website-storage run-controllers run-once sync-once migrate-legacy-data db-dump-remote db-restore-local
 
 help:
 	@echo "Go targets:"
@@ -89,7 +89,7 @@ help:
 	@echo "  make app"
 	@echo "  make db-dump-remote REMOTE_PGUSER=... REMOTE_PGPASSWORD=... REMOTE_PGDATABASE=... [REMOTE_PGHOST=127.0.0.1 REMOTE_PGPORT=5432]"
 	@echo "  make db-restore-local DB_DUMP_FILE=.work/db/latest.sql"
-	@echo "  make export-site"
+	@echo "  make site-redirect"
 	@echo "  make site-upload"
 	@echo "  make deploy-static-website-storage"
 	@echo ""
@@ -123,6 +123,7 @@ help:
 	@echo "  LOCAL_PGUSER=$(LOCAL_PGUSER)"
 	@echo "  LOCAL_PGDATABASE=$(LOCAL_PGDATABASE)"
 	@echo "  SITE_ROOT=$(SITE_ROOT)"
+	@echo "  SITE_REDIRECT_URL=$(SITE_REDIRECT_URL)"
 	@echo "  HISTORY_WEEKS=$(HISTORY_WEEKS)"
 	@echo "  SEMANTIC_WEEK=$(SEMANTIC_WEEK)"
 	@echo "  SEMANTIC_WEEKS=$(SEMANTIC_WEEKS)"
@@ -145,7 +146,7 @@ help:
 	@echo "  make app APP_WEEK=2026-03-08"
 	@echo "  make db-dump-remote REMOTE_PGUSER=myuser REMOTE_PGPASSWORD=secret REMOTE_PGDATABASE=mydb DB_DUMP_FILE=.work/cfa-prod.sql"
 	@echo "  make db-restore-local DB_DUMP_FILE=.work/cfa-prod.sql"
-	@echo "  make export-site SITE_ROOT=site HISTORY_WEEKS=4"
+	@echo "  make site-redirect SITE_ROOT=site SITE_REDIRECT_URL=https://cihealth.tools.hcpsvc.osadev.cloud/"
 	@echo "  make site-upload AZ_STORAGE_ACCOUNT=myreportstorage SITE_ROOT=site"
 	@echo "  make run-controllers CONTROLLER_ENVS=dev,int,stg,prod"
 	@echo "  make migrate-legacy-data LEGACY_DATA_DIR=data"
@@ -278,18 +279,18 @@ db-restore-local:
 				$(DB_RESTORE_ARGS) < "$(DB_DUMP_FILE)"; \
 		echo "restored $(DB_DUMP_FILE) into $(LOCAL_PGHOST):$(LOCAL_PGPORT)/$(LOCAL_PGDATABASE)"
 
-site-export:
-	$(CFA) app export-site \
-		--site.root "$(SITE_ROOT)" \
-		--history.weeks "$(HISTORY_WEEKS)" $(EXPORT_SITE_ARGS)
+site-redirect:
+	@mkdir -p "$(SITE_ROOT)"
+	@python -c 'from pathlib import Path; root = Path("$(SITE_ROOT)"); url = "$(SITE_REDIRECT_URL)"; html = f"""<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta http-equiv=\"refresh\" content=\"0; url={url}\" />\n  <title>CI Health Redirect</title>\n  <link rel=\"canonical\" href=\"{url}\" />\n  <script>window.location.replace(\"{url}\");</script>\n</head>\n<body>\n  <p>Redirecting to <a href=\"{url}\">{url}</a>...</p>\n</body>\n</html>\n"""; (root / "index.html").write_text(html, encoding="utf-8"); (root / "404.html").write_text(html, encoding="utf-8")'
+	@echo "wrote redirect pages to $(SITE_ROOT)"
 
-site-upload: site-export
+site-upload: site-redirect
 	@if [[ -z "$(AZ_STORAGE_ACCOUNT)" ]]; then \
 		echo "AZ_STORAGE_ACCOUNT is required (example: make site-upload AZ_STORAGE_ACCOUNT=myreportstorage)"; \
 		exit 1; \
 	fi
 	@if [[ ! -d "$(SITE_ROOT)" ]]; then \
-		echo "SITE_ROOT \"$(SITE_ROOT)\" does not exist; run 'make export-site' first"; \
+		echo "SITE_ROOT \"$(SITE_ROOT)\" does not exist; run 'make site-redirect' first"; \
 		exit 1; \
 	fi
 	az storage blob upload-batch \

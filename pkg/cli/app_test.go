@@ -47,7 +47,7 @@ func TestSiteRunURLFromListenAddress(t *testing.T) {
 	}
 }
 
-func TestNewAppCommandIncludesExportSiteSubcommand(t *testing.T) {
+func TestNewAppCommandDoesNotExposeExportSiteSubcommand(t *testing.T) {
 	t.Parallel()
 
 	cmd, err := NewAppCommand()
@@ -60,10 +60,7 @@ func TestNewAppCommandIncludesExportSiteSubcommand(t *testing.T) {
 	}
 
 	exportCmd, _, err := cmd.Find([]string{"export-site"})
-	if err != nil {
-		t.Fatalf("find export-site subcommand: %v", err)
-	}
-	if exportCmd == nil || exportCmd.Name() != "export-site" {
-		t.Fatalf("expected export-site subcommand, got=%v", exportCmd)
+	if err == nil && exportCmd != nil && exportCmd.Name() == "export-site" {
+		t.Fatalf("did not expect export-site subcommand to be present")
 	}
 }

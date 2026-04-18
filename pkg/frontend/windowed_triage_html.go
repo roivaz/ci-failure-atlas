@@ -40,7 +40,7 @@ func buildWindowedTriageReportHTML(
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Signature Triage Report</title>\n")
+	b.WriteString("  <title>CI Triage Report</title>\n")
 	b.WriteString(triagehtml.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
@@ -80,7 +80,7 @@ func buildWindowedTriageReportHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(triagehtml.ReportChromeHTML(options.Chrome))
-	b.WriteString("  <h1>CI Signature Triage Report</h1>\n")
+	b.WriteString("  <h1>CI Triage Report</h1>\n")
 	if hasWindow {
 		b.WriteString(fmt.Sprintf(
 			"  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
@@ -89,15 +89,16 @@ func buildWindowedTriageReportHTML(
 			windowedTriageInclusiveDays(startDate, endDate),
 		))
 	}
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Resolved semantic week (UTC): <strong>%s</strong></p>\n", html.EscapeString(strings.TrimSpace(data.Meta.ResolvedWeek))))
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated (UTC): <strong>%s</strong></p>\n", html.EscapeString(strings.TrimSpace(data.Meta.GeneratedAt))))
-	b.WriteString("  <p class=\"meta\">Jobs affected, impact, and seen-in values reflect the selected window. Flake score and trend remain anchored to the resolved semantic week.</p>\n")
-	b.WriteString(windowedTriageControlsHTML(data, options.Query))
+	b.WriteString("  <p class=\"meta\">Jobs affected, impact, references, and seen-in are recomputed across the selected window. <span class=\"triage-header-help\" title=\"Trend, after-last-push counts, and related semantic heuristics stay anchored to the latest contributing stored semantic snapshot for each row so the signal remains stable across longer windows.\">?</span></p>\n")
+	b.WriteString(windowedTriageControlsHTML(options.Query))
 	b.WriteString("  <div class=\"cards\">\n")
 	b.WriteString(windowedTriageCardHTML("Environments in scope", fmt.Sprintf("%d", len(data.Environments))))
 	b.WriteString(windowedTriageCardHTML("Signatures in triage", fmt.Sprintf("%d", totalRows)))
 	b.WriteString(windowedTriageCardHTML("Matched failure support", fmt.Sprintf("%d", totalMatchedFailures)))
-	b.WriteString(windowedTriageCardHTML("Resolved semantic week (UTC)", strings.TrimSpace(data.Meta.ResolvedWeek)))
+	if hasWindow {
+		b.WriteString(windowedTriageCardHTML("Window length", fmt.Sprintf("%d days", windowedTriageInclusiveDays(startDate, endDate))))
+	}
 	b.WriteString("  </div>\n")
 
 	for _, environment := range data.Environments {
@@ -110,7 +111,7 @@ func buildWindowedTriageReportHTML(
 				environment.Summary.MatchedFailureCount,
 				environment.Summary.TotalRuns,
 			))
-			b.WriteString("    <p class=\"muted\">No weekly semantic signatures had matching failures in this window.</p>\n")
+			b.WriteString("    <p class=\"muted\">No semantic signatures had matching failures in this window.</p>\n")
 			b.WriteString("  </section>\n")
 			continue
 		}
@@ -244,16 +245,11 @@ func windowedTriageInclusiveDays(startDate time.Time, endDate time.Time) int {
 	return int(endDay.Sub(startDay)/(24*time.Hour)) + 1
 }
 
-func windowedTriageControlsHTML(
-	data frontservice.WindowedTriageData,
-	query frontservice.WindowedTriageQuery,
-) string {
-	weekStart, weekEnd := semanticWeekDateRange(data.Meta.ResolvedWeek)
-	resetHref := windowedTriageHref("/triage", data.Meta.ResolvedWeek, weekStart, weekEnd, query.Environments)
+func windowedTriageControlsHTML(query frontservice.WindowedTriageQuery) string {
+	resetHref := "/triage"
 	var b strings.Builder
 	b.WriteString("  <section class=\"window-controls\">\n")
 	b.WriteString("    <form class=\"window-form\" method=\"get\" action=\"/triage\">\n")
-	b.WriteString(fmt.Sprintf("      <input type=\"hidden\" name=\"week\" value=\"%s\" />\n", html.EscapeString(strings.TrimSpace(data.Meta.ResolvedWeek))))
 	b.WriteString("      <div class=\"window-field\">\n")
 	b.WriteString("        <label for=\"triage-start-date\">Start date</label>\n")
 	b.WriteString(fmt.Sprintf("        <input id=\"triage-start-date\" type=\"date\" name=\"start_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.StartDate))))
@@ -271,7 +267,7 @@ func windowedTriageControlsHTML(
 	b.WriteString(fmt.Sprintf("        <a class=\"window-reset\" href=\"%s\">Reset to full week</a>\n", html.EscapeString(resetHref)))
 	b.WriteString("      </div>\n")
 	b.WriteString("    </form>\n")
-	b.WriteString("    <p class=\"window-help\">Choose any inclusive UTC date range within a single semantic week. Leave the environment filter blank to show all environments.</p>\n")
+	b.WriteString("    <p class=\"window-help\">Choose any inclusive UTC date range. Leave the environment filter blank to show all environments.</p>\n")
 	b.WriteString("  </section>\n")
 	return b.String()
 }

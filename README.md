@@ -1,15 +1,14 @@
 # CI Failure Atlas
 
-CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing weekly/triage/runs/review views.
+CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing report/triage/runs/review views.
 
-The app+DB runtime is now the primary architecture. Static-site export still exists as an intentional compatibility path while hosted operation is being designed.
+The app+DB runtime is the primary architecture. Dynamic HTML is served directly from PostgreSQL-backed state.
 
 ## Current Architecture
 
 - `cfa run` continuously ingests Sippy, Prow, and GitHub data and derives normalized facts into PostgreSQL.
 - `cfa semantic materialize` builds one semantic week from those facts and replaces that stored week in PostgreSQL.
-- `cfa app` serves the unified weekly, triage, runs, and review UI from PostgreSQL.
-- `cfa app export-site` renders static HTML from existing PostgreSQL data only; it does not run semantic materialization.
+- `cfa app` serves the unified report, triage, runs, and review UI from PostgreSQL.
 
 Local development defaults to embedded PostgreSQL with initialization and migrations enabled. Remote PostgreSQL is supported through the usual `--storage.postgres.*` flags.
 
@@ -19,12 +18,12 @@ Local development defaults to embedded PostgreSQL with initialization and migrat
 - `pkg/cli` defines the command surface and shared PostgreSQL setup.
 - `pkg/run`, `pkg/controllers`, and `pkg/source` implement continuous ingestion and source clients.
 - `pkg/semantic` owns phase1/2/3 processing, week materialization, and history/query helpers.
-- `pkg/frontend` serves the unified weekly/triage/review app and API surface.
-- `pkg/report` renders HTML/report outputs, including static-site export.
+- `pkg/frontend` serves the unified report/triage/runs/review app and API surface.
+- `pkg/report` renders HTML/report outputs for the app surface.
 - `pkg/store/contracts` defines the store interfaces; `pkg/store/postgres` implements the active runtime store, migrations, and init/bootstrap helpers.
 - `deploy/` contains the standalone Helm chart for Postgres, the app, controllers, and cronjobs.
 - `Dockerfile` builds the container image for the Go application.
-- `infra/azure/` contains Azure infrastructure related to publishing the exported static site.
+- `infra/azure/` contains Azure infrastructure related to the storage-account redirect and current deployment experiments.
 - `.cursor/skills/` contains project-local skills for triage/review workflows.
 
 Search note: user-facing docs now say "triage", but some internal files and symbols still use older `global` names. When navigating the repo, check both terms unless you are specifically working on phase2 global-signature semantics.
@@ -33,7 +32,7 @@ Search note: user-facing docs now say "triage", but some internal files and symb
 
 - Go 1.25+
 - Access to the Sippy, Prow, and GitHub APIs used by the controllers
-- Optional Azure CLI access if you want to publish exported static HTML
+- Optional Azure CLI access if you want to upload the storage-account redirect page
 
 ## Core Workflow
 
@@ -71,14 +70,21 @@ go run cmd/main.go app \
   --history.weeks 4
 ```
 
-Open `http://127.0.0.1:8082/` for the weekly/triage/runs app or `http://127.0.0.1:8082/review/` for Phase3 review/linking.
+Open `http://127.0.0.1:8082/` for the rolling 7-day report, `http://127.0.0.1:8082/report` for the report surface, or `http://127.0.0.1:8082/review/` for Phase3 review/linking.
+
+Key app routes:
+
+- `/` renders the rolling 7-day report window
+- `/report?week=YYYY-MM-DD` renders the classic week-shaped report view
+- `/report?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` renders an arbitrary UTC report window
+- `/triage?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` renders the triage window view
 
 The day-scoped run history surface is:
 
 - HTML: `/runs?date=YYYY-MM-DD&env=dev`
 - JSON: `/api/runs/day?date=YYYY-MM-DD&env=dev`
 
-It renders one row per run for that day and enriches attached raw failures with semantic signatures from the resolved stored week.
+It renders one row per run for that day and enriches attached raw failures with semantic signatures from the latest contributing stored semantic snapshot for the matched signature.
 
 Current limitation: this is intentionally not yet a full Prow-history clone. `RunRecord` currently carries `run_url`, `job_name`, PR metadata, `failed`, and `occurred_at`, but not richer build/duration metadata, and some raw failures can still reference runs that need run-record backfill.
 
@@ -121,30 +127,21 @@ Notes:
 - Local restore defaults to `127.0.0.1:5432` and `postgres/postgres`, but `LOCAL_PGHOST`, `LOCAL_PGPORT`, `LOCAL_PGUSER`, `LOCAL_PGPASSWORD`, and `LOCAL_PGDATABASE` can be overridden if needed.
 - For safety, `db-restore-local` only allows localhost targets.
 
-### 5. Export static HTML
+### 5. Upload the storage redirect page
 
 ```bash
-go run cmd/main.go app export-site \
-  --site.root site \
-  --history.weeks 4
+make site-upload \
+  AZ_STORAGE_ACCOUNT=<storage-account-name> \
+  SITE_ROOT=site
 ```
 
-`app export-site` is export-only. Run `cfa semantic materialize` first, then export the already-materialized weeks from PostgreSQL.
+This generates a minimal `index.html`/`404.html` redirect page under `SITE_ROOT` and uploads it to the storage account's static website container.
 
-## Publish the Exported Site
+The redirect target defaults to `https://cihealth.tools.hcpsvc.osadev.cloud/` and can be overridden with `SITE_REDIRECT_URL=...`.
 
-Publishing is intentionally outside `cfa`. Use Azure CLI or another small script. Example:
+## Redirect Page Details
 
-```bash
-az storage blob upload-batch \
-  --destination '$web' \
-  --source site \
-  --account-name <storage-account-name> \
-  --auth-mode login \
-  --overwrite
-```
-
-To preview locally before uploading:
+To preview the generated redirect locally before uploading:
 
 ```bash
 python -m http.server 8080 --directory site
@@ -154,14 +151,14 @@ python -m http.server 8080 --directory site
 
 - `deploy/` is the current standalone Kubernetes packaging surface for the app runtime.
 - `Dockerfile` is the image build entrypoint used by the deployment flow.
-- `infra/azure/report-static-website-storage.bicep` provisions Azure Storage for static-site publishing.
+- `infra/azure/report-static-website-storage.bicep` provisions Azure Storage for the redirect-page website container.
 - Hosted app operation, auth, backups, and broader operational automation are still evolving; these artifacts help with current deployment experiments but do not yet define a finished production platform.
 
 ## Semantic Week Contract
 
 - Semantic partitions are PostgreSQL week partitions, not free-form subdirectories.
 - A stored week must be a Sunday-starting `YYYY-MM-DD`.
-- The review app, weekly report, and history lookups all navigate across those stored weeks.
+- The review app and windowed report/triage/runs surfaces compose over those stored weeks.
 - Partial per-environment materialization is intentionally not supported.
 
 ## Validation And Developer Loop
@@ -186,7 +183,7 @@ make semantic-materialize SEMANTIC_WEEK=2026-03-29
 make app APP_WEEK=2026-03-22
 make db-dump-remote REMOTE_PGUSER=<remote-user> REMOTE_PGPASSWORD=<remote-password> REMOTE_PGDATABASE=<remote-database> DB_DUMP_FILE=.work/cfa-prod.sql
 make db-restore-local DB_DUMP_FILE=.work/cfa-prod.sql
-go run cmd/main.go app export-site --site.root site
+make site-upload AZ_STORAGE_ACCOUNT=<storage-account-name> SITE_ROOT=site
 ```
 
 ## Other Commands
@@ -204,7 +201,7 @@ The remaining big phase is hosted operation rather than more architectural refac
 - running the Go app against managed PostgreSQL instead of local embedded defaults
 - scheduling controllers and semantic materialization/backfill
 - establishing auth, deployment, backups, and operational runbooks
-- eventually retiring storage-account-hosted static export as the primary access path
+- keeping the storage-account redirect and hosted app deployment paths operational
 
 ## Reference
 

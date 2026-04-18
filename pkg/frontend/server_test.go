@@ -6,38 +6,36 @@ import (
 	"testing"
 )
 
-func TestHandleRootRedirectsToWeekly(t *testing.T) {
+func TestReportHrefIncludesWindowAndMode(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "/?week=2026-03-15", nil)
-	recorder := httptest.NewRecorder()
-
-	(&handler{}).handleRoot(recorder, req)
-
-	if got, want := recorder.Code, http.StatusFound; got != want {
-		t.Fatalf("unexpected status code: got=%d want=%d", got, want)
+	if got, want := reportHref("/report", "2026-03-09", "2026-03-15", reportPageModeReport), "/report?end_date=2026-03-15&start_date=2026-03-09"; got != want {
+		t.Fatalf("unexpected report href: got=%q want=%q", got, want)
 	}
-	if got, want := recorder.Header().Get("Location"), "/weekly?week=2026-03-15"; got != want {
-		t.Fatalf("unexpected redirect target: got=%q want=%q", got, want)
+	if got, want := reportHref("/report", "2026-03-09", "2026-03-15", reportPageModeRolling), "/report?end_date=2026-03-15&mode=rolling&start_date=2026-03-09"; got != want {
+		t.Fatalf("unexpected rolling report href: got=%q want=%q", got, want)
 	}
 }
 
 func TestViewHrefIncludesWeekQuery(t *testing.T) {
 	t.Parallel()
 
-	if got, want := viewHref("/weekly", "2026-03-15"), "/weekly?week=2026-03-15"; got != want {
-		t.Fatalf("unexpected href: got=%q want=%q", got, want)
+	if got, want := viewHref("/report", "2026-03-15"), "/report?week=2026-03-15"; got != want {
+		t.Fatalf("unexpected report href: got=%q want=%q", got, want)
 	}
 	if got, want := viewHref("/triage", "2026-03-15"), "/triage?week=2026-03-15"; got != want {
 		t.Fatalf("unexpected triage href: got=%q want=%q", got, want)
 	}
 }
 
-func TestNavigationHrefIsEmptyWithoutWeek(t *testing.T) {
+func TestNormalizeReportPageModeDefaultsToReport(t *testing.T) {
 	t.Parallel()
 
-	if got := navigationHref("/weekly", ""); got != "" {
-		t.Fatalf("expected empty navigation href without week, got=%q", got)
+	if got, want := normalizeReportPageMode(""), reportPageModeReport; got != want {
+		t.Fatalf("unexpected default report mode: got=%q want=%q", got, want)
+	}
+	if got, want := normalizeReportPageMode("rolling"), reportPageModeRolling; got != want {
+		t.Fatalf("unexpected rolling mode: got=%q want=%q", got, want)
 	}
 }
 

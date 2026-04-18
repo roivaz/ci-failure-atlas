@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"ci-failure-atlas/pkg/frontend"
-	reportsite "ci-failure-atlas/pkg/report/site"
 	postgresoptions "ci-failure-atlas/pkg/store/postgres/options"
 )
 
@@ -24,7 +23,7 @@ func NewAppCommand() (*cobra.Command, error) {
 
 	cmd := &cobra.Command{
 		Use:           "app",
-		Short:         "Run the unified app and export static HTML.",
+		Short:         "Run the unified app.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -80,45 +79,6 @@ func NewAppCommand() (*cobra.Command, error) {
 	if err := postgresoptions.BindOptions(servePostgresRaw, cmd); err != nil {
 		return nil, err
 	}
-
-	exportSiteRoot := "site"
-	exportHistoryWeeks := 4
-	exportPostgresRaw := postgresoptions.DefaultCLIOptions()
-	exportSiteCmd := &cobra.Command{
-		Use:   "export-site",
-		Short: "Export static HTML from existing semantic weeks in PostgreSQL.",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			postgresCompleted, err := completePostgresForCommand(cmd.Context(), exportPostgresRaw)
-			if err != nil {
-				return err
-			}
-			defer postgresCompleted.Cleanup()
-
-			result, err := reportsite.Build(cmd.Context(), reportsite.BuildOptions{
-				SiteRoot:     exportSiteRoot,
-				HistoryWeeks: exportHistoryWeeks,
-				FromExisting: true,
-				PostgresPool: postgresCompleted.Connection,
-			})
-			if err != nil {
-				return err
-			}
-			cmd.Printf(
-				"Exported static site under %s (weeks=%d, latest=%s)\n",
-				result.SiteRoot,
-				len(result.Weeks),
-				result.LatestWeek,
-			)
-			return nil
-		},
-	}
-	exportSiteCmd.Flags().StringVar(&exportSiteRoot, "site.root", exportSiteRoot, "root directory for exported static site HTML")
-	exportSiteCmd.Flags().IntVar(&exportHistoryWeeks, "history.weeks", exportHistoryWeeks, "number of previous semantic weeks used for history scoring during export")
-	if err := postgresoptions.BindOptions(exportPostgresRaw, exportSiteCmd); err != nil {
-		return nil, err
-	}
-
-	cmd.AddCommand(exportSiteCmd)
 	return cmd, nil
 }
 

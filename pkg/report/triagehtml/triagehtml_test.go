@@ -436,12 +436,12 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 
 	rendered := ReportChromeHTML(ReportChromeOptions{
 		CurrentWeek:  "2026-03-08",
-		CurrentView:  ReportViewWeekly,
+		CurrentView:  ReportViewReport,
 		PreviousWeek: "2026-03-01",
 		PreviousHref: "../2026-03-01/weekly-metrics.html",
 		NextWeek:     "",
 		NextHref:     "",
-		WeeklyHref:   "weekly-metrics.html",
+		ReportHref:   "weekly-metrics.html",
 		TriageHref:   "triage-report.html",
 		ArchiveHref:  "../archive/",
 	})
@@ -451,8 +451,8 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 		"Week 2026-03-08 (UTC)",
 		"class=\"report-view-link active\" href=\"weekly-metrics.html\"",
 		"href=\"triage-report.html\"",
-		">Weekly Report</a>",
-		">Triage Report</a>",
+		">Report</a>",
+		">Triage</a>",
 		"href=\"../archive/\"",
 		"class=\"report-nav-btn disabled\"",
 		"id=\"theme-toggle\"",

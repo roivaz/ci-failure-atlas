@@ -27,7 +27,7 @@ type JobHistoryDayData struct {
 
 type JobHistoryDayMeta struct {
 	Date         string   `json:"date"`
-	ResolvedWeek string   `json:"resolved_week"`
+	AnchorWeek   string   `json:"-"`
 	Timezone     string   `json:"timezone"`
 	GeneratedAt  string   `json:"generated_at"`
 	Environments []string `json:"environments"`
@@ -110,17 +110,20 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 	if s == nil {
 		return JobHistoryDayData{}, fmt.Errorf("service is required")
 	}
+	dateLabel, _, err := normalizeDateLabel(query.Date)
+	if err != nil {
+		return JobHistoryDayData{}, fmt.Errorf("invalid date: %w", err)
+	}
 
-	scope, err := resolveJobHistoryDayScope(query)
+	window, err := s.resolvePresentationWindow(ctx, presentationWindowRequest{
+		Date: dateLabel,
+		Week: query.Week,
+	})
 	if err != nil {
 		return JobHistoryDayData{}, err
 	}
-	scope.ResolvedWeek, err = s.ensureWeekExists(ctx, scope.ResolvedWeek)
-	if err != nil {
-		return JobHistoryDayData{}, err
-	}
 
-	store, err := s.OpenStoreForWeek(scope.ResolvedWeek)
+	store, err := s.OpenStoreForWeek(window.AnchorWeek)
 	if err != nil {
 		return JobHistoryDayData{}, err
 	}
@@ -138,9 +141,7 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 		targetEnvironments = normalizeStringSlice(query.Environments)
 	}
 
-	factsByEnvironment, err := loadWindowedTriageFacts(ctx, store, targetEnvironments, windowedTriageScope{
-		DateLabels: []string{scope.Date},
-	})
+	factsByEnvironment, err := loadWindowedTriageFacts(ctx, store, targetEnvironments, window)
 	if err != nil {
 		return JobHistoryDayData{}, fmt.Errorf("load run history day facts: %w", err)
 	}
@@ -174,8 +175,8 @@ func (s *Service) BuildJobHistoryDay(ctx context.Context, query JobHistoryDayQue
 
 	return JobHistoryDayData{
 		Meta: JobHistoryDayMeta{
-			Date:         scope.Date,
-			ResolvedWeek: scope.ResolvedWeek,
+			Date:         window.StartDate,
+			AnchorWeek:   window.AnchorWeek,
 			Timezone:     "UTC",
 			GeneratedAt:  generatedAt.UTC().Format(time.RFC3339),
 			Environments: append([]string(nil), targetEnvironments...),

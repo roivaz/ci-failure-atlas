@@ -51,7 +51,7 @@ func TestGenerateHTMLWithComparisonLinksLaneOutcomeDatesToRunsPage(t *testing.T)
 		t.Fatalf("generate weekly HTML: %v", err)
 	}
 
-	if !strings.Contains(rendered, `/runs?date=2026-03-16&amp;env=dev&amp;week=2026-03-15`) {
+	if !strings.Contains(rendered, `/runs?date=2026-03-16&amp;env=dev`) {
 		t.Fatalf("expected lane outcome day label to link to runs page, got %q", rendered)
 	}
 }

@@ -2,9 +2,9 @@ package service
 
 import (
 	"context"
-	"strings"
 	"testing"
 
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
@@ -43,8 +43,8 @@ func TestBuildWindowedTriageProjectsWeeklyRowsIntoWindow(t *testing.T) {
 		t.Fatalf("build windowed triage: %v", err)
 	}
 
-	if got, want := data.Meta.ResolvedWeek, "2026-03-15"; got != want {
-		t.Fatalf("unexpected resolved week: got=%q want=%q", got, want)
+	if got, want := data.Meta.AnchorWeek, "2026-03-15"; got != want {
+		t.Fatalf("unexpected anchor week: got=%q want=%q", got, want)
 	}
 	if got, want := len(data.Environments), 1; got != want {
 		t.Fatalf("unexpected environment count: got=%d want=%d", got, want)
@@ -106,24 +106,77 @@ func TestBuildWindowedTriageProjectsWeeklyRowsIntoWindow(t *testing.T) {
 	}
 }
 
-func TestBuildWindowedTriageRejectsCrossWeekWindows(t *testing.T) {
+func TestBuildWindowedTriageComposesCrossWeekWindows(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
 	currentStore := fixture.openWeekStore(t, "2026-03-15")
+	nextStore := fixture.openWeekStore(t, "2026-03-22")
 	if err := currentStore.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed current materialized week: %v", err)
 	}
-
-	_, err := fixture.service.BuildWindowedTriage(ctx, WindowedTriageQuery{
-		StartDate: "2026-03-21",
-		EndDate:   "2026-03-22",
-	})
-	if err == nil {
-		t.Fatalf("expected cross-week query to fail")
+	nextWeek := currentMaterializedWeek()
+	nextWeek.GlobalClusters[0].Phase2ClusterID = "cluster-dev-b"
+	nextWeek.GlobalClusters[0].SupportCount = 5
+	nextWeek.GlobalClusters[0].PostGoodCommitCount = 1
+	nextWeek.GlobalClusters[0].References = []semanticcontracts.ReferenceRecord{
+		{
+			RowID:       "row-22",
+			RunURL:      "https://prow.example.com/view/22",
+			OccurredAt:  "2026-03-22T08:00:00Z",
+			SignatureID: "sig-a",
+		},
 	}
-	if !strings.Contains(err.Error(), "crosses semantic week boundaries") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := nextStore.ReplaceMaterializedWeek(ctx, nextWeek); err != nil {
+		t.Fatalf("seed next materialized week: %v", err)
+	}
+	if err := currentStore.UpsertRuns(ctx, append(sampleRunsFixture(), storecontracts.RunRecord{
+		Environment: "dev",
+		RunURL:      "https://prow.example.com/view/22",
+		JobName:     "periodic-ci",
+		Failed:      true,
+		OccurredAt:  "2026-03-22T08:00:00Z",
+	})); err != nil {
+		t.Fatalf("seed cross-week runs: %v", err)
+	}
+	if err := currentStore.UpsertRawFailures(ctx, append(sampleRawFailuresFixture(), storecontracts.RawFailureRecord{
+		Environment:    "dev",
+		RowID:          "row-22",
+		RunURL:         "https://prow.example.com/view/22",
+		TestName:       "should oauth",
+		TestSuite:      "suite-a",
+		SignatureID:    "sig-a",
+		OccurredAt:     "2026-03-22T08:00:00Z",
+		RawText:        "OAuth timeout while waiting for cluster operator",
+		NormalizedText: "oauth timeout while waiting for cluster operator",
+	})); err != nil {
+		t.Fatalf("seed cross-week raw failures: %v", err)
+	}
+	if err := currentStore.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
+		{Environment: "dev", Date: "2026-03-16", Metric: "run_count", Value: 4},
+		{Environment: "dev", Date: "2026-03-22", Metric: "run_count", Value: 1},
+	}); err != nil {
+		t.Fatalf("seed cross-week metrics daily: %v", err)
+	}
+
+	data, err := fixture.service.BuildWindowedTriage(ctx, WindowedTriageQuery{
+		StartDate:    "2026-03-16",
+		EndDate:      "2026-03-22",
+		Environments: []string{"dev"},
+	})
+	if err != nil {
+		t.Fatalf("expected cross-week query to succeed: %v", err)
+	}
+
+	environment := data.Environments[0]
+	if got, want := len(environment.Rows), 1; got != want {
+		t.Fatalf("unexpected merged row count: got=%d want=%d", got, want)
+	}
+	if got, want := environment.Rows[0].WindowFailureCount, 3; got != want {
+		t.Fatalf("unexpected merged failure count: got=%d want=%d", got, want)
+	}
+	if got, want := environment.Rows[0].JobsAffected, 2; got != want {
+		t.Fatalf("unexpected merged jobs affected: got=%d want=%d", got, want)
 	}
 }

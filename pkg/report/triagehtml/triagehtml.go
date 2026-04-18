@@ -94,18 +94,22 @@ type TableOptions struct {
 type ReportView string
 
 const (
-	ReportViewWeekly ReportView = "weekly"
-	ReportViewTriage ReportView = "triage"
-	ReportViewRuns   ReportView = "runs"
+	ReportViewRolling ReportView = "rolling"
+	ReportViewReport  ReportView = "report"
+	ReportViewTriage  ReportView = "triage"
+	ReportViewRuns    ReportView = "runs"
 )
 
 type ReportChromeOptions struct {
+	WindowLabel  string
 	CurrentWeek  string
 	CurrentView  ReportView
 	PreviousWeek string
 	PreviousHref string
 	NextWeek     string
 	NextHref     string
+	RollingHref  string
+	ReportHref   string
 	WeeklyHref   string
 	TriageHref   string
 	RunsHref     string
@@ -242,11 +246,11 @@ func ReportChromeCSS() string {
 		"    .report-nav-btn:hover, .report-view-link:hover { background: #f3f4f6; }",
 		"    .report-nav-btn.disabled { color: #9ca3af; background: #f3f4f6; border-color: #e5e7eb; cursor: not-allowed; }",
 		"    .report-view-link.active { background: #111827; border-color: #111827; color: #ffffff; }",
-		"    .report-week-label { font-size: 12px; font-weight: 600; color: #4b5563; margin-right: 2px; }",
+		"    .report-context-label { font-size: 12px; font-weight: 600; color: #4b5563; margin-right: 2px; }",
 		"    .report-theme-slot { margin-left: auto; }",
 		"    .report-theme-slot .theme-toggle { box-shadow: none; }",
 		"    :root[data-theme=\"dark\"] .report-chrome { background: #111827; border-color: #334155; }",
-		"    :root[data-theme=\"dark\"] .report-week-label { color: #94a3b8; }",
+		"    :root[data-theme=\"dark\"] .report-context-label { color: #94a3b8; }",
 		"    :root[data-theme=\"dark\"] .report-nav-btn, :root[data-theme=\"dark\"] .report-view-link { background: #1f2937; border-color: #334155; color: #e2e8f0; }",
 		"    :root[data-theme=\"dark\"] .report-nav-btn:hover, :root[data-theme=\"dark\"] .report-view-link:hover { background: #0f172a; }",
 		"    :root[data-theme=\"dark\"] .report-nav-btn.disabled { background: #0f172a; border-color: #334155; color: #64748b; }",
@@ -266,14 +270,19 @@ func ReportChromeHTML(options ReportChromeOptions) string {
 	b.WriteString(renderReportChromeNavButton(normalized.NextHref, "Newer &rarr;", normalized.NextWeek, false))
 	b.WriteString("    </div>\n")
 	b.WriteString("    <div class=\"report-chrome-nav\">\n")
-	if normalized.CurrentWeek != "" {
-		b.WriteString(fmt.Sprintf("      <span class=\"report-week-label\">Week %s (UTC)</span>\n", html.EscapeString(normalized.CurrentWeek)))
+	if normalized.WindowLabel != "" {
+		b.WriteString(fmt.Sprintf("      <span class=\"report-context-label\">%s</span>\n", html.EscapeString(normalized.WindowLabel)))
+	} else if normalized.CurrentWeek != "" {
+		b.WriteString(fmt.Sprintf("      <span class=\"report-context-label\">Week %s (UTC)</span>\n", html.EscapeString(normalized.CurrentWeek)))
 	}
-	if strings.TrimSpace(normalized.WeeklyHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.WeeklyHref, "Weekly Report", normalized.CurrentView == ReportViewWeekly))
+	if strings.TrimSpace(normalized.RollingHref) != "" {
+		b.WriteString(renderReportChromeViewLink(normalized.RollingHref, "Rolling 7d", normalized.CurrentView == ReportViewRolling))
+	}
+	if strings.TrimSpace(normalized.ReportHref) != "" {
+		b.WriteString(renderReportChromeViewLink(normalized.ReportHref, "Report", normalized.CurrentView == ReportViewReport))
 	}
 	if strings.TrimSpace(normalized.TriageHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.TriageHref, "Triage Report", normalized.CurrentView == ReportViewTriage))
+		b.WriteString(renderReportChromeViewLink(normalized.TriageHref, "Triage", normalized.CurrentView == ReportViewTriage))
 	}
 	if strings.TrimSpace(normalized.RunsHref) != "" {
 		b.WriteString(renderReportChromeViewLink(normalized.RunsHref, "Runs", normalized.CurrentView == ReportViewRuns))
@@ -375,17 +384,23 @@ func ThemeToggleScriptTag() string {
 }
 
 func normalizedReportChromeOptions(options ReportChromeOptions) ReportChromeOptions {
+	options.WindowLabel = strings.TrimSpace(options.WindowLabel)
 	options.CurrentWeek = strings.TrimSpace(options.CurrentWeek)
 	options.PreviousWeek = strings.TrimSpace(options.PreviousWeek)
 	options.PreviousHref = strings.TrimSpace(options.PreviousHref)
 	options.NextWeek = strings.TrimSpace(options.NextWeek)
 	options.NextHref = strings.TrimSpace(options.NextHref)
+	options.RollingHref = strings.TrimSpace(options.RollingHref)
+	options.ReportHref = strings.TrimSpace(options.ReportHref)
 	options.WeeklyHref = strings.TrimSpace(options.WeeklyHref)
 	options.TriageHref = strings.TrimSpace(options.TriageHref)
 	options.RunsHref = strings.TrimSpace(options.RunsHref)
 	options.ArchiveHref = strings.TrimSpace(options.ArchiveHref)
+	if options.ReportHref == "" {
+		options.ReportHref = options.WeeklyHref
+	}
 	switch options.CurrentView {
-	case ReportViewWeekly, ReportViewTriage, ReportViewRuns:
+	case ReportViewRolling, ReportViewReport, ReportViewTriage, ReportViewRuns:
 	default:
 		options.CurrentView = ""
 	}
@@ -393,10 +408,12 @@ func normalizedReportChromeOptions(options ReportChromeOptions) ReportChromeOpti
 }
 
 func hasReportChromeNavigation(options ReportChromeOptions) bool {
-	return options.CurrentWeek != "" ||
+	return options.WindowLabel != "" ||
+		options.CurrentWeek != "" ||
 		options.PreviousHref != "" ||
 		options.NextHref != "" ||
-		options.WeeklyHref != "" ||
+		options.RollingHref != "" ||
+		options.ReportHref != "" ||
 		options.TriageHref != "" ||
 		options.RunsHref != "" ||
 		options.ArchiveHref != ""
@@ -406,9 +423,9 @@ func renderReportChromeNavButton(href string, label string, week string, older b
 	trimmedHref := strings.TrimSpace(href)
 	trimmedWeek := strings.TrimSpace(week)
 	if trimmedHref == "" {
-		disabledTitle := "No older week available"
+		disabledTitle := "No older window available"
 		if !older {
-			disabledTitle = "No newer week available"
+			disabledTitle = "No newer window available"
 		}
 		return fmt.Sprintf(
 			"      <span class=\"report-nav-btn disabled\" aria-disabled=\"true\" title=\"%s\">%s</span>\n",
@@ -416,9 +433,12 @@ func renderReportChromeNavButton(href string, label string, week string, older b
 			label,
 		)
 	}
-	title := "Go to week report"
+	title := "Go to older window"
+	if !older {
+		title = "Go to newer window"
+	}
 	if trimmedWeek != "" {
-		title = fmt.Sprintf("Go to week %s (UTC)", trimmedWeek)
+		title = fmt.Sprintf("%s anchored on %s (UTC)", title, trimmedWeek)
 	}
 	return fmt.Sprintf(
 		"      <a class=\"report-nav-btn\" href=\"%s\" title=\"%s\">%s</a>\n",

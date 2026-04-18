@@ -37,7 +37,7 @@ func buildDayRunHistoryPageHTML(
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Day Run History</title>\n")
+	b.WriteString("  <title>CI Runs</title>\n")
 	b.WriteString(triagehtml.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
@@ -96,15 +96,15 @@ func buildDayRunHistoryPageHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(triagehtml.ReportChromeHTML(options.Chrome))
-	b.WriteString("  <h1>CI Day Run History</h1>\n")
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Date (UTC): <strong>%s</strong> &middot; Resolved semantic week (UTC): <strong>%s</strong></p>\n",
+	b.WriteString("  <h1>CI Runs</h1>\n")
+	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Date (UTC): <strong>%s</strong></p>\n",
 		html.EscapeString(strings.TrimSpace(data.Meta.Date)),
-		html.EscapeString(strings.TrimSpace(data.Meta.ResolvedWeek)),
 	))
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated (UTC): <strong>%s</strong> &middot; Environments: <strong>%s</strong></p>\n",
 		html.EscapeString(strings.TrimSpace(data.Meta.GeneratedAt)),
 		html.EscapeString(dayRunHistoryEnvironmentList(data.Meta.Environments)),
 	))
+	b.WriteString("  <p class=\"meta\">Semantic matches and bad-PR signals use the latest contributing stored semantic snapshot for the matched signature so the score stays stable even on a single-day slice. <span class=\"triage-header-help\" title=\"The page shows one UTC day of runs, but semantic attachments and bad-PR scoring come from the latest contributing stored semantic snapshot for each matched signature rather than being recomputed from the day in isolation.\">?</span></p>\n")
 	b.WriteString(dayRunHistoryActionsHTML(options))
 	b.WriteString("  <div class=\"cards\">\n")
 	b.WriteString(dayRunHistoryCardHTML("Environments in scope", fmt.Sprintf("%d", len(data.Environments))))

@@ -27,7 +27,7 @@ func TestViewHrefAppendsWeekQuery(t *testing.T) {
 	if got, want := h.viewHref(h.routePath("/"), "2026-03-15"), "/review/?week=2026-03-15"; got != want {
 		t.Fatalf("unexpected prefixed href: got=%q want=%q", got, want)
 	}
-	if got, want := h.viewHref("/weekly", "2026-03-15"), "/weekly?week=2026-03-15"; got != want {
-		t.Fatalf("unexpected weekly href: got=%q want=%q", got, want)
+	if got, want := h.viewHref("/report", "2026-03-15"), "/report?week=2026-03-15"; got != want {
+		t.Fatalf("unexpected report href: got=%q want=%q", got, want)
 	}
 }

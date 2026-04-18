@@ -28,7 +28,7 @@ type WindowedTriageData struct {
 type WindowedTriageMeta struct {
 	StartDate    string   `json:"start_date"`
 	EndDate      string   `json:"end_date"`
-	ResolvedWeek string   `json:"resolved_week"`
+	AnchorWeek   string   `json:"-"`
 	Timezone     string   `json:"timezone"`
 	GeneratedAt  string   `json:"generated_at"`
 	Environments []string `json:"environments"`
@@ -75,6 +75,8 @@ type WindowedTriageRow struct {
 	References              []TriageReportReference        `json:"references,omitempty"`
 	ScoringReferences       []TriageReportReference        `json:"-"`
 	LinkedChildren          []WindowedTriageRow            `json:"linked_children,omitempty"`
+	AnchorWeek              string                         `json:"-"`
+	MergeKey                string                         `json:"-"`
 }
 
 type windowedTriageScope struct {
@@ -106,48 +108,70 @@ func (s *Service) BuildWindowedTriage(ctx context.Context, query WindowedTriageQ
 		return WindowedTriageData{}, fmt.Errorf("service is required")
 	}
 
-	scope, err := resolveWindowedTriageScope(query)
+	scope, err := s.resolvePresentationWindow(ctx, presentationWindowRequest{
+		StartDate:   query.StartDate,
+		EndDate:     query.EndDate,
+		Week:        query.Week,
+		DefaultMode: presentationWindowDefaultLatestWeek,
+	})
 	if err != nil {
 		return WindowedTriageData{}, err
 	}
-	scope.ResolvedWeek, err = s.ensureWeekExists(ctx, scope.ResolvedWeek)
-	if err != nil {
-		return WindowedTriageData{}, err
+	requestedEnvironments := normalizeStringSlice(query.Environments)
+	weeklyDataByWeek := make(map[string]TriageReportData, len(scope.SemanticWeeks))
+	targetEnvironmentSet := map[string]struct{}{}
+	for _, week := range scope.SemanticWeeks {
+		store, err := s.OpenStoreForWeek(week)
+		if err != nil {
+			return WindowedTriageData{}, err
+		}
+		historyResolver, err := s.BuildHistoryResolver(ctx, week)
+		if err != nil {
+			_ = store.Close()
+			return WindowedTriageData{}, fmt.Errorf("build windowed triage history resolver for %s: %w", week, err)
+		}
+		weeklyData, err := BuildTriageReportData(ctx, store, TriageReportBuildOptions{
+			Week:                week,
+			Environments:        requestedEnvironments,
+			HistoryHorizonWeeks: s.historyWeeks,
+			HistoryResolver:     historyResolver,
+		})
+		_ = store.Close()
+		if err != nil {
+			return WindowedTriageData{}, fmt.Errorf("build weekly triage data for window week %s: %w", week, err)
+		}
+		weeklyDataByWeek[week] = weeklyData
+		if len(requestedEnvironments) > 0 {
+			for _, environment := range requestedEnvironments {
+				targetEnvironmentSet[environment] = struct{}{}
+			}
+			continue
+		}
+		for _, environment := range weeklyData.TargetEnvironments {
+			targetEnvironmentSet[normalizeEnvironment(environment)] = struct{}{}
+		}
 	}
 
-	store, err := s.OpenStoreForWeek(scope.ResolvedWeek)
+	targetEnvironments := sortedStringSet(targetEnvironmentSet)
+	if len(targetEnvironments) == 0 {
+		targetEnvironments = append([]string(nil), requestedEnvironments...)
+	}
+
+	factsStore, err := s.OpenStoreForWeek(scope.AnchorWeek)
 	if err != nil {
 		return WindowedTriageData{}, err
 	}
 	defer func() {
-		_ = store.Close()
+		_ = factsStore.Close()
 	}()
 
-	historyResolver, err := s.BuildHistoryResolver(ctx, scope.ResolvedWeek)
-	if err != nil {
-		return WindowedTriageData{}, fmt.Errorf("build windowed triage history resolver: %w", err)
-	}
-	weeklyData, err := BuildTriageReportData(ctx, store, TriageReportBuildOptions{
-		Week:                scope.ResolvedWeek,
-		Environments:        query.Environments,
-		HistoryHorizonWeeks: s.historyWeeks,
-		HistoryResolver:     historyResolver,
-	})
-	if err != nil {
-		return WindowedTriageData{}, fmt.Errorf("build weekly triage data for window: %w", err)
-	}
-
-	targetEnvironments := append([]string(nil), weeklyData.TargetEnvironments...)
-	if len(targetEnvironments) == 0 {
-		targetEnvironments = normalizeStringSlice(query.Environments)
-	}
-	factsByEnvironment, err := loadWindowedTriageFacts(ctx, store, targetEnvironments, scope)
+	factsByEnvironment, err := loadWindowedTriageFacts(ctx, factsStore, targetEnvironments, scope)
 	if err != nil {
 		return WindowedTriageData{}, err
 	}
 	metricRunTotals, err := triageReportMetricRunTotalsByEnvironment(
 		ctx,
-		store,
+		factsStore,
 		targetEnvironments,
 		scope.StartTime,
 		scope.EndTime,
@@ -156,25 +180,42 @@ func (s *Service) BuildWindowedTriage(ctx context.Context, query WindowedTriageQ
 		return WindowedTriageData{}, fmt.Errorf("load windowed triage metric run totals: %w", err)
 	}
 
-	trendAnchor := scope.SemanticWeekEnd.Add(-time.Nanosecond).UTC()
-	if trendAnchor.IsZero() {
-		trendAnchor = time.Now().UTC()
+	rowsByEnvironment := make(map[string]map[string]WindowedTriageRow, len(targetEnvironments))
+	for _, week := range scope.SemanticWeeks {
+		weeklyData := weeklyDataByWeek[week]
+		trendAnchor := windowedTriageTrendAnchor(week)
+		for _, cluster := range weeklyData.TriageClusters {
+			environment := normalizeEnvironment(cluster.Environment)
+			if environment == "" {
+				continue
+			}
+			facts := windowedTriageFactsForWeek(factsByEnvironment[environment], week)
+			row, ok := buildWindowedTriageRow(cluster, facts, weeklyData.HistoryResolver, trendAnchor, week)
+			if !ok {
+				continue
+			}
+			if rowsByEnvironment[environment] == nil {
+				rowsByEnvironment[environment] = map[string]WindowedTriageRow{}
+			}
+			existing, exists := rowsByEnvironment[environment][row.MergeKey]
+			if !exists {
+				rowsByEnvironment[environment][row.MergeKey] = cloneWindowedTriageRow(row)
+				continue
+			}
+			rowsByEnvironment[environment][row.MergeKey] = mergeWindowedTriageRows(existing, row, facts.RunsByURL)
+		}
 	}
 
-	rowsByEnvironment := map[string][]WindowedTriageRow{}
+	finalRowsByEnvironment := make(map[string][]WindowedTriageRow, len(rowsByEnvironment))
 	phraseEnvironments := map[string]map[string]struct{}{}
-	for _, cluster := range weeklyData.TriageClusters {
-		environment := normalizeEnvironment(cluster.Environment)
-		if environment == "" {
-			continue
+	for _, environment := range targetEnvironments {
+		rowMap := rowsByEnvironment[environment]
+		rows := make([]WindowedTriageRow, 0, len(rowMap))
+		for _, row := range rowMap {
+			rows = append(rows, row)
+			collectWindowedPhraseEnvironments(row, phraseEnvironments)
 		}
-		facts := factsByEnvironment[environment]
-		row, ok := buildWindowedTriageRow(cluster, facts, weeklyData.HistoryResolver, trendAnchor)
-		if !ok {
-			continue
-		}
-		rowsByEnvironment[environment] = append(rowsByEnvironment[environment], row)
-		collectWindowedPhraseEnvironments(row, phraseEnvironments)
+		finalRowsByEnvironment[environment] = rows
 	}
 
 	generatedAt := query.GeneratedAt
@@ -184,7 +225,7 @@ func (s *Service) BuildWindowedTriage(ctx context.Context, query WindowedTriageQ
 
 	environments := make([]WindowedTriageEnvironment, 0, len(targetEnvironments))
 	for _, environment := range targetEnvironments {
-		rows := applyWindowedSeenIn(rowsByEnvironment[environment], phraseEnvironments, environment)
+		rows := applyWindowedSeenIn(finalRowsByEnvironment[environment], phraseEnvironments, environment)
 		totalRuns := metricRunTotals[environment]
 		if totalRuns <= 0 {
 			totalRuns = len(factsByEnvironment[environment].RunsByURL)
@@ -202,7 +243,7 @@ func (s *Service) BuildWindowedTriage(ctx context.Context, query WindowedTriageQ
 		Meta: WindowedTriageMeta{
 			StartDate:    scope.StartDate,
 			EndDate:      scope.EndDate,
-			ResolvedWeek: scope.ResolvedWeek,
+			AnchorWeek:   scope.AnchorWeek,
 			Timezone:     "UTC",
 			GeneratedAt:  generatedAt.UTC().Format(time.RFC3339),
 			Environments: append([]string(nil), targetEnvironments...),
@@ -287,7 +328,7 @@ func loadWindowedTriageFacts(
 	ctx context.Context,
 	store storecontracts.Store,
 	environments []string,
-	scope windowedTriageScope,
+	scope presentationWindow,
 ) (map[string]windowedTriageEnvironmentFacts, error) {
 	factsByEnvironment := make(map[string]windowedTriageEnvironmentFacts, len(environments))
 	for _, environment := range environments {
@@ -332,6 +373,52 @@ func loadWindowedTriageFacts(
 	return factsByEnvironment, nil
 }
 
+func windowedTriageFactsForWeek(
+	facts windowedTriageEnvironmentFacts,
+	week string,
+) windowedTriageEnvironmentFacts {
+	startDate, endDate := semanticWeekDateRange(week)
+	if startDate == "" || endDate == "" {
+		return facts
+	}
+	startTime, errStart := time.Parse("2006-01-02", startDate)
+	endInclusive, errEnd := time.Parse("2006-01-02", endDate)
+	if errStart != nil || errEnd != nil {
+		return facts
+	}
+	endTime := endInclusive.UTC().AddDate(0, 0, 1)
+	filtered := windowedTriageEnvironmentFacts{
+		RawFailures: make([]storecontracts.RawFailureRecord, 0, len(facts.RawFailures)),
+		RunsByURL:   map[string]storecontracts.RunRecord{},
+	}
+	for _, row := range facts.RawFailures {
+		occurredAt, err := time.Parse(time.RFC3339, strings.TrimSpace(row.OccurredAt))
+		if err != nil {
+			continue
+		}
+		occurredAt = occurredAt.UTC()
+		if occurredAt.Before(startTime.UTC()) || !occurredAt.Before(endTime) {
+			continue
+		}
+		filtered.RawFailures = append(filtered.RawFailures, row)
+	}
+	for runURL, run := range facts.RunsByURL {
+		occurredAt, err := time.Parse(time.RFC3339, strings.TrimSpace(run.OccurredAt))
+		if err != nil {
+			continue
+		}
+		occurredAt = occurredAt.UTC()
+		if occurredAt.Before(startTime.UTC()) || !occurredAt.Before(endTime) {
+			continue
+		}
+		filtered.RunsByURL[runURL] = run
+		if run.Failed {
+			filtered.FailedRuns++
+		}
+	}
+	return filtered
+}
+
 func fillMissingRunsForWindowFacts(
 	ctx context.Context,
 	store storecontracts.Store,
@@ -365,10 +452,11 @@ func buildWindowedTriageRow(
 	facts windowedTriageEnvironmentFacts,
 	historyResolver semhistory.GlobalSignatureResolver,
 	trendAnchor time.Time,
+	anchorWeek string,
 ) (WindowedTriageRow, bool) {
 	children := make([]WindowedTriageRow, 0, len(cluster.LinkedChildren))
 	for _, child := range cluster.LinkedChildren {
-		childRow, ok := buildWindowedTriageRow(child, facts, nil, trendAnchor)
+		childRow, ok := buildWindowedTriageRow(child, facts, nil, trendAnchor, anchorWeek)
 		if !ok {
 			continue
 		}
@@ -415,6 +503,8 @@ func buildWindowedTriageRow(
 		References:              references,
 		ScoringReferences:       weeklyReferences,
 		LinkedChildren:          children,
+		AnchorWeek:              strings.TrimSpace(anchorWeek),
+		MergeKey:                windowedTriageMergeKeyForCluster(cluster, len(children) > 0),
 	}
 
 	if historyResolver != nil {
@@ -453,6 +543,177 @@ func buildWindowedTrend(references []TriageReportReference, trendAnchor time.Tim
 		return append([]int(nil), counts...), trendRange, true
 	}
 	return nil, "", false
+}
+
+func windowedTriageTrendAnchor(week string) time.Time {
+	weekStart, err := time.Parse("2006-01-02", strings.TrimSpace(week))
+	if err != nil {
+		return time.Now().UTC()
+	}
+	return weekStart.UTC().AddDate(0, 0, 7).Add(-time.Nanosecond)
+}
+
+func windowedTriageMergeKeyForCluster(cluster TriageReportCluster, linked bool) string {
+	environment := normalizeEnvironment(cluster.Environment)
+	if environment == "" {
+		return ""
+	}
+	clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
+	if linked && clusterID != "" {
+		return "phase3|" + environment + "|" + clusterID
+	}
+	phraseKey := normalizePhrase(cluster.CanonicalEvidencePhrase)
+	searchKey := normalizePhrase(cluster.SearchQueryPhrase)
+	if phraseKey == "" && searchKey == "" {
+		if clusterID == "" {
+			return ""
+		}
+		return "cluster|" + environment + "|" + clusterID
+	}
+	return "fallback|" + environment + "|" + phraseKey + "|" + searchKey
+}
+
+func cloneWindowedTriageRow(row WindowedTriageRow) WindowedTriageRow {
+	cloned := row
+	cloned.SeenIn = append([]string(nil), row.SeenIn...)
+	cloned.TrendCounts = append([]int(nil), row.TrendCounts...)
+	cloned.PriorWeekStarts = append([]string(nil), row.PriorWeekStarts...)
+	cloned.ContributingTests = append([]TriageReportContributingTest(nil), row.ContributingTests...)
+	cloned.FullErrorSamples = append([]string(nil), row.FullErrorSamples...)
+	cloned.References = append([]TriageReportReference(nil), row.References...)
+	cloned.ScoringReferences = append([]TriageReportReference(nil), row.ScoringReferences...)
+	if len(row.LinkedChildren) == 0 {
+		cloned.LinkedChildren = nil
+		return cloned
+	}
+	cloned.LinkedChildren = make([]WindowedTriageRow, 0, len(row.LinkedChildren))
+	for _, child := range row.LinkedChildren {
+		cloned.LinkedChildren = append(cloned.LinkedChildren, cloneWindowedTriageRow(child))
+	}
+	return cloned
+}
+
+func mergeWindowedTriageRows(
+	existing WindowedTriageRow,
+	incoming WindowedTriageRow,
+	runsByURL map[string]storecontracts.RunRecord,
+) WindowedTriageRow {
+	merged := cloneWindowedTriageRow(existing)
+	merged.WindowFailureCount += incoming.WindowFailureCount
+	merged.References = mergeWindowedTriageReferences(merged.References, incoming.References)
+	merged.LinkedChildren = mergeWindowedTriageChildren(merged.LinkedChildren, incoming.LinkedChildren, runsByURL)
+	merged.FullErrorSamples = mergeWindowedTriageSamples(merged.FullErrorSamples, incoming.FullErrorSamples, triageReportFullErrorExamplesLimit)
+	if strings.TrimSpace(incoming.AnchorWeek) >= strings.TrimSpace(merged.AnchorWeek) {
+		merged.Environment = incoming.Environment
+		merged.ClusterID = incoming.ClusterID
+		merged.CanonicalEvidencePhrase = incoming.CanonicalEvidencePhrase
+		merged.SearchQueryPhrase = incoming.SearchQueryPhrase
+		merged.Lane = incoming.Lane
+		merged.JobName = incoming.JobName
+		merged.TestName = incoming.TestName
+		merged.TestSuite = incoming.TestSuite
+		merged.WeeklySupportCount = incoming.WeeklySupportCount
+		merged.WeeklyPostGoodCount = incoming.WeeklyPostGoodCount
+		merged.TrendCounts = append([]int(nil), incoming.TrendCounts...)
+		merged.TrendRange = incoming.TrendRange
+		merged.PriorWeeksPresent = incoming.PriorWeeksPresent
+		merged.PriorWeekStarts = append([]string(nil), incoming.PriorWeekStarts...)
+		merged.PriorJobsAffected = incoming.PriorJobsAffected
+		merged.PriorLastSeenAt = incoming.PriorLastSeenAt
+		merged.ContributingTests = append([]TriageReportContributingTest(nil), incoming.ContributingTests...)
+		merged.ScoringReferences = append([]TriageReportReference(nil), incoming.ScoringReferences...)
+		merged.AnchorWeek = incoming.AnchorWeek
+	}
+	merged.JobsAffected = windowedDistinctRunCount(merged.References)
+	merged.FailedRuns = windowedFailedRunsFromReferences(merged.References, runsByURL)
+	if len(merged.References) == 0 && len(merged.LinkedChildren) > 0 {
+		merged.References = windowedReferencesFromChildren(merged.LinkedChildren)
+		merged.FullErrorSamples = windowedFullErrorSamplesFromChildren(merged.LinkedChildren, triageReportFullErrorExamplesLimit)
+		merged.JobsAffected = windowedDistinctRunCount(merged.References)
+		merged.FailedRuns = windowedFailedRunsFromReferences(merged.References, runsByURL)
+	}
+	return merged
+}
+
+func mergeWindowedTriageChildren(
+	existing []WindowedTriageRow,
+	incoming []WindowedTriageRow,
+	runsByURL map[string]storecontracts.RunRecord,
+) []WindowedTriageRow {
+	if len(existing) == 0 {
+		out := make([]WindowedTriageRow, 0, len(incoming))
+		for _, row := range incoming {
+			out = append(out, cloneWindowedTriageRow(row))
+		}
+		return out
+	}
+	merged := make(map[string]WindowedTriageRow, len(existing)+len(incoming))
+	order := make([]string, 0, len(existing)+len(incoming))
+	for _, row := range existing {
+		key := strings.TrimSpace(row.MergeKey)
+		if key == "" {
+			key = fmt.Sprintf("existing|%d", len(order))
+		}
+		if _, exists := merged[key]; !exists {
+			order = append(order, key)
+		}
+		merged[key] = cloneWindowedTriageRow(row)
+	}
+	for _, row := range incoming {
+		key := strings.TrimSpace(row.MergeKey)
+		if key == "" {
+			key = fmt.Sprintf("incoming|%d", len(order))
+		}
+		existingRow, exists := merged[key]
+		if !exists {
+			order = append(order, key)
+			merged[key] = cloneWindowedTriageRow(row)
+			continue
+		}
+		merged[key] = mergeWindowedTriageRows(existingRow, row, runsByURL)
+	}
+	out := make([]WindowedTriageRow, 0, len(order))
+	for _, key := range order {
+		out = append(out, merged[key])
+	}
+	sortWindowedTriageRows(out)
+	return out
+}
+
+func mergeWindowedTriageReferences(
+	existing []TriageReportReference,
+	incoming []TriageReportReference,
+) []TriageReportReference {
+	if len(existing) == 0 {
+		return append([]TriageReportReference(nil), incoming...)
+	}
+	seen := map[string]struct{}{}
+	out := make([]TriageReportReference, 0, len(existing)+len(incoming))
+	appendUnique := func(rows []TriageReportReference) {
+		for _, row := range rows {
+			key := strings.TrimSpace(row.RunURL) + "|" + strings.TrimSpace(row.OccurredAt) + "|" + strings.TrimSpace(row.SignatureID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, row)
+		}
+	}
+	appendUnique(existing)
+	appendUnique(incoming)
+	sortWindowedReferences(out)
+	return out
+}
+
+func mergeWindowedTriageSamples(existing []string, incoming []string, limit int) []string {
+	out := append([]string(nil), existing...)
+	for _, sample := range incoming {
+		out = triageReportAppendUniqueLimitedSample(out, sample, limit)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 func matchWindowedTriageCluster(cluster TriageReportCluster, facts windowedTriageEnvironmentFacts) windowedTriageMatch {

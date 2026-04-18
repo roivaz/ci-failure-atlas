@@ -150,8 +150,8 @@ func TestHandleAPIWindowedTriageReturnsJSON(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got, want := payload.Meta.ResolvedWeek, "2026-03-15"; got != want {
-		t.Fatalf("unexpected resolved week: got=%q want=%q", got, want)
+	if strings.Contains(recorder.Body.String(), "\"resolved_week\"") {
+		t.Fatalf("did not expect resolved_week in triage payload: %s", recorder.Body.String())
 	}
 	if got, want := payload.Meta.Timezone, "UTC"; got != want {
 		t.Fatalf("unexpected windowed triage payload timezone: got=%q want=%q", got, want)
@@ -190,7 +190,7 @@ func TestHandleAPIWindowedTriageReturnsJSONError(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode error response: %v", err)
 	}
-	if got := payload["error"]; !strings.Contains(got, "invalid end_date") {
+	if got := payload["error"]; !strings.Contains(got, "start_date and end_date must both be set") {
 		t.Fatalf("unexpected error message: %q", got)
 	}
 }
@@ -248,10 +248,10 @@ func TestHandleTriagePageWindowRendersHTML(t *testing.T) {
 		t.Fatalf("unexpected content type: %q", got)
 	}
 	body := recorder.Body.String()
-	if !strings.Contains(body, "Resolved semantic week (UTC)") {
-		t.Fatalf("expected resolved week note in body, got %q", body)
+	if strings.Contains(body, "Resolved semantic week (UTC)") {
+		t.Fatalf("did not expect resolved week note in body, got %q", body)
 	}
-	if !strings.Contains(body, "Jobs affected, impact, and seen-in values reflect the selected window") {
+	if !strings.Contains(body, "Jobs affected, impact, references, and seen-in are recomputed across the selected window") {
 		t.Fatalf("expected windowed triage guidance in body, got %q", body)
 	}
 	if !strings.Contains(body, "OAuth timeout") {
@@ -266,8 +266,8 @@ func TestHandleTriagePageWindowRendersHTML(t *testing.T) {
 	if !strings.Contains(body, `name="env" value="dev"`) {
 		t.Fatalf("expected env control in body, got %q", body)
 	}
-	if !strings.Contains(body, `type="hidden" name="week" value="2026-03-15"`) {
-		t.Fatalf("expected resolved week hidden input in body, got %q", body)
+	if strings.Contains(body, `type="hidden" name="week"`) {
+		t.Fatalf("did not expect hidden week input in body, got %q", body)
 	}
 	if !strings.Contains(body, "Reset to full week") {
 		t.Fatalf("expected reset link in body, got %q", body)
@@ -380,8 +380,8 @@ func TestHandleAPIRunsDayReturnsJSON(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got, want := payload.Meta.ResolvedWeek, "2026-03-15"; got != want {
-		t.Fatalf("unexpected resolved week: got=%q want=%q", got, want)
+	if strings.Contains(recorder.Body.String(), "\"resolved_week\"") {
+		t.Fatalf("did not expect resolved_week in runs payload: %s", recorder.Body.String())
 	}
 	if got, want := payload.Meta.Timezone, "UTC"; got != want {
 		t.Fatalf("unexpected runs payload timezone: got=%q want=%q", got, want)
@@ -508,8 +508,8 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 		t.Fatalf("unexpected content type: %q", got)
 	}
 	body := recorder.Body.String()
-	if !strings.Contains(body, "CI Day Run History") {
-		t.Fatalf("expected day run history title in body, got %q", body)
+	if !strings.Contains(body, "CI Runs") {
+		t.Fatalf("expected runs title in body, got %q", body)
 	}
 	if !strings.Contains(body, "Open triage for this day") {
 		t.Fatalf("expected triage CTA in body, got %q", body)

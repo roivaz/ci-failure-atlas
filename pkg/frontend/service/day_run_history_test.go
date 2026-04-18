@@ -45,8 +45,8 @@ func TestBuildJobHistoryDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 		t.Fatalf("build job history day: %v", err)
 	}
 
-	if got, want := data.Meta.ResolvedWeek, "2026-03-15"; got != want {
-		t.Fatalf("unexpected resolved week: got=%q want=%q", got, want)
+	if got, want := data.Meta.AnchorWeek, "2026-03-15"; got != want {
+		t.Fatalf("unexpected anchor week: got=%q want=%q", got, want)
 	}
 	environment := jobHistoryEnvironmentByName(t, data, "dev")
 	if got, want := environment.Summary.TotalRuns, 2; got != want {

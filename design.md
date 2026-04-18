@@ -1,11 +1,11 @@
 # CI Failure Atlas Design
 
 Status: current architecture snapshot  
-Last updated: 2026-04-16
+Last updated: 2026-04-15
 
 ## Purpose
 
-CI Failure Atlas ingests CI run/failure data, materializes semantic failure clusters by week, and serves operator-facing triage and review workflows.
+CI Failure Atlas ingests CI run/failure data, materializes semantic failure clusters by week, and serves operator-facing report, triage, runs, and review workflows.
 
 The important architectural point is that the Go app + PostgreSQL runtime is no longer the target state. It is the current state.
 
@@ -24,8 +24,8 @@ The runtime has three main planes:
    - Phase1 and phase2 execute in memory; persisted outputs are the user-facing week datasets.
 
 3. **Product surfaces**
-   - `cfa app` serves weekly/triage/review views from PostgreSQL.
-   - `cfa app export-site` renders static HTML from the same PostgreSQL-backed data as a compatibility/export path.
+   - `cfa app` serves report/triage/runs/review views from PostgreSQL.
+   - Azure Storage can still host a tiny redirect page that points users at the hosted app URL.
 
 ## Codebase Map
 
@@ -65,12 +65,12 @@ The semantic workflow is still logically split into three phases:
 
 2. **Phase2: global merge**
    - Merge test-scoped clusters into global failure signatures.
-   - Produce the signature rows used by weekly/triage and review flows.
+   - Produce the signature rows used by report/triage and review flows.
 
 3. **Phase3: human linking and reconciliation**
    - Operators link semantically equivalent signatures in the review UI.
    - Durable row-level anchors remain `environment + run_url + row_id`.
-   - Stored Phase3 state is reapplied both in the live app and in exported static reports.
+   - Stored Phase3 state is reapplied across the live app surfaces and shared report renderers.
 
 ## Terminology And Search Notes
 
@@ -102,36 +102,35 @@ The semantic partitioning contract is now explicit:
 - one stored semantic partition equals one UTC week
 - a week is keyed by a Sunday-starting `YYYY-MM-DD`
 - materialization replaces the full stored week, not partial per-environment slices
-- history/navigation in the app and reports is based on these stored weeks
+- history/navigation in the app is composed from these stored weeks
 
 This removes the old ambiguity around generic semantic subdirectories or ad hoc materialization windows.
 
-### Future design: cross-week custom windows (not implemented)
+### Presentation windows
 
-Current custom-window triage is intentionally limited to a single stored semantic week. That limit reflects the canonical storage/materialization contract above, not a claim that cross-week operator views are inherently invalid.
+User-facing report surfaces now resolve a presentation window independently from the persisted semantic partitioning:
 
-If cross-week custom windows become a product requirement, the preferred direction is:
+- `/report` accepts either `week=YYYY-MM-DD` or `start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+- `/` redirects to a rolling 7-day `/report` window
+- `/triage` and `/runs` use the same shared window resolver for navigation and range normalization
 
-- keep weekly semantic materialization as the only canonical persisted semantic partition
-- load the already-materialized weeks that intersect the requested date range
-- compose those stored weekly semantic outputs in memory into one presentation read model
-- then apply the requested date window over that composed read model
+The important invariant is that this does **not** change semantic storage:
 
-This should be treated as a presentation/query-layer feature, not as a new arbitrary-window semantic materialization contract.
+- weekly semantic materialization remains the only canonical persisted semantic partition
+- the app loads every stored semantic week that intersects the requested UTC date window
+- cross-week operator views are composed in memory at query/render time
 
-The intended row-identity rules for such a feature would be:
+Cross-week signature identity follows explicit rules:
 
 - use Phase3 issue ID as the strongest cross-week identity when present
-- otherwise fall back to the same kind of cross-week semantic key already used for recurrence/history lookups: environment + canonical phrase + search query
+- otherwise fall back to `environment + canonical phrase + search query`
 
-If this is implemented later, the field contract should stay explicit:
+The field contract also stays explicit:
 
-- window-local fields should be recomputed across the full requested range, for example jobs affected, impact, seen-in, references, and sample sets
-- week-anchored heuristics such as flake/trend should remain anchored to an explicit contributing semantic week rather than pretending that a multi-week window is itself a new stored semantic partition
+- window-local fields are recomputed across the requested range, for example jobs affected, impact, seen-in, references, and samples
+- week-anchored heuristics such as flake score, trend, and after-last-push stay anchored to an explicit contributing semantic week rather than pretending a multi-week window is itself a stored semantic partition
 
-This is explicitly not implemented today.
-
-The non-preferred alternative is to add larger persisted semantic partitions such as monthly materializations. That is intentionally not the current design direction because it would introduce a second canonical semantic granularity, complicate identity/link semantics, and still leave boundary problems at larger partition edges.
+The non-preferred alternative is to add larger persisted semantic partitions such as monthly materializations. That remains intentionally out of scope because it would introduce a second canonical semantic granularity, complicate identity/link semantics, and still leave boundary problems at larger partition edges.
 
 ## Local Runtime Model
 
@@ -149,7 +148,7 @@ In practice:
 
 `cfa app` is the primary operator surface:
 
-- weekly report view
+- report view (`/report`) with classic week-shaped and arbitrary-window modes
 - signature triage view
 - day-scoped run history view (`/runs`, `/api/runs/day`)
 - Phase3 review/linking workflow
@@ -160,8 +159,8 @@ In practice:
 The run-history surface is intentionally day-scoped and run-centric:
 
 - it loads the requested UTC day of `RunRecord` + `RawFailureRecord` facts
-- resolves the containing semantic week using the same Sunday-start rule as custom-window triage
-- enriches each raw failure row by matching its `signature_id` against the resolved stored weekly semantic clusters
+- resolves the requested day through the shared presentation-window rules used by the other report surfaces
+- enriches each raw failure row by matching its `signature_id` against the contributing stored semantic clusters for that day
 
 This gives a Prow-like operator view, but it is not yet a full Prow-history data model.
 
@@ -171,17 +170,17 @@ Current gap to keep explicit:
 - it does not yet include richer run-history fields such as duration/build metadata or more detailed terminal run state
 - some raw failures can still reference runs whose `RunRecord` needs backfill/lookup, so the first version of the run page is informative but not a complete fact model
 
-### Static export
+### Storage-account redirect
 
-`cfa app export-site` remains intentionally supported because current publishing still relies on uploading static HTML.
+The old static export flow has been removed.
 
-Its role is now narrow:
+The remaining Azure Storage publishing step is intentionally narrow:
 
-- read already-materialized PostgreSQL data
-- render weekly/triage/archive HTML
-- hand off publishing to Azure CLI or another external script
+- generate a tiny `index.html`/`404.html` redirect page
+- upload that redirect page to the storage account's static website container
+- hand users off to the hosted app URL
 
-It is not the architectural center of the system and it is not responsible for running semantic materialization.
+It is not part of semantic materialization or report rendering; it only preserves an existing access path while hosted operation is being hardened.
 
 ## Current Command Surface
 
@@ -190,7 +189,6 @@ Primary commands:
 - `cfa run`
 - `cfa semantic materialize`
 - `cfa app`
-- `cfa app export-site`
 
 Secondary maintenance/debug commands:
 
@@ -201,7 +199,7 @@ Secondary maintenance/debug commands:
 ## Key Design Decisions
 
 1. **App + DB is the primary runtime**
-   - Reports, review, and exported HTML all read from PostgreSQL-backed state.
+   - Reports, triage, runs, and review all read from PostgreSQL-backed state.
 
 2. **Semantic weeks are canonical**
    - The UI, materialization contract, and storage schema all agree on Sunday-starting week partitions.
@@ -212,8 +210,8 @@ Secondary maintenance/debug commands:
 4. **Phase3 source of truth is durable link state**
    - The review workflow stores stable issue/link/event records rather than collapsing decisions into transient export artifacts.
 
-5. **Static export is compatibility, not primary architecture**
-   - It exists to bridge current hosting, not to define the long-term runtime shape.
+5. **Storage-account publishing is redirect-only compatibility**
+   - It preserves an existing entrypoint without duplicating the report surface outside the live app.
 
 ## Developer Orientation
 
@@ -236,6 +234,6 @@ That work includes:
 - running against managed PostgreSQL
 - scheduling controllers and semantic materialization/backfill
 - adding auth, deployment automation, backups, and runbooks
-- deciding when storage-account-hosted static export can become optional instead of primary
+- operating the storage-account redirect and hosted app path together until the redirect is no longer needed
 
 The architecture refactor is largely complete; the next work is operationalization.
