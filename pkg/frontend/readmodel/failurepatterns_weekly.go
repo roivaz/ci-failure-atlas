@@ -24,6 +24,7 @@ type FailurePatternReportBuildOptions struct {
 }
 
 type FailurePatternReportReference struct {
+	RowID          string `json:"-"`
 	RunURL         string `json:"run_url"`
 	OccurredAt     string `json:"occurred_at"`
 	SignatureID    string `json:"signature_id"`
@@ -364,6 +365,7 @@ func toFailurePatternReportReferences(rows []semanticcontracts.ReferenceRecord) 
 	out := make([]FailurePatternReportReference, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, FailurePatternReportReference{
+			RowID:          strings.TrimSpace(row.RowID),
 			RunURL:         strings.TrimSpace(row.RunURL),
 			OccurredAt:     strings.TrimSpace(row.OccurredAt),
 			SignatureID:    strings.TrimSpace(row.SignatureID),

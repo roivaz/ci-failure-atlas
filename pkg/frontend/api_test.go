@@ -170,6 +170,23 @@ func TestHandleAPIFailurePatternsReturnsJSON(t *testing.T) {
 	if got, want := len(payload.Environments[0].Rows), 2; got != want {
 		t.Fatalf("unexpected row count: got=%d want=%d", got, want)
 	}
+	var linkedRow *frontservice.FailurePatternsRow
+	for index := range payload.Environments[0].Rows {
+		row := &payload.Environments[0].Rows[index]
+		if row.ClusterID == "cluster-dev-linked" {
+			linkedRow = row
+			break
+		}
+	}
+	if linkedRow == nil {
+		t.Fatalf("expected linked failure-pattern row in payload")
+	}
+	if got, want := len(linkedRow.FullErrorSamples), 1; got != want {
+		t.Fatalf("unexpected full error sample count: got=%d want=%d", got, want)
+	}
+	if got, want := linkedRow.FullErrorSamples[0], reviewAPILongRawFailureText(); got != want {
+		t.Fatalf("expected full raw failure sample without truncation: got=%q want=%q", got, want)
+	}
 }
 
 func TestHandleAPIFailurePatternsReturnsJSONError(t *testing.T) {
@@ -984,7 +1001,7 @@ func reviewAPIRawFailures() []storecontracts.RawFailureRecord {
 			TestSuite:      "suite-a",
 			SignatureID:    "sig-linked",
 			OccurredAt:     "2026-03-16T08:00:00Z",
-			RawText:        "OAuth timeout while waiting for cluster operator",
+			RawText:        reviewAPILongRawFailureText(),
 			NormalizedText: "oauth timeout while waiting for cluster operator",
 		},
 		{
@@ -999,6 +1016,14 @@ func reviewAPIRawFailures() []storecontracts.RawFailureRecord {
 			NormalizedText: "createnodepool timeout after 45 minutes",
 		},
 	}
+}
+
+func reviewAPILongRawFailureText() string {
+	return strings.Join([]string{
+		`time=2026-03-16T08:00:00Z level=INFO msg="Running step." serviceGroup=Microsoft.Azure.ARO.HCP.ACM resourceGroup=management step=deploy-mce-config description="Step deploy-mce-config\n Kind: Helm\n"`,
+		`time=2026-03-16T08:00:01Z level=ERROR msg="error running Helm release deployment Step, failed to deploy helm release: failed post-install: resource not ready, name: finalize-mce-config, kind: Job, status: InProgress"`,
+		`time=2026-03-16T08:04:01Z level=ERROR msg="context deadline exceeded"`,
+	}, "\n")
 }
 
 func jobHistoryAPIMaterializedWeek() storecontracts.MaterializedWeek {

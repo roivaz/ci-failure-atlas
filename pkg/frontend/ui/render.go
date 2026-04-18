@@ -298,9 +298,11 @@ func StylesCSS() string {
 		"    details summary { cursor: pointer; color: #1d4ed8; }",
 		"    details.failure-pattern-toggle > summary { font-size: 13px; font-weight: 700; color: #111827; }",
 		"    .failure-patterns-errors-row .failure-pattern-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }",
+		"    .failure-patterns-errors-row .failure-pattern-detail-actions > details { min-width: 0; }",
 		"    .failure-patterns-errors-row details.full-errors-toggle, .failure-patterns-errors-row details.affected-runs-toggle, .failure-patterns-errors-row details.contributing-tests-toggle { margin: 0; }",
 		"    .failure-patterns-errors-row details.full-errors-toggle > summary, .failure-patterns-errors-row details.affected-runs-toggle > summary, .failure-patterns-errors-row details.contributing-tests-toggle > summary { display: inline-flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 600; color: #1e3a8a; background: #dbeafe; border: 1px solid #93c5fd; border-radius: 999px; padding: 2px 10px; }",
 		"    .failure-patterns-errors-row details.full-errors-toggle[open] > summary, .failure-patterns-errors-row details.affected-runs-toggle[open] > summary, .failure-patterns-errors-row details.contributing-tests-toggle[open] > summary { background: #bfdbfe; border-color: #60a5fa; color: #1e40af; }",
+		"    .failure-patterns-errors-row details.full-errors-toggle[open] { flex: 1 1 100%; min-width: 0; }",
 		"    .failure-patterns-errors-row details.linked-failure-patterns-toggle > summary, .failure-patterns-errors-row details.linked-child-toggle > summary { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: #1e3a8a; background: #dbeafe; border: 1px solid #93c5fd; border-radius: 8px; padding: 4px 10px; }",
 		"    .failure-patterns-errors-row details.linked-failure-patterns-toggle[open] > summary, .failure-patterns-errors-row details.linked-child-toggle[open] > summary { background: #bfdbfe; border-color: #60a5fa; color: #1e40af; }",
 		"    .linked-failure-pattern-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }",
@@ -315,11 +317,12 @@ func StylesCSS() string {
 		"    .failure-patterns-errors-row .runs-table { border-collapse: collapse; width: 100%; font-size: 11px; }",
 		"    .failure-patterns-errors-row .runs-table th, .failure-patterns-errors-row .runs-table td { padding: 4px 6px; border-bottom: 1px solid #dbeafe; text-align: left; vertical-align: top; }",
 		"    .failure-patterns-errors-row .runs-table th { position: sticky; top: 0; background: #dbeafe; z-index: 1; }",
+		"    .failure-patterns-errors-row .full-errors-list { margin-top: 6px; max-width: 100%; }",
 		"    .failure-patterns-errors-row .tests-scroll { margin-top: 6px; max-height: 172px; overflow-y: auto; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }",
 		"    .failure-patterns-errors-row .tests-table { border-collapse: collapse; width: 100%; font-size: 11px; }",
 		"    .failure-patterns-errors-row .tests-table th, .failure-patterns-errors-row .tests-table td { padding: 4px 6px; border-bottom: 1px solid #dbeafe; text-align: left; vertical-align: top; }",
 		"    .failure-patterns-errors-row .tests-table th { position: sticky; top: 0; background: #dbeafe; z-index: 1; }",
-		"    pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0 0; }",
+		"    pre { white-space: pre-wrap; word-break: break-word; overflow-x: auto; max-width: 100%; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0 0; }",
 	}, "\n") + "\n"
 }
 
@@ -1525,6 +1528,7 @@ func renderFullErrorDetails(samples []string, summaryLabel string) string {
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("<details class=\"full-errors-toggle\"><summary>%s (%d)</summary>", html.EscapeString(summaryLabel), len(samples)))
+	b.WriteString("<div class=\"full-errors-list\">")
 	for _, sample := range samples {
 		trimmed := strings.TrimSpace(sample)
 		if trimmed == "" {
@@ -1534,7 +1538,7 @@ func renderFullErrorDetails(samples []string, summaryLabel string) string {
 		b.WriteString(html.EscapeString(trimmed))
 		b.WriteString("</pre>")
 	}
-	b.WriteString("</details>")
+	b.WriteString("</div></details>")
 	return b.String()
 }
 
@@ -1551,7 +1555,7 @@ func renderContributingTestsDetails(items []ContributingTest, summaryLabel strin
 		b.WriteString("</details>")
 		return b.String()
 	}
-	b.WriteString("<div class=\"tests-scroll\"><table class=\"tests-table\"><thead><tr><th>Lane</th><th>Job</th><th>Test</th><th>Support</th></tr></thead><tbody>")
+	b.WriteString("<div class=\"tests-scroll\"><table class=\"tests-table\"><thead><tr><th>Failed At</th><th>Job</th><th>Test</th><th>Support</th></tr></thead><tbody>")
 	for _, item := range ordered {
 		lane := strings.TrimSpace(item.FailedAt)
 		jobName := strings.TrimSpace(item.JobName)
@@ -1559,21 +1563,31 @@ func renderContributingTestsDetails(items []ContributingTest, summaryLabel strin
 		if lane == "" {
 			lane = "n/a"
 		}
-		if jobName == "" {
-			jobName = "n/a"
-		}
 		if testName == "" {
 			testName = "n/a"
 		}
 		b.WriteString("<tr>")
 		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(lane)))
-		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(jobName)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", renderContributingJobCell(jobName)))
 		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(testName)))
 		b.WriteString(fmt.Sprintf("<td>%d</td>", item.Occurrences))
 		b.WriteString("</tr>")
 	}
 	b.WriteString("</tbody></table></div></details>")
 	return b.String()
+}
+
+func renderContributingJobCell(jobName string) string {
+	jobName = strings.TrimSpace(jobName)
+	if jobName == "" {
+		return "<span class=\"muted\">n/a</span>"
+	}
+	prowURL := fmt.Sprintf("https://prow.ci.openshift.org/?job=%s", url.QueryEscape(jobName))
+	return fmt.Sprintf(
+		"<a href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">%s</a>",
+		html.EscapeString(prowURL),
+		html.EscapeString(jobName),
+	)
 }
 
 func renderAffectedRunsDetails(rows []RunReference, opts TableOptions) string {

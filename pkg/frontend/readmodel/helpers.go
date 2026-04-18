@@ -63,9 +63,6 @@ func sampleFailureText(row storecontracts.RawFailureRecord) string {
 	if text == "" {
 		text = strings.TrimSpace(row.NormalizedText)
 	}
-	if len(text) > 240 {
-		return text[:240]
-	}
 	return text
 }
 

@@ -742,3 +742,58 @@ func TestRenderTableUsesUnknownFailedAtWhenFailedAtDataMissing(t *testing.T) {
 		t.Fatalf("expected lane filter fallback to unknown, got %q", rendered)
 	}
 }
+
+func TestRenderContributingTestsDetailsUsesFailedAtHeaderAndProwJobLinks(t *testing.T) {
+	t.Parallel()
+
+	rendered := renderContributingTestsDetails([]ContributingTest{
+		{
+			FailedAt:    "e2e",
+			JobName:     "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			TestName:    "TestClusterCreate",
+			Occurrences: 3,
+		},
+	}, "")
+
+	if !strings.Contains(rendered, "<th>Failed At</th>") {
+		t.Fatalf("expected contributing tests header to use Failed At, got %q", rendered)
+	}
+	if strings.Contains(rendered, "<th>Lane</th>") {
+		t.Fatalf("expected legacy Lane header to be removed, got %q", rendered)
+	}
+	if !strings.Contains(rendered, `href="https://prow.ci.openshift.org/?job=pull-ci-Azure-ARO-HCP-main-e2e-parallel"`) {
+		t.Fatalf("expected contributing job name to link to prow job history, got %q", rendered)
+	}
+	if !strings.Contains(rendered, ">pull-ci-Azure-ARO-HCP-main-e2e-parallel</a>") {
+		t.Fatalf("expected contributing job link label to preserve the job name, got %q", rendered)
+	}
+}
+
+func TestRenderFullErrorDetailsKeepsFullSamples(t *testing.T) {
+	t.Parallel()
+
+	sample := strings.Repeat("0123456789abcdef", 24) + "::tail-marker"
+	rendered := renderFullErrorDetails([]string{sample}, "")
+
+	if !strings.Contains(rendered, `class="full-errors-list"`) {
+		t.Fatalf("expected full error details to render in the dedicated container, got %q", rendered)
+	}
+	if !strings.Contains(rendered, sample) {
+		t.Fatalf("expected full error sample to remain untruncated, got %q", rendered)
+	}
+}
+
+func TestStylesCSSExpandsOpenFullErrors(t *testing.T) {
+	t.Parallel()
+
+	styles := StylesCSS()
+	for _, snippet := range []string{
+		`details.full-errors-toggle[open] { flex: 1 1 100%; min-width: 0; }`,
+		`.failure-patterns-errors-row .full-errors-list { margin-top: 6px; max-width: 100%; }`,
+		`pre { white-space: pre-wrap; word-break: break-word; overflow-x: auto; max-width: 100%;`,
+	} {
+		if !strings.Contains(styles, snippet) {
+			t.Fatalf("expected styles to contain %q, got %q", snippet, styles)
+		}
+	}
+}

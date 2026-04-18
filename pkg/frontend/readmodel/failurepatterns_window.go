@@ -482,7 +482,7 @@ func buildFailurePatternsRow(
 		fullErrorSamples = windowedFullErrorSamplesFromChildren(children, failurePatternReportFullErrorExamplesLimit)
 	}
 
-	weeklyReferences := append([]FailurePatternReportReference(nil), cluster.References...)
+	anchorWeekReferences := append([]FailurePatternReportReference(nil), cluster.References...)
 	row := FailurePatternsRow{
 		Environment:             normalizeEnvironment(cluster.Environment),
 		ClusterID:               strings.TrimSpace(cluster.Phase2ClusterID),
@@ -496,11 +496,11 @@ func buildFailurePatternsRow(
 		JobsAffected:            windowedDistinctRunCount(references),
 		FailedRuns:              failedRuns,
 		WeeklySupportCount:      cluster.SupportCount,
-		WeeklyPostGoodCount:     cluster.PostGoodCommitCount,
+		WeeklyPostGoodCount:     windowedPostGoodCount(references),
 		ContributingTests:       append([]FailurePatternReportContributingTest(nil), cluster.ContributingTests...),
 		FullErrorSamples:        fullErrorSamples,
 		References:              references,
-		ScoringReferences:       weeklyReferences,
+		ScoringReferences:       append([]FailurePatternReportReference(nil), references...),
 		LinkedChildren:          children,
 		AnchorWeek:              strings.TrimSpace(anchorWeek),
 		MergeKey:                failurePatternsMergeKeyForCluster(cluster, len(children) > 0),
@@ -525,7 +525,7 @@ func buildFailurePatternsRow(
 		}
 	}
 
-	if counts, trendRange, ok := buildWindowedTrend(weeklyReferences, trendAnchor); ok {
+	if counts, trendRange, ok := buildWindowedTrend(anchorWeekReferences, trendAnchor); ok {
 		row.TrendCounts = counts
 		row.TrendRange = trendRange
 	}
@@ -620,16 +620,21 @@ func mergeFailurePatternsRows(
 		merged.PriorJobsAffected = incoming.PriorJobsAffected
 		merged.PriorLastSeenAt = incoming.PriorLastSeenAt
 		merged.ContributingTests = append([]FailurePatternReportContributingTest(nil), incoming.ContributingTests...)
-		merged.ScoringReferences = append([]FailurePatternReportReference(nil), incoming.ScoringReferences...)
+		merged.ScoringReferences = mergeFailurePatternsReferences(merged.ScoringReferences, incoming.ScoringReferences)
 		merged.AnchorWeek = incoming.AnchorWeek
 	}
 	merged.JobsAffected = windowedDistinctRunCount(merged.References)
 	merged.FailedRuns = windowedFailedRunsFromReferences(merged.References, runsByURL)
+	merged.WeeklyPostGoodCount = windowedPostGoodCount(merged.ScoringReferences)
 	if len(merged.References) == 0 && len(merged.LinkedChildren) > 0 {
 		merged.References = windowedReferencesFromChildren(merged.LinkedChildren)
 		merged.FullErrorSamples = windowedFullErrorSamplesFromChildren(merged.LinkedChildren, failurePatternReportFullErrorExamplesLimit)
 		merged.JobsAffected = windowedDistinctRunCount(merged.References)
 		merged.FailedRuns = windowedFailedRunsFromReferences(merged.References, runsByURL)
+		if len(merged.ScoringReferences) == 0 {
+			merged.ScoringReferences = append([]FailurePatternReportReference(nil), merged.References...)
+		}
+		merged.WeeklyPostGoodCount = windowedPostGoodCount(merged.ScoringReferences)
 	}
 	return merged
 }
@@ -690,7 +695,10 @@ func mergeFailurePatternsReferences(
 	out := make([]FailurePatternReportReference, 0, len(existing)+len(incoming))
 	appendUnique := func(rows []FailurePatternReportReference) {
 		for _, row := range rows {
-			key := strings.TrimSpace(row.RunURL) + "|" + strings.TrimSpace(row.OccurredAt) + "|" + strings.TrimSpace(row.SignatureID)
+			key := failurePatternsReferenceDedupKey(row)
+			if key == "" {
+				continue
+			}
 			if _, exists := seen[key]; exists {
 				continue
 			}
@@ -724,7 +732,8 @@ func matchFailurePatternsCluster(cluster FailurePatternReportCluster, facts fail
 		}
 		signatureSet[trimmed] = struct{}{}
 	}
-	if len(signatureSet) == 0 {
+	referencesByKey := failurePatternsReferenceMatchMap(cluster.References)
+	if len(signatureSet) == 0 && len(referencesByKey) == 0 {
 		return failurePatternsMatch{}
 	}
 
@@ -735,20 +744,27 @@ func matchFailurePatternsCluster(cluster FailurePatternReportCluster, facts fail
 	failedRunURLs := map[string]struct{}{}
 	for _, row := range facts.RawFailures {
 		signatureID := strings.TrimSpace(row.SignatureID)
-		if _, ok := signatureSet[signatureID]; !ok {
-			continue
+		if len(referencesByKey) == 0 {
+			if _, ok := signatureSet[signatureID]; !ok {
+				continue
+			}
+		} else {
+			if _, ok := signatureSet[signatureID]; len(signatureSet) > 0 && !ok {
+				continue
+			}
+			if _, ok := failurePatternsStoredReferenceForRawFailure(row, referencesByKey); !ok {
+				continue
+			}
 		}
 		match.FailureCount++
 		match.RawFailures = append(match.RawFailures, row)
 		runURL := strings.TrimSpace(row.RunURL)
 		run := facts.RunsByURL[runURL]
-		match.References = append(match.References, FailurePatternReportReference{
-			RunURL:         runURL,
-			OccurredAt:     strings.TrimSpace(row.OccurredAt),
-			SignatureID:    signatureID,
-			PRNumber:       run.PRNumber,
-			PostGoodCommit: run.PostGoodCommit,
-		})
+		reference := failurePatternsReferenceFromRawFailure(row, run)
+		if storedReference, ok := failurePatternsStoredReferenceForRawFailure(row, referencesByKey); ok {
+			reference = failurePatternsOverlayStoredReference(reference, storedReference, run)
+		}
+		match.References = append(match.References, reference)
 		if run.Failed && runURL != "" {
 			failedRunURLs[runURL] = struct{}{}
 		}
@@ -756,6 +772,117 @@ func matchFailurePatternsCluster(cluster FailurePatternReportCluster, facts fail
 	sortWindowedReferences(match.References)
 	match.FailedRuns = len(failedRunURLs)
 	return match
+}
+
+func failurePatternsReferenceMatchMap(rows []FailurePatternReportReference) map[string]FailurePatternReportReference {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make(map[string]FailurePatternReportReference, len(rows)*2)
+	for _, row := range rows {
+		for _, key := range failurePatternsReferenceMatchKeys(row) {
+			out[key] = row
+		}
+	}
+	return out
+}
+
+func failurePatternsReferenceMatchKeys(row FailurePatternReportReference) []string {
+	keys := make([]string, 0, 2)
+	rowID := strings.TrimSpace(row.RowID)
+	if rowID != "" {
+		keys = append(keys, "row|"+rowID)
+	}
+	if key := failurePatternsReferenceTupleKey(row.RunURL, row.OccurredAt, row.SignatureID); key != "" {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func failurePatternsRawFailureMatchKeys(row storecontracts.RawFailureRecord) []string {
+	keys := make([]string, 0, 2)
+	rowID := strings.TrimSpace(row.RowID)
+	if rowID != "" {
+		keys = append(keys, "row|"+rowID)
+	}
+	if key := failurePatternsReferenceTupleKey(row.RunURL, row.OccurredAt, row.SignatureID); key != "" {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func failurePatternsReferenceTupleKey(runURL string, occurredAt string, signatureID string) string {
+	trimmedRunURL := strings.TrimSpace(runURL)
+	trimmedOccurredAt := strings.TrimSpace(occurredAt)
+	trimmedSignatureID := strings.TrimSpace(signatureID)
+	if trimmedRunURL == "" && trimmedOccurredAt == "" && trimmedSignatureID == "" {
+		return ""
+	}
+	return "ref|" + trimmedRunURL + "|" + trimmedOccurredAt + "|" + trimmedSignatureID
+}
+
+func failurePatternsReferenceDedupKey(row FailurePatternReportReference) string {
+	keys := failurePatternsReferenceMatchKeys(row)
+	if len(keys) == 0 {
+		return ""
+	}
+	return keys[0]
+}
+
+func failurePatternsStoredReferenceForRawFailure(
+	row storecontracts.RawFailureRecord,
+	referencesByKey map[string]FailurePatternReportReference,
+) (FailurePatternReportReference, bool) {
+	for _, key := range failurePatternsRawFailureMatchKeys(row) {
+		reference, ok := referencesByKey[key]
+		if ok {
+			return reference, true
+		}
+	}
+	return FailurePatternReportReference{}, false
+}
+
+func failurePatternsReferenceFromRawFailure(
+	row storecontracts.RawFailureRecord,
+	run storecontracts.RunRecord,
+) FailurePatternReportReference {
+	return FailurePatternReportReference{
+		RowID:          strings.TrimSpace(row.RowID),
+		RunURL:         strings.TrimSpace(row.RunURL),
+		OccurredAt:     strings.TrimSpace(row.OccurredAt),
+		SignatureID:    strings.TrimSpace(row.SignatureID),
+		PRNumber:       run.PRNumber,
+		PostGoodCommit: run.PostGoodCommit,
+	}
+}
+
+func failurePatternsOverlayStoredReference(
+	raw FailurePatternReportReference,
+	stored FailurePatternReportReference,
+	run storecontracts.RunRecord,
+) FailurePatternReportReference {
+	out := raw
+	if trimmed := strings.TrimSpace(stored.RowID); trimmed != "" {
+		out.RowID = trimmed
+	}
+	if trimmed := strings.TrimSpace(stored.RunURL); trimmed != "" {
+		out.RunURL = trimmed
+	}
+	if trimmed := strings.TrimSpace(stored.OccurredAt); trimmed != "" {
+		out.OccurredAt = trimmed
+	}
+	if trimmed := strings.TrimSpace(stored.SignatureID); trimmed != "" {
+		out.SignatureID = trimmed
+	}
+	if stored.PRNumber != 0 {
+		out.PRNumber = stored.PRNumber
+	} else if out.PRNumber == 0 {
+		out.PRNumber = run.PRNumber
+	}
+	if stored.PostGoodCommit || run.PostGoodCommit {
+		out.PostGoodCommit = true
+	}
+	return out
 }
 
 func collectWindowedPhraseEnvironments(row FailurePatternsRow, phraseEnvironments map[string]map[string]struct{}) {
@@ -848,6 +975,19 @@ func windowedDistinctRunCount(references []FailurePatternReportReference) int {
 		seen[runURL] = struct{}{}
 	}
 	return len(seen)
+}
+
+func windowedPostGoodCount(references []FailurePatternReportReference) int {
+	if len(references) == 0 {
+		return 0
+	}
+	total := 0
+	for _, reference := range references {
+		if reference.PostGoodCommit {
+			total++
+		}
+	}
+	return total
 }
 
 func windowedFailedRunsFromReferences(
@@ -959,7 +1099,10 @@ func sortWindowedReferences(rows []FailurePatternReportReference) {
 		if strings.TrimSpace(rows[i].RunURL) != strings.TrimSpace(rows[j].RunURL) {
 			return strings.TrimSpace(rows[i].RunURL) < strings.TrimSpace(rows[j].RunURL)
 		}
-		return strings.TrimSpace(rows[i].SignatureID) < strings.TrimSpace(rows[j].SignatureID)
+		if strings.TrimSpace(rows[i].SignatureID) != strings.TrimSpace(rows[j].SignatureID) {
+			return strings.TrimSpace(rows[i].SignatureID) < strings.TrimSpace(rows[j].SignatureID)
+		}
+		return strings.TrimSpace(rows[i].RowID) < strings.TrimSpace(rows[j].RowID)
 	})
 }
 
