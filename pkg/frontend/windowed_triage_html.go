@@ -40,7 +40,7 @@ func buildWindowedTriageReportHTML(
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Triage Report</title>\n")
+	b.WriteString("  <title>CI Failure Patterns</title>\n")
 	b.WriteString(triagehtml.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
@@ -80,7 +80,7 @@ func buildWindowedTriageReportHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(triagehtml.ReportChromeHTML(options.Chrome))
-	b.WriteString("  <h1>CI Triage Report</h1>\n")
+	b.WriteString("  <h1>CI Failure Patterns</h1>\n")
 	if hasWindow {
 		b.WriteString(fmt.Sprintf(
 			"  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
@@ -89,15 +89,14 @@ func buildWindowedTriageReportHTML(
 			windowedTriageInclusiveDays(startDate, endDate),
 		))
 	}
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated (UTC): <strong>%s</strong></p>\n", html.EscapeString(strings.TrimSpace(data.Meta.GeneratedAt))))
-	b.WriteString("  <p class=\"meta\">Jobs affected, impact, references, and seen-in are recomputed across the selected window. <span class=\"triage-header-help\" title=\"Trend, after-last-push counts, and related semantic heuristics stay anchored to the latest contributing stored semantic snapshot for each row so the signal remains stable across longer windows.\">?</span></p>\n")
+	b.WriteString("  <p class=\"meta\">Runs affected, run impact, and seen-in are recomputed across the selected window. <span class=\"triage-header-help\" title=\"Flake signal and trend stay anchored to the most recent weekly data for each failure pattern, keeping the signal stable across longer date ranges.\">?</span></p>\n")
 	b.WriteString(windowedTriageControlsHTML(options.Query))
 	b.WriteString("  <div class=\"cards\">\n")
-	b.WriteString(windowedTriageCardHTML("Environments in scope", fmt.Sprintf("%d", len(data.Environments))))
-	b.WriteString(windowedTriageCardHTML("Signatures in triage", fmt.Sprintf("%d", totalRows)))
-	b.WriteString(windowedTriageCardHTML("Matched failure support", fmt.Sprintf("%d", totalMatchedFailures)))
+	b.WriteString(windowedTriageCardHTML("Environments", fmt.Sprintf("%d", len(data.Environments))))
+	b.WriteString(windowedTriageCardHTML("Failure patterns", fmt.Sprintf("%d", totalRows)))
+	b.WriteString(windowedTriageCardHTML("Failures matched", fmt.Sprintf("%d", totalMatchedFailures)))
 	if hasWindow {
-		b.WriteString(windowedTriageCardHTML("Window length", fmt.Sprintf("%d days", windowedTriageInclusiveDays(startDate, endDate))))
+		b.WriteString(windowedTriageCardHTML("Window", fmt.Sprintf("%d days", windowedTriageInclusiveDays(startDate, endDate))))
 	}
 	b.WriteString("  </div>\n")
 
@@ -107,7 +106,7 @@ func buildWindowedTriageReportHTML(
 		b.WriteString(fmt.Sprintf("    <h2>Environment: %s</h2>\n", html.EscapeString(strings.ToUpper(strings.TrimSpace(environment.Environment)))))
 		if len(signatureRows) == 0 {
 			b.WriteString(fmt.Sprintf(
-				"    <p class=\"section-note\">Rows shown: 0 &middot; matched failures: %d &middot; total runs: %d</p>\n",
+				"    <p class=\"section-note\">Failure patterns: 0 &middot; Failures matched: %d &middot; Total runs: %d</p>\n",
 				environment.Summary.MatchedFailureCount,
 				environment.Summary.TotalRuns,
 			))
@@ -116,7 +115,7 @@ func buildWindowedTriageReportHTML(
 			continue
 		}
 		b.WriteString(fmt.Sprintf(
-			"    <p class=\"section-note\">Rows shown: %d &middot; matched failures: %d &middot; total runs: %d &middot; jobs affected: %d</p>\n",
+			"    <p class=\"section-note\">Failure patterns: %d &middot; Failures matched: %d &middot; Total runs: %d &middot; Runs affected: %d</p>\n",
 			len(signatureRows),
 			environment.Summary.MatchedFailureCount,
 			environment.Summary.TotalRuns,

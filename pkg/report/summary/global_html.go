@@ -76,7 +76,7 @@ func buildTriageReportHTML(
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Signature Triage Report</title>\n")
+	b.WriteString("  <title>CI Failure Patterns</title>\n")
 	b.WriteString(triagehtml.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
@@ -97,7 +97,7 @@ func buildTriageReportHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(triagehtml.ReportChromeHTML(chrome))
-	b.WriteString("  <h1>CI Signature Triage Report</h1>\n")
+	b.WriteString("  <h1>CI Failure Patterns</h1>\n")
 	if hasWindow {
 		windowDays := inclusiveWindowDays(windowStart, windowEnd)
 		b.WriteString(fmt.Sprintf(
@@ -107,13 +107,11 @@ func buildTriageReportHTML(
 			windowDays,
 		))
 	}
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated (UTC): <strong>%s</strong></p>\n", html.EscapeString(generatedAt.Format(time.RFC3339))))
-	b.WriteString("  <p class=\"meta\">Failure signatures grouped by environment for engineering triage. Includes lightweight quality scoring and cross-environment overlap hints.</p>\n")
+	b.WriteString("  <p class=\"meta\">Failure patterns grouped by environment. Includes cross-environment overlap and historical presence.</p>\n")
 	b.WriteString("  <div class=\"cards\">\n")
-	b.WriteString(triageCardHTML("Environments in scope", fmt.Sprintf("%d", len(environments))))
-	b.WriteString(triageCardHTML("Signatures in triage", fmt.Sprintf("%d", len(triageClusters))))
-	b.WriteString(triageCardHTML("Total signature support", fmt.Sprintf("%d", totalSupport)))
-	b.WriteString(triageCardHTML("Triage threshold", fmt.Sprintf("visible %d, loaded %d, min %.2f%%", top, triageLoadedRowsLimit, minPercent)))
+	b.WriteString(triageCardHTML("Environments", fmt.Sprintf("%d", len(environments))))
+	b.WriteString(triageCardHTML("Failure patterns", fmt.Sprintf("%d", len(triageClusters))))
+	b.WriteString(triageCardHTML("Total failures", fmt.Sprintf("%d", totalSupport)))
 	b.WriteString("  </div>\n")
 
 	for _, environment := range environments {
@@ -140,7 +138,7 @@ func buildTriageReportHTML(
 		b.WriteString(fmt.Sprintf("  <section id=\"%s\" class=\"section\">\n", html.EscapeString(triageEnvironmentSectionID(environment))))
 		b.WriteString(fmt.Sprintf("    <h2>Environment: %s</h2>\n", html.EscapeString(strings.ToUpper(environment))))
 		if len(filtered) == 0 {
-			b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Rows shown: 0 / %d signatures &middot; support sum: %d</p>\n", len(clusters), totalEnvironmentSupport))
+			b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Failure patterns: 0 of %d &middot; Failures matched: %d</p>\n", len(clusters), totalEnvironmentSupport))
 			b.WriteString("    <p class=\"muted\">No signatures matched the configured threshold in this environment.</p>\n")
 			b.WriteString("  </section>\n")
 			continue
@@ -215,7 +213,7 @@ func buildTriageReportHTML(
 		if initialVisible > loadedRows {
 			initialVisible = loadedRows
 		}
-		b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Rows loaded: %d / %d signatures &middot; initially visible: %d &middot; support sum: %d</p>\n", loadedRows, len(clusters), initialVisible, totalEnvironmentSupport))
+		b.WriteString(fmt.Sprintf("    <p class=\"section-note\">Showing %d of %d failure patterns &middot; Failures matched: %d</p>\n", loadedRows, len(clusters), totalEnvironmentSupport))
 		b.WriteString(triagehtml.RenderTable(triageRows, triagehtml.TableOptions{
 			IncludeTrend:       true,
 			GitHubRepoOwner:    sourceoptions.DefaultGitHubRepoOwner(),

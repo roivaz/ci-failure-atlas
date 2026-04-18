@@ -302,7 +302,6 @@ func buildHTML(
 		endDate.Format("2006-01-02"),
 		reportInclusiveDays(startDate, endDate),
 	))
-	b.WriteString("  <div class=\"meta\">Goals:<br/>- e2e-integration, e2e-stage, e2e-prod job runs should each succeed 95% of the time<br/>- e2e-dev job runs should succeed 95% of the time after the last push of a PR that merges</div>\n")
 
 	previousByEnvironment := map[string]envReport{}
 	for _, report := range previousReports {
@@ -314,15 +313,15 @@ func buildHTML(
 	b.WriteString("    <table class=\"overview-table\">\n")
 	b.WriteString("      <thead><tr>")
 	b.WriteString(executiveHeaderHTML("Env", "Environment partition: dev, int, stg, or prod."))
-	b.WriteString(executiveHeaderHTML("Goal basis", "INT/STG/PROD use all E2E job runs. DEV uses runs after the last push of a PR that merges."))
-	b.WriteString(executiveHeaderHTML("Runs", "Number of job runs in the selected goal basis for this environment."))
-	b.WriteString(executiveHeaderHTML("Success", "Success rate on the goal basis: (runs - failed runs) / runs * 100."))
+	b.WriteString(executiveHeaderHTML("Goal", "Configured success target and run scope for this environment. INT/STG/PROD use all E2E job runs. DEV uses runs after the last push of a PR that merges."))
+	b.WriteString(executiveHeaderHTML("Runs", "Number of job runs in the selected goal definition for this environment."))
+	b.WriteString(executiveHeaderHTML("Success", "Success rate on the selected goal definition: (runs - failed runs) / runs * 100."))
 	b.WriteString(executiveHeaderHTML("Gap vs target", "Difference in percentage points between current success and the configured target rate."))
-	b.WriteString(executiveHeaderHTML("Change vs prev", "How much the success rate changed compared with the immediately preceding equal-length window, using the same run scope as this row."))
+	b.WriteString(executiveHeaderHTML("Change vs prev", "How much the success rate changed compared with the immediately preceding equal-length window, using the same goal definition as this row."))
 	b.WriteString(executiveHeaderHTML("Provision success", "DEV-only provision-step estimate on runs after last push of a merged PR. INT/STG/PROD show n/a because provisioning is not part of those environments. Formula: (successful + e2e_failed) / (successful + provision_failed + e2e_failed)."))
 	b.WriteString(executiveHeaderHTML("Provision change vs prev", "DEV-only change in provision-step success, in percentage points, compared with the immediately preceding equal-length window. INT/STG/PROD show n/a."))
-	b.WriteString(executiveHeaderHTML("E2E success", "E2E-step success on the same goal basis used in this row (DEV: runs after last push of a merged PR; INT/STG/PROD: all runs). Formula: successful / (successful + e2e_failed)."))
-	b.WriteString(executiveHeaderHTML("E2E success vs prev", "Change in E2E-step success, in percentage points, compared with the immediately preceding equal-length window, using the same goal basis as this row."))
+	b.WriteString(executiveHeaderHTML("E2E success", "E2E-step success on the same goal definition used in this row (DEV: runs after last push of a merged PR; INT/STG/PROD: all runs). Formula: successful / (successful + e2e_failed)."))
+	b.WriteString(executiveHeaderHTML("E2E success vs prev", "Change in E2E-step success, in percentage points, compared with the immediately preceding equal-length window, using the same goal definition as this row."))
 	b.WriteString("</tr></thead>\n")
 	b.WriteString("      <tbody>\n")
 	for _, report := range reports {
@@ -380,7 +379,7 @@ func buildHTML(
 
 		b.WriteString("        <tr>")
 		b.WriteString(fmt.Sprintf("<td><strong>%s</strong></td>", html.EscapeString(strings.ToUpper(environment))))
-		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(goalBasis)))
+		b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(formatGoalDefinition(targetRate, goalBasis))))
 		b.WriteString(fmt.Sprintf("<td>%d</td>", goalRuns))
 		b.WriteString(fmt.Sprintf("<td>%s</td>", successCell))
 		b.WriteString(fmt.Sprintf("<td>%s</td>", gapCell))
@@ -411,9 +410,9 @@ func buildHTML(
 		b.WriteString(fmt.Sprintf("  <section class=\"env\">\n    <h2>Environment: %s</h2>\n", html.EscapeString(envLabel)))
 		b.WriteString("    <div class=\"drill-tabs\" role=\"tablist\" aria-label=\"Drill-down views\"")
 		b.WriteString(fmt.Sprintf(" data-env=\"%s\">\n", html.EscapeString(environment)))
-		b.WriteString(fmt.Sprintf("      <button type=\"button\" class=\"drill-tab active\" role=\"tab\" aria-selected=\"true\" data-target=\"%s\">Lane outcomes</button>\n", html.EscapeString(lanePanelID)))
+		b.WriteString(fmt.Sprintf("      <button type=\"button\" class=\"drill-tab active\" role=\"tab\" aria-selected=\"true\" data-target=\"%s\">Run outcomes</button>\n", html.EscapeString(lanePanelID)))
 		b.WriteString(fmt.Sprintf("      <button type=\"button\" class=\"drill-tab\" role=\"tab\" aria-selected=\"false\" data-target=\"%s\">Tests below %.0f%%</button>\n", html.EscapeString(testsPanelID), weeklyTestSuccessTarget))
-		b.WriteString(fmt.Sprintf("      <button type=\"button\" class=\"drill-tab\" role=\"tab\" aria-selected=\"false\" data-target=\"%s\">Top failure signatures</button>\n", html.EscapeString(signaturesPanelID)))
+		b.WriteString(fmt.Sprintf("      <button type=\"button\" class=\"drill-tab\" role=\"tab\" aria-selected=\"false\" data-target=\"%s\">Top failure patterns</button>\n", html.EscapeString(signaturesPanelID)))
 		b.WriteString("    </div>\n")
 
 		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\">\n", html.EscapeString(lanePanelID), html.EscapeString(environment)))
@@ -451,7 +450,7 @@ func buildHTML(
 			))
 			b.WriteString("    </div>\n")
 		}
-		b.WriteString("    <h3 class=\"chart-title\">Daily Run Outcomes (stacked by run-level lane)</h3>\n")
+		b.WriteString("    <h3 class=\"chart-title\">Daily Run Outcomes</h3>\n")
 		b.WriteString("    <div class=\"legend\">\n")
 		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-success\"></span>Successful runs</span>\n")
 		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-provision\"></span>Provision failures</span>\n")
@@ -576,7 +575,7 @@ func buildHTML(
 
 		b.WriteString(fmt.Sprintf("    <div id=\"%s\" class=\"drill-panel\" data-env=\"%s\" role=\"tabpanel\" hidden>\n", html.EscapeString(signaturesPanelID), html.EscapeString(environment)))
 		b.WriteString(fmt.Sprintf(
-			"      <p class=\"panel-note\">Up to %d failures are loaded in this window (minimum %.2f%% impact), with %d shown by default. Default sorting is impact desc, jobs affected desc, flake score desc; click headers to re-sort.</p>\n",
+			"      <p class=\"panel-note\">Up to %d failure patterns are loaded (minimum %.2f%% impact), with %d shown by default. Click column headers to re-sort.</p>\n",
 			weeklySignatureLoadedRowsLimit,
 			weeklySignatureMinImpactPct,
 			weeklySignatureVisibleRows,
@@ -595,7 +594,7 @@ func buildHTML(
 			signatureRows = append(signatureRows, row)
 		}
 		if len(signatureRows) == 0 {
-			b.WriteString("      <p class=\"panel-empty\">No semantic signatures available for this environment in the selected window.</p>\n")
+			b.WriteString("      <p class=\"panel-empty\">No failure patterns available for this environment in the selected window.</p>\n")
 		} else {
 			b.WriteString(triagehtml.RenderTable(signatureRows, triagehtml.TableOptions{
 				IncludeTrend:       true,
@@ -1131,6 +1130,18 @@ func formatStepSuccessCardValue(totalAttempted int, successful int, failed int) 
 		failed = 0
 	}
 	return fmt.Sprintf("%.2f%% (%d/%d)", successPct(totalAttempted, failed), successful, totalAttempted)
+}
+
+func formatGoalDefinition(targetRate float64, goalBasis string) string {
+	return fmt.Sprintf("%s%% - %s", formatGoalTargetRate(targetRate), strings.TrimSpace(goalBasis))
+}
+
+func formatGoalTargetRate(targetRate float64) string {
+	trimmed := strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", targetRate), "0"), ".")
+	if trimmed == "" {
+		return "0"
+	}
+	return trimmed
 }
 
 func successPct(total int, failed int) float64 {

@@ -211,11 +211,14 @@ func TestRenderTableShowsBadPRIndicator(t *testing.T) {
 	if !strings.Contains(html, "<span class=\"bad-pr-flag\"") {
 		t.Fatalf("expected bad-pr flag icon in rendered table")
 	}
-	if !strings.Contains(html, "Likely bad PR signal (score 3/3): post-good=0; only seen in DEV; only seen in one PR") {
-		t.Fatalf("expected tooltip to include score and reasons, got %q", html)
+	if !strings.Contains(html, "This failure pattern appears to be caused by the PR under test") {
+		t.Fatalf("expected tooltip to describe PR-caused failure, got %q", html)
 	}
-	if !strings.Contains(html, "bad PR score: 3/3 (post-good=0; only seen in DEV; only seen in one PR)") {
-		t.Fatalf("expected expanded details to include bad-pr score, got %q", html)
+	if !strings.Contains(html, "no runs after the PR&#39;s last push") && !strings.Contains(html, "no runs after the PR's last push") {
+		t.Fatalf("expected tooltip to include translated reason, got %q", html)
+	}
+	if strings.Contains(html, "bad PR score:") {
+		t.Fatalf("expected bad-pr score details to be removed from expanded view, got %q", html)
 	}
 }
 
@@ -247,8 +250,8 @@ func TestRenderTableDoesNotShowBadPRIndicatorForScoreTwo(t *testing.T) {
 	if strings.Contains(html, "<span class=\"bad-pr-flag\"") {
 		t.Fatalf("expected no bad-pr icon for score 2/3")
 	}
-	if !strings.Contains(html, "bad PR score: 2/3 (post-good=0; only seen in DEV)") {
-		t.Fatalf("expected expanded details to include score 2/3, got %q", html)
+	if strings.Contains(html, "bad PR score:") {
+		t.Fatalf("expected bad-pr score details to be removed from expanded view, got %q", html)
 	}
 }
 
@@ -268,16 +271,16 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 	}, TableOptions{IncludeTrend: true})
 
 	required := []string{
-		"<th>Lane</th>",
+		"Failed at",
 		"data-sort-key=\"jobs_affected\"",
 		"data-sort-key=\"impact\"",
 		"data-sort-key=\"flake_score\"",
 		"<th>Trend</th>",
-		"<th>Seen in",
-		"title=\"Relative impact = jobs affected / overall job count from metrics.\"",
-		"title=\"Other environments where the same canonical signature phrase appears.\"",
+		"<th>Also in",
+		"title=\"Percentage of all job runs in this environment affected by this failure pattern during the selected window.\"",
+		"title=\"Other environments where the same failure pattern was also detected during the selected window.\"",
 		"<svg class=\"trend-svg\"",
-		"2026-03-01..2026-03-07",
+		"Mar 1: 0 · Mar 2: 2 · Mar 3: 1 · Mar 4: 3 · Mar 5: 0 · Mar 6: 4 · Mar 7: 2",
 	}
 	for _, snippet := range required {
 		if !strings.Contains(html, snippet) {
@@ -291,13 +294,13 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 		t.Fatalf("expected triage table header row to be present")
 	}
 	headerRow := html[headerStart:headerEnd]
-	signatureHeader := strings.Index(headerRow, "<th>Signature</th>")
-	laneHeader := strings.Index(headerRow, "<th>Lane</th>")
+	signatureHeader := strings.Index(headerRow, "Failure pattern")
+	laneHeader := strings.Index(headerRow, "Failed at")
 	jobsAffectedHeader := strings.Index(headerRow, "data-sort-key=\"jobs_affected\"")
 	impactHeader := strings.Index(headerRow, "data-sort-key=\"impact\"")
 	flakeScoreHeader := strings.Index(headerRow, "data-sort-key=\"flake_score\"")
 	trendHeader := strings.Index(headerRow, "<th>Trend</th>")
-	seenInHeader := strings.Index(headerRow, "<th>Seen in")
+	seenInHeader := strings.Index(headerRow, "<th>Also in")
 	if !(signatureHeader < laneHeader && laneHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < flakeScoreHeader && flakeScoreHeader < trendHeader && trendHeader < seenInHeader) {
 		t.Fatalf("unexpected shared header order in rendered table")
 	}
@@ -441,18 +444,24 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 		PreviousHref: "../2026-03-01/weekly-metrics.html",
 		NextWeek:     "",
 		NextHref:     "",
+		RollingHref:  "rolling.html",
 		ReportHref:   "weekly-metrics.html",
 		TriageHref:   "triage-report.html",
+		RunsHref:     "runs.html",
 		ArchiveHref:  "../archive/",
 	})
 	for _, snippet := range []string{
 		"class=\"report-chrome\"",
 		"href=\"../2026-03-01/weekly-metrics.html\"",
 		"Week 2026-03-08 (UTC)",
+		"href=\"rolling.html\"",
 		"class=\"report-view-link active\" href=\"weekly-metrics.html\"",
 		"href=\"triage-report.html\"",
-		">Report</a>",
-		">Triage</a>",
+		"href=\"runs.html\"",
+		">Last 7 Days</a>",
+		">Weekly Report</a>",
+		">Failure Patterns</a>",
+		">Run Log</a>",
 		"href=\"../archive/\"",
 		"class=\"report-nav-btn disabled\"",
 		"id=\"theme-toggle\"",
@@ -496,7 +505,7 @@ func TestRenderTableShowsManualIssueAndSelectionWhenEnabled(t *testing.T) {
 	for _, snippet := range []string{
 		"<th class=\"triage-select-col\">Select</th>",
 		"data-sort-key=\"manual_cluster\"",
-		"Phase3 cluster",
+		"Linked group ID",
 		"name=\"cluster_id\" value=\"cluster-1\"",
 		">p3c-abc123</td>",
 		"data-sort-key=\"manual_cluster\" data-sort-dir=\"asc\"",
@@ -579,13 +588,12 @@ func TestRenderTableLinkedRowsRenderChildExpandersInDetailRow(t *testing.T) {
 	})
 
 	for _, snippet := range []string{
-		"Linked signatures (2)",
+		"Linked failure patterns (2)",
 		"child phrase one",
 		"child phrase two",
 		"name=\"unlink_child\" value=\"dev|phase2-dev-1\"",
-		"jobs affected: 1",
-		"bad PR score:",
-		"flake score:",
+		"runs affected: 1",
+		"Flake signal:",
 		"Full failure examples (1)",
 		"Affected runs (1)",
 	} {
@@ -683,7 +691,7 @@ func TestRenderTableHidesCountAfterShareByDefaultAndShowsImpact(t *testing.T) {
 	if strings.Contains(rendered, "data-sort-key=\"count\"") || strings.Contains(rendered, "data-sort-key=\"after_last_push\"") || strings.Contains(rendered, "data-sort-key=\"share\"") {
 		t.Fatalf("expected count/after-last-push/share columns hidden by default: %q", rendered)
 	}
-	if !strings.Contains(rendered, "Impact from jobs affected / overall job count from metrics") {
+	if !strings.Contains(rendered, "job runs affected") {
 		t.Fatalf("expected impact cell tooltip in rendered table: %q", rendered)
 	}
 }

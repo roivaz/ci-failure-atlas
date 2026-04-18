@@ -276,16 +276,16 @@ func ReportChromeHTML(options ReportChromeOptions) string {
 		b.WriteString(fmt.Sprintf("      <span class=\"report-context-label\">Week %s (UTC)</span>\n", html.EscapeString(normalized.CurrentWeek)))
 	}
 	if strings.TrimSpace(normalized.RollingHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.RollingHref, "Rolling 7d", normalized.CurrentView == ReportViewRolling))
+		b.WriteString(renderReportChromeViewLink(normalized.RollingHref, "Last 7 Days", normalized.CurrentView == ReportViewRolling))
 	}
 	if strings.TrimSpace(normalized.ReportHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.ReportHref, "Report", normalized.CurrentView == ReportViewReport))
+		b.WriteString(renderReportChromeViewLink(normalized.ReportHref, "Weekly Report", normalized.CurrentView == ReportViewReport))
 	}
 	if strings.TrimSpace(normalized.TriageHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.TriageHref, "Triage", normalized.CurrentView == ReportViewTriage))
+		b.WriteString(renderReportChromeViewLink(normalized.TriageHref, "Failure Patterns", normalized.CurrentView == ReportViewTriage))
 	}
 	if strings.TrimSpace(normalized.RunsHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.RunsHref, "Runs", normalized.CurrentView == ReportViewRuns))
+		b.WriteString(renderReportChromeViewLink(normalized.RunsHref, "Run Log", normalized.CurrentView == ReportViewRuns))
 	}
 	if strings.TrimSpace(normalized.ArchiveHref) != "" {
 		b.WriteString(renderReportChromeViewLink(normalized.ArchiveHref, "Archive", false))
@@ -502,12 +502,12 @@ func RenderTable(rows []SignatureRow, options TableOptions) string {
 	if opts.IncludeSelection {
 		headers = append(headers, "<th class=\"triage-select-col\">Select</th>")
 	}
-	headers = append(headers, "<th>Signature</th>")
-	headers = append(headers, "<th>Lane</th>")
+	headers = append(headers, renderTooltipHeaderCell("Failure pattern", "The canonical description of a recurring CI failure, extracted and normalized from raw logs."))
+	headers = append(headers, renderTooltipHeaderCell("Failed at", "The stage of the job run where this failure occurred: 'provision' (environment setup, DEV only), 'e2e' (test suite execution), or 'other' (CI infrastructure issues — no failure pattern extracted)."))
 	headers = append(headers,
-		renderSortableHeaderCell("Jobs affected", sortKeyJobsAffected, "Unique job runs affected by this signature in the selected window.", initialSortKey, initialSortDirection),
-		renderSortableHeaderCell("Impact", sortKeyImpact, "Relative impact = jobs affected / overall job count from metrics.", initialSortKey, initialSortDirection),
-		renderSortableHeaderCell("Flake score", sortKeyFlakeScore, "Heuristic score for unresolved recurrent flakes (0-14). Higher means more likely ongoing flake; likely bad-PR patterns reduce this score.", initialSortKey, initialSortDirection),
+		renderSortableHeaderCell("Runs affected", sortKeyJobsAffected, "Number of distinct job runs where this failure pattern was detected.", initialSortKey, initialSortDirection),
+		renderSortableHeaderCell("Impact", sortKeyImpact, "Percentage of all job runs in this environment affected by this failure pattern during the selected window.", initialSortKey, initialSortDirection),
+		renderSortableHeaderCell("Flake signal", sortKeyFlakeScore, "Whether this failure pattern looks like an ongoing flake or a PR-specific regression. High = strong flake signal across multiple days or runs. Low = likely caused by the PR under test.", initialSortKey, initialSortDirection),
 	)
 	if opts.ShowCount {
 		headers = append(headers, renderSortableHeaderCell("Count", sortKeyCount, "", initialSortKey, initialSortDirection))
@@ -519,12 +519,12 @@ func RenderTable(rows []SignatureRow, options TableOptions) string {
 		headers = append(headers, renderSortableHeaderCell("Share", sortKeyShare, "", initialSortKey, initialSortDirection))
 	}
 	if opts.ShowManualIssue {
-		headers = append(headers, renderSortableHeaderCell("Phase3 cluster", sortKeyManualCluster, "Internal cluster id created automatically when linking selected signatures.", initialSortKey, initialSortDirection))
+		headers = append(headers, renderSortableHeaderCell("Linked group ID", sortKeyManualCluster, "ID of the linked failure group, assigned when patterns are manually grouped in the review workflow.", initialSortKey, initialSortDirection))
 	}
 	if opts.IncludeTrend {
 		headers = append(headers, fmt.Sprintf("<th>%s</th>", html.EscapeString(opts.TrendHeaderLabel)))
 	}
-	headers = append(headers, renderTooltipHeaderCell("Seen in", "Other environments where the same canonical signature phrase appears."))
+	headers = append(headers, renderTooltipHeaderCell("Also in", "Other environments where the same failure pattern was also detected during the selected window."))
 	if opts.ShowQualityScore {
 		headers = append(headers, "<th>Quality score</th>")
 	}
@@ -1337,6 +1337,38 @@ func flakeScoreClass(score int) string {
 	}
 }
 
+func flakeScoreLabel(score int) string {
+	switch {
+	case score >= 10:
+		return "High"
+	case score >= 5:
+		return "Medium"
+	default:
+		return "Low"
+	}
+}
+
+func formatBadPRReason(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "post-good=0":
+		return "no runs after the PR's last push"
+	default:
+		return reason
+	}
+}
+
+func FormatBadPRTooltip(reasons []string) string {
+	base := "This failure pattern appears to be caused by the PR under test"
+	if len(reasons) == 0 {
+		return base + "."
+	}
+	translated := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		translated = append(translated, formatBadPRReason(r))
+	}
+	return base + " — " + strings.Join(translated, "; ") + "."
+}
+
 func SortRowsByDefaultPriority(rows []SignatureRow) {
 	sortRowsByDefaultPriorityWithImpact(rows, totalAffectedJobs(rows))
 }
@@ -1536,7 +1568,7 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	summaryText := html.EscapeString(cleanInline(phrase, 180))
 	badPRScore, badPRReasons := BadPRScoreAndReasons(row)
 	if badPRScore == 3 {
-		tooltip := fmt.Sprintf("Likely bad PR signal (score %d/3): %s", badPRScore, strings.Join(badPRReasons, "; "))
+		tooltip := FormatBadPRTooltip(badPRReasons)
 		summaryText = fmt.Sprintf(
 			"<span class=\"bad-pr-flag\" title=\"%s\" aria-label=\"%s\">⚠</span>%s",
 			html.EscapeString(tooltip),
@@ -1544,27 +1576,20 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 			summaryText,
 		)
 	}
-	badPRDetails := fmt.Sprintf("bad PR score: %d/3", badPRScore)
-	if len(badPRReasons) > 0 {
-		badPRDetails = fmt.Sprintf("%s (%s)", badPRDetails, strings.Join(badPRReasons, "; "))
-	}
 	jobsAffected := rowJobsAffected(row)
 	postGoodCount := rowPostGoodCount(row)
 	impactPercent := impactShare(jobsAffected, opts.ImpactTotalJobs)
 	impactLabel := fmt.Sprintf("%.2f%%", impactPercent)
 	impactTitle := fmt.Sprintf(
-		"Impact from jobs affected / overall job count from metrics: %d/%d jobs",
+		"%d of %d job runs affected",
 		jobsAffected,
 		maxInt(opts.ImpactTotalJobs, 0),
 	)
 	flakeScore, flakeReasons := FlakeScoreAndReasons(row)
-	flakeDetails := fmt.Sprintf("flake score: %d/14", flakeScore)
+	flakeLabel := flakeScoreLabel(flakeScore)
+	flakeCellTitle := fmt.Sprintf("Flake signal: %s (score %d/14)", flakeLabel, flakeScore)
 	if len(flakeReasons) > 0 {
-		flakeDetails = fmt.Sprintf("%s (%s)", flakeDetails, strings.Join(flakeReasons, "; "))
-	}
-	flakeCellTitle := flakeDetails
-	if strings.TrimSpace(flakeCellTitle) == "" {
-		flakeCellTitle = "flake score"
+		flakeCellTitle = fmt.Sprintf("%s — %s", flakeCellTitle, strings.Join(flakeReasons, "; "))
 	}
 	flakeClass := flakeScoreClass(flakeScore)
 	manualSortValue := strings.TrimSpace(row.ManualIssueID)
@@ -1607,19 +1632,18 @@ func renderMainRow(row SignatureRow, rowID string, opts TableOptions) string {
 	var signatureDetails strings.Builder
 	signatureDetails.WriteString("<td><details class=\"signature-toggle\">")
 	signatureDetails.WriteString(fmt.Sprintf("<summary>%s</summary>", summaryText))
-	signatureDetails.WriteString("<div class=\"muted\">full signature:</div>")
+	signatureDetails.WriteString("<div class=\"muted\">full failure pattern:</div>")
 	signatureDetails.WriteString(fmt.Sprintf("<pre>%s</pre>", html.EscapeString(phrase)))
 	if successDetails := successDetailsFromSearchQuery(row.SearchQuery); successDetails != "" {
 		signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(successDetails)))
 	}
-	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(badPRDetails)))
-	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(flakeDetails)))
+	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">Flake signal: %s</div>", html.EscapeString(flakeLabel)))
 	signatureDetails.WriteString("</details></td>")
 	b.WriteString(signatureDetails.String())
 	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(laneValue)))
 	b.WriteString(fmt.Sprintf("<td>%d</td>", jobsAffected))
 	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"impact-score %s\">%s</span></td>", html.EscapeString(impactTitle), impactScoreClass(impactPercent), html.EscapeString(impactLabel)))
-	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"flake-score %s\">%d</span></td>", html.EscapeString(flakeCellTitle), flakeClass, flakeScore))
+	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"flake-score %s\">%s</span></td>", html.EscapeString(flakeCellTitle), flakeClass, html.EscapeString(flakeLabel)))
 	if opts.ShowCount {
 		b.WriteString(fmt.Sprintf("<td>%d</td>", row.SupportCount))
 	}
@@ -1750,19 +1774,36 @@ func renderTrendCell(row SignatureRow) string {
 	return "<td>n/a</td>"
 }
 
+func trendRangeStartDate(trendRange string) (time.Time, bool) {
+	parts := strings.Split(strings.TrimSpace(trendRange), "..")
+	if len(parts) != 2 {
+		return time.Time{}, false
+	}
+	startDay, err := time.Parse("2006-01-02", strings.TrimSpace(parts[0]))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return startDay.UTC(), true
+}
+
 func trendTooltip(counts []int, dateRange string) string {
-	countLabel := strings.TrimSpace(FormatCounts(counts))
-	rangeLabel := strings.TrimSpace(dateRange)
-	switch {
-	case countLabel != "" && rangeLabel != "":
-		return fmt.Sprintf("%s (%s)", countLabel, rangeLabel)
-	case countLabel != "":
-		return countLabel
-	case rangeLabel != "":
-		return rangeLabel
-	default:
+	if len(counts) == 0 {
 		return "n/a"
 	}
+	startDate, ok := trendRangeStartDate(dateRange)
+	if ok {
+		parts := make([]string, 0, len(counts))
+		for i, count := range counts {
+			day := startDate.AddDate(0, 0, i)
+			parts = append(parts, fmt.Sprintf("%s %d: %d", day.Format("Jan"), day.Day(), count))
+		}
+		return strings.Join(parts, " · ")
+	}
+	rangeLabel := strings.TrimSpace(dateRange)
+	if rangeLabel != "" {
+		return fmt.Sprintf("%s (%s)", strings.TrimSpace(FormatCounts(counts)), rangeLabel)
+	}
+	return strings.TrimSpace(FormatCounts(counts))
 }
 
 func renderTrendBarsSVG(counts []int, ariaLabel string) string {
@@ -1770,9 +1811,9 @@ func renderTrendBarsSVG(counts []int, ariaLabel string) string {
 		return "<span class=\"muted\">n/a</span>"
 	}
 	const (
-		barWidth    = 4
+		barWidth    = 6
 		barGap      = 2
-		chartHeight = 16
+		chartHeight = 18
 	)
 	maxCount := 0
 	for _, count := range counts {
@@ -1857,7 +1898,7 @@ func renderDetailRow(row SignatureRow, rowID string, colSpan int, opts TableOpti
 
 func renderLinkedChildrenDetails(children []SignatureRow, opts TableOptions) string {
 	if len(children) == 0 {
-		return "<span class=\"muted\">No linked signatures.</span>"
+		return "<span class=\"muted\">No linked failure patterns.</span>"
 	}
 	ordered := append([]SignatureRow(nil), children...)
 	sort.Slice(ordered, func(i, j int) bool {
@@ -1873,7 +1914,7 @@ func renderLinkedChildrenDetails(children []SignatureRow, opts TableOptions) str
 		return strings.TrimSpace(ordered[i].ClusterID) < strings.TrimSpace(ordered[j].ClusterID)
 	})
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("<details class=\"linked-signatures-toggle\"><summary>Linked signatures (%d)</summary>", len(ordered)))
+	b.WriteString(fmt.Sprintf("<details class=\"linked-signatures-toggle\"><summary>Linked failure patterns (%d)</summary>", len(ordered)))
 	b.WriteString("<div class=\"triage-linked-list\">")
 	for index, child := range ordered {
 		phrase := strings.TrimSpace(child.Phrase)
@@ -1881,15 +1922,11 @@ func renderLinkedChildrenDetails(children []SignatureRow, opts TableOptions) str
 			phrase = "(unknown evidence)"
 		}
 		jobsAffected := affectedJobCount(child)
-		badPRScore, badPRReasons := BadPRScoreAndReasons(child)
-		badPRDetails := fmt.Sprintf("bad PR score: %d/3", badPRScore)
-		if len(badPRReasons) > 0 {
-			badPRDetails = fmt.Sprintf("%s (%s)", badPRDetails, strings.Join(badPRReasons, "; "))
-		}
 		flakeScore, flakeReasons := FlakeScoreAndReasons(child)
-		flakeDetails := fmt.Sprintf("flake score: %d/14", flakeScore)
+		childFlakeLabel := flakeScoreLabel(flakeScore)
+		childFlakeTitle := fmt.Sprintf("Flake signal: %s (score %d/14)", childFlakeLabel, flakeScore)
 		if len(flakeReasons) > 0 {
-			flakeDetails = fmt.Sprintf("%s (%s)", flakeDetails, strings.Join(flakeReasons, "; "))
+			childFlakeTitle = fmt.Sprintf("%s — %s", childFlakeTitle, strings.Join(flakeReasons, "; "))
 		}
 		b.WriteString("<details class=\"linked-child-toggle triage-linked-item\">")
 		b.WriteString("<summary>")
@@ -1906,14 +1943,13 @@ func renderLinkedChildrenDetails(children []SignatureRow, opts TableOptions) str
 			}
 		}
 		b.WriteString(fmt.Sprintf(
-			"<span class=\"triage-linked-item-summary\"><strong>%d.</strong> %s</span><span class=\"triage-linked-item-meta\">jobs affected: %d</span>",
+			"<span class=\"triage-linked-item-summary\"><strong>%d.</strong> %s</span><span class=\"triage-linked-item-meta\">runs affected: %d</span>",
 			index+1,
 			html.EscapeString(cleanInline(phrase, 220)),
 			jobsAffected,
 		))
 		b.WriteString("</summary>")
-		b.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(badPRDetails)))
-		b.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(flakeDetails)))
+		b.WriteString(fmt.Sprintf("<div class=\"muted\">Flake signal: %s</div>", html.EscapeString(childFlakeLabel)))
 		if opts.ShowLinkedChildQuality || opts.ShowLinkedChildReview {
 			b.WriteString("<div class=\"triage-linked-item-flags\">")
 			if opts.ShowLinkedChildQuality {

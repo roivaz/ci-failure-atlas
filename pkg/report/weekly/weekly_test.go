@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"ci-failure-atlas/pkg/report/triagehtml"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 	"ci-failure-atlas/pkg/store/postgres/initdb"
@@ -53,6 +55,52 @@ func TestGenerateHTMLWithComparisonLinksLaneOutcomeDatesToRunsPage(t *testing.T)
 
 	if !strings.Contains(rendered, `/runs?date=2026-03-16&amp;env=dev`) {
 		t.Fatalf("expected lane outcome day label to link to runs page, got %q", rendered)
+	}
+}
+
+func TestBuildHTMLInlinesGoalDefinitionsInExecutiveTable(t *testing.T) {
+	t.Parallel()
+
+	startDate := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	endDate := time.Date(2026, 3, 21, 0, 0, 0, 0, time.UTC)
+
+	rendered := buildHTML(
+		startDate,
+		endDate,
+		[]envReport{
+			{
+				Environment: "dev",
+				Totals: counts{
+					RunCount: 10,
+				},
+			},
+			{
+				Environment: "int",
+				Totals: counts{
+					RunCount:     12,
+					FailureCount: 1,
+				},
+			},
+		},
+		nil,
+		95.0,
+		nil,
+		nil,
+		"/runs",
+		triagehtml.ReportChromeOptions{},
+	)
+
+	for _, snippet := range []string{
+		">Goal</span>",
+		"95% - After last push of a PR that merges",
+		"95% - All E2E job runs",
+	} {
+		if !strings.Contains(rendered, snippet) {
+			t.Fatalf("expected rendered report HTML to contain %q", snippet)
+		}
+	}
+	if strings.Contains(rendered, "Goals:") {
+		t.Fatalf("did not expect standalone goals section in rendered report HTML: %q", rendered)
 	}
 }
 

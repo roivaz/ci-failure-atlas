@@ -100,8 +100,7 @@ func buildDayRunHistoryPageHTML(
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Date (UTC): <strong>%s</strong></p>\n",
 		html.EscapeString(strings.TrimSpace(data.Meta.Date)),
 	))
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Generated (UTC): <strong>%s</strong> &middot; Environments: <strong>%s</strong></p>\n",
-		html.EscapeString(strings.TrimSpace(data.Meta.GeneratedAt)),
+	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Environments: <strong>%s</strong></p>\n",
 		html.EscapeString(dayRunHistoryEnvironmentList(data.Meta.Environments)),
 	))
 	b.WriteString("  <p class=\"meta\">Semantic matches and bad-PR signals use the latest contributing stored semantic snapshot for the matched signature so the score stays stable even on a single-day slice. <span class=\"triage-header-help\" title=\"The page shows one UTC day of runs, but semantic attachments and bad-PR scoring come from the latest contributing stored semantic snapshot for each matched signature rather than being recomputed from the day in isolation.\">?</span></p>\n")
@@ -121,7 +120,7 @@ func buildDayRunHistoryPageHTML(
 			continue
 		}
 		b.WriteString("    <table class=\"runs-table\">\n")
-		b.WriteString("      <thead><tr><th>Time (UTC)</th><th>Job</th><th>Lane</th><th>Result</th><th>PR</th><th>Failed tests</th><th>Details</th></tr></thead>\n")
+		b.WriteString("      <thead><tr><th>Time (UTC)</th><th>Job</th><th>Failed at</th><th>Result</th><th>PR</th><th>Failed tests</th><th>Details</th></tr></thead>\n")
 		b.WriteString("      <tbody>\n")
 		for _, row := range environment.Runs {
 			b.WriteString(dayRunHistoryRunRowHTML(row))
@@ -303,7 +302,8 @@ func dayRunHistoryBadPRFlagHTML(row frontservice.JobHistoryRunRow) string {
 	if score != 3 {
 		return ""
 	}
-	tooltip := fmt.Sprintf("Likely bad PR signal (score %d/3): %s", score, strings.Join(reasons, "; "))
+	tooltip := triagehtml.FormatBadPRTooltip(reasons)
+	_ = score
 	return fmt.Sprintf(
 		"<span class=\"bad-pr-flag\" title=\"%s\" aria-label=\"%s\">⚠</span>",
 		html.EscapeString(tooltip),
@@ -415,7 +415,7 @@ func dayRunHistoryFailureMeta(row frontservice.JobHistoryFailureRow) string {
 		parts = append(parts, occurredAt)
 	}
 	if lane := strings.TrimSpace(row.Lane); lane != "" {
-		parts = append(parts, "lane "+lane)
+		parts = append(parts, "failed at "+lane)
 	}
 	if testName := strings.TrimSpace(row.TestName); testName != "" {
 		parts = append(parts, "test "+testName)

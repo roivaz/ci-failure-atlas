@@ -251,7 +251,7 @@ func TestHandleTriagePageWindowRendersHTML(t *testing.T) {
 	if strings.Contains(body, "Resolved semantic week (UTC)") {
 		t.Fatalf("did not expect resolved week note in body, got %q", body)
 	}
-	if !strings.Contains(body, "Jobs affected, impact, references, and seen-in are recomputed across the selected window") {
+	if !strings.Contains(body, "Runs affected, run impact, and seen-in are recomputed across the selected window") {
 		t.Fatalf("expected windowed triage guidance in body, got %q", body)
 	}
 	if !strings.Contains(body, "OAuth timeout") {
@@ -520,14 +520,14 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if !strings.Contains(body, "Date (UTC)") {
 		t.Fatalf("expected UTC date label in body, got %q", body)
 	}
-	if !strings.Contains(body, "Generated (UTC)") {
-		t.Fatalf("expected UTC generated label in body, got %q", body)
+	if strings.Contains(body, "Generated (UTC)") {
+		t.Fatalf("did not expect UTC generated label in body, got %q", body)
 	}
 	if !strings.Contains(body, "<th>Time (UTC)</th>") {
 		t.Fatalf("expected UTC time header in body, got %q", body)
 	}
-	if !strings.Contains(body, "<th>Lane</th>") {
-		t.Fatalf("expected lane column in body, got %q", body)
+	if !strings.Contains(body, "<th>Failed at</th>") {
+		t.Fatalf("expected Failed at column in body, got %q", body)
 	}
 	if !strings.Contains(body, "<th>Failed tests</th>") {
 		t.Fatalf("expected failed tests column in body, got %q", body)
