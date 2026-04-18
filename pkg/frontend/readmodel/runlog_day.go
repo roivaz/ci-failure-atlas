@@ -1,4 +1,4 @@
-package service
+package readmodel
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
@@ -382,7 +381,7 @@ func buildJobHistorySignatureIndex(clusters []semanticcontracts.FailurePatternRe
 			phraseEnvironments[normalizePhrase(cluster.CanonicalEvidencePhrase)],
 			environment,
 		)
-		badPRScore, badPRReasons := triagehtml.BadPRScoreAndReasons(triagehtml.FailurePatternRow{
+		badPRScore, badPRReasons := BadPRScoreAndReasons(FailurePatternRow{
 			Environment:        environment,
 			AfterLastPushCount: cluster.PostGoodCommitCount,
 			AlsoIn:             otherEnvironments,
@@ -429,10 +428,10 @@ func jobHistoryPhraseEnvironments(clusters []semanticcontracts.FailurePatternRec
 	return out
 }
 
-func jobHistoryRunReferences(rows []semanticcontracts.ReferenceRecord) []triagehtml.RunReference {
-	out := make([]triagehtml.RunReference, 0, len(rows))
+func jobHistoryRunReferences(rows []semanticcontracts.ReferenceRecord) []RunReference {
+	out := make([]RunReference, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.RunReference{
+		out = append(out, RunReference{
 			RunURL:      strings.TrimSpace(row.RunURL),
 			OccurredAt:  strings.TrimSpace(row.OccurredAt),
 			SignatureID: strings.TrimSpace(row.SignatureID),

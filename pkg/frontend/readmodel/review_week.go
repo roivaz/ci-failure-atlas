@@ -1,4 +1,4 @@
-package service
+package readmodel
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
@@ -35,7 +34,7 @@ type ReviewWeekSnapshot struct {
 	Week                 string
 	PreviousWeek         string
 	NextWeek             string
-	Rows                 []triagehtml.FailurePatternRow
+	Rows                 []FailurePatternRow
 	OverallJobsByEnv     map[string]int
 	AnchorsByClusterID   map[string][]ReviewPhase3Anchor
 	LaneKeysByClusterID  map[string][]string
@@ -164,7 +163,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 		trendAnchor = weekStart.AddDate(0, 0, reviewTrendWindowDays-1).UTC()
 	}
 
-	rows := make([]triagehtml.FailurePatternRow, 0, len(clusters))
+	rows := make([]FailurePatternRow, 0, len(clusters))
 	anchorsByClusterID := map[string][]ReviewPhase3Anchor{}
 	for key, anchors := range childAnchorsByClusterID {
 		anchorsByClusterID[key] = append([]ReviewPhase3Anchor(nil), anchors...)
@@ -219,13 +218,13 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 			unassignedCount++
 		}
 
-		qualityCodes := triagehtml.QualityIssueCodes(cluster.CanonicalEvidencePhrase)
+		qualityCodes := QualityIssueCodes(cluster.CanonicalEvidencePhrase)
 		qualityLabels := make([]string, 0, len(qualityCodes))
 		for _, code := range qualityCodes {
-			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+			qualityLabels = append(qualityLabels, QualityIssueLabel(code))
 		}
 		reviewReasons := reviewReasonsForCluster(cluster, reviewIndex)
-		qualityScore := triagehtml.QualityScore(qualityCodes) + (len(reviewReasons) * 2)
+		qualityScore := QualityScore(qualityCodes) + (len(reviewReasons) * 2)
 		alsoSeenIn := reviewEnvironmentsForPhrase(
 			phraseEnvironments[normalizePhrase(cluster.CanonicalEvidencePhrase)],
 			environment,
@@ -249,13 +248,13 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 		}
 
 		displayReferences := reviewToRunReferences(cluster.References, 0)
-		scoreReferences := []triagehtml.RunReference(nil)
+		scoreReferences := []RunReference(nil)
 		trendSparkline := ""
 		trendCounts := []int(nil)
 		trendRange := ""
 		if isAggregatedRow {
 			scoreReferences = reviewToRunReferences(cluster.References, 0)
-			if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(
+			if sparkline, counts, sparkRange, ok := DailyDensitySparkline(
 				scoreReferences,
 				reviewTrendWindowDays,
 				trendAnchor,
@@ -275,7 +274,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 			priorLastSeenAt = historyPresence.PriorLastSeenAt.UTC().Format(time.RFC3339)
 		}
 
-		rows = append(rows, triagehtml.FailurePatternRow{
+		rows = append(rows, FailurePatternRow{
 			Environment:         environment,
 			FailedAt:            strings.TrimSpace(primary.Lane),
 			JobName:             strings.TrimSpace(primary.JobName),
@@ -485,7 +484,7 @@ func reviewFullErrorSamplesForReferences(
 	return out
 }
 
-func reviewToRunReferences(rows []semanticcontracts.ReferenceRecord, limit int) []triagehtml.RunReference {
+func reviewToRunReferences(rows []semanticcontracts.ReferenceRecord, limit int) []RunReference {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -493,9 +492,9 @@ func reviewToRunReferences(rows []semanticcontracts.ReferenceRecord, limit int) 
 	if limit > 0 && limit < maxCount {
 		maxCount = limit
 	}
-	out := make([]triagehtml.RunReference, 0, maxCount)
+	out := make([]RunReference, 0, maxCount)
 	for _, row := range rows {
-		out = append(out, triagehtml.RunReference{
+		out = append(out, RunReference{
 			RunURL:      strings.TrimSpace(row.RunURL),
 			OccurredAt:  strings.TrimSpace(row.OccurredAt),
 			SignatureID: strings.TrimSpace(row.SignatureID),
@@ -508,13 +507,13 @@ func reviewToRunReferences(rows []semanticcontracts.ReferenceRecord, limit int) 
 	return out
 }
 
-func reviewToContributingTests(rows []semanticcontracts.ContributingTestRecord) []triagehtml.ContributingTest {
+func reviewToContributingTests(rows []semanticcontracts.ContributingTestRecord) []ContributingTest {
 	if len(rows) == 0 {
 		return nil
 	}
-	out := make([]triagehtml.ContributingTest, 0, len(rows))
+	out := make([]ContributingTest, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.ContributingTest{
+		out = append(out, ContributingTest{
 			FailedAt:    strings.TrimSpace(row.Lane),
 			JobName:     strings.TrimSpace(row.JobName),
 			TestName:    strings.TrimSpace(row.TestName),
@@ -598,24 +597,24 @@ func reviewBuildLinkedChildFailurePatternRows(
 	totalSupportByEnvironment int,
 	reviewIndex reviewSignalIndex,
 	rawTextIndex map[string]string,
-) []triagehtml.FailurePatternRow {
+) []FailurePatternRow {
 	if strings.TrimSpace(manualIssueID) == "" || len(childClusters) == 0 {
 		return nil
 	}
-	out := make([]triagehtml.FailurePatternRow, 0, len(childClusters))
+	out := make([]FailurePatternRow, 0, len(childClusters))
 	for _, cluster := range childClusters {
 		environment := normalizeEnvironment(cluster.Environment)
 		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
-		qualityCodes := triagehtml.QualityIssueCodes(cluster.CanonicalEvidencePhrase)
+		qualityCodes := QualityIssueCodes(cluster.CanonicalEvidencePhrase)
 		qualityLabels := make([]string, 0, len(qualityCodes))
 		for _, code := range qualityCodes {
-			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+			qualityLabels = append(qualityLabels, QualityIssueLabel(code))
 		}
 		reviewReasons := reviewReasonsForCluster(cluster, reviewIndex)
-		qualityScore := triagehtml.QualityScore(qualityCodes) + (len(reviewReasons) * 2)
+		qualityScore := QualityScore(qualityCodes) + (len(reviewReasons) * 2)
 		primary := primaryContributingTest(cluster.ContributingTests)
 
-		out = append(out, triagehtml.FailurePatternRow{
+		out = append(out, FailurePatternRow{
 			Environment:         environment,
 			FailedAt:            strings.TrimSpace(primary.Lane),
 			JobName:             strings.TrimSpace(primary.JobName),

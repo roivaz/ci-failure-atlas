@@ -15,7 +15,7 @@ import (
 	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
 	reportreview "ci-failure-atlas/pkg/frontend/review"
 	frontrunlog "ci-failure-atlas/pkg/frontend/runlog"
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
+	frontui "ci-failure-atlas/pkg/frontend/ui"
 	reportweekly "ci-failure-atlas/pkg/frontend/report"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -68,7 +68,7 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	mux.HandleFunc("/api/failure-patterns/window", h.handleAPIFailurePatterns)
 	mux.HandleFunc("/report", h.handleReportPage)
 	mux.HandleFunc("/run-log", h.handleRunsPage)
-	mux.HandleFunc("/failure-patterns", h.handleTriagePage)
+	mux.HandleFunc("/failure-patterns", h.handleFailurePatternsPage)
 	mux.HandleFunc("/global", h.handleLegacyGlobalRedirect)
 	mux.HandleFunc("/review", h.handleReviewRoot)
 	mux.Handle("/review/", http.StripPrefix("/review", reviewHandler))
@@ -96,7 +96,7 @@ func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, href, http.StatusFound)
 }
 
-func (h *handler) handleTriagePage(w http.ResponseWriter, r *http.Request) {
+func (h *handler) handleFailurePatternsPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -228,9 +228,9 @@ func (h *handler) generateFailurePatternsReport(ctx context.Context, query front
 	}
 	return frontfailurepatterns.RenderHTML(data, frontfailurepatterns.PageOptions{
 		Query: query,
-		Chrome: triagehtml.ReportChromeOptions{
+		Chrome: frontui.ReportChromeOptions{
 			WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
-			CurrentView:         triagehtml.ReportViewFailurePatterns,
+			CurrentView:         frontui.ReportViewFailurePatterns,
 			PreviousHref:        h.shiftedFailurePatternsHref(ctx, scope.StartDate, scope.EndDate, -7, query.Environments),
 			NextHref:            h.shiftedFailurePatternsHref(ctx, scope.StartDate, scope.EndDate, 7, query.Environments),
 			RollingHref:         rollingHref,
@@ -261,9 +261,9 @@ func (h *handler) generateDayRunHistoryPage(ctx context.Context, query frontserv
 		Query:               query,
 		FailurePatternsHref: failurePatternsHref("/failure-patterns", "", scope.StartDate, scope.EndDate, environments),
 		APIHref:             runLogDayHref("/api/run-log/day", data.Meta.Date, "", environments),
-		Chrome: triagehtml.ReportChromeOptions{
+		Chrome: frontui.ReportChromeOptions{
 			WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
-			CurrentView:         triagehtml.ReportViewRunLog,
+			CurrentView:         frontui.ReportViewRunLog,
 			PreviousHref:        h.shiftedRunLogHref(ctx, data.Meta.Date, -1, environments),
 			NextHref:            h.shiftedRunLogHref(ctx, data.Meta.Date, 1, environments),
 			RollingHref:         rollingHref,
@@ -301,7 +301,7 @@ func (h *handler) generateReportPage(
 	}
 	opts := reportweekly.DefaultOptions()
 	opts.RunLogDayBasePath = "/run-log"
-	opts.Chrome = triagehtml.ReportChromeOptions{
+	opts.Chrome = frontui.ReportChromeOptions{
 		WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
 		CurrentView:         reportChromeView(mode),
 		PreviousHref:        h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, -7, mode),
@@ -472,11 +472,11 @@ func normalizeReportPageMode(value string) reportPageMode {
 	return reportPageModeReport
 }
 
-func reportChromeView(mode reportPageMode) triagehtml.ReportView {
+func reportChromeView(mode reportPageMode) frontui.ReportView {
 	if mode == reportPageModeRolling {
-		return triagehtml.ReportViewRolling
+		return frontui.ReportViewRolling
 	}
-	return triagehtml.ReportViewReport
+	return frontui.ReportViewReport
 }
 
 func formatWindowLabel(startDate string, endDate string) string {

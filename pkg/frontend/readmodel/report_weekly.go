@@ -1,4 +1,4 @@
-package service
+package readmodel
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
@@ -107,8 +106,8 @@ type WeeklyTopSignature struct {
 	SeenInOtherEnvs   []string
 	QualityScore      int
 	QualityNoteLabels []string
-	ContributingTests []triagehtml.ContributingTest
-	References        []triagehtml.RunReference
+	ContributingTests []ContributingTest
+	References        []RunReference
 	FullErrorSamples  []string
 	LinkedChildren    []WeeklyTopSignature
 }
@@ -120,8 +119,8 @@ type WeeklySemanticSnapshot struct {
 	ClusterSignaturesByEnv           map[string][]WeeklyTopSignature
 	PhraseSupportByEnv               map[string]map[string]int
 	PhrasePostGoodByEnv              map[string]map[string]int
-	PhraseReferencesByEnv            map[string]map[string][]triagehtml.RunReference
-	PhraseContributingTestsByEnv     map[string]map[string][]triagehtml.ContributingTest
+	PhraseReferencesByEnv            map[string]map[string][]RunReference
+	PhraseContributingTestsByEnv     map[string]map[string][]ContributingTest
 	PhraseClusterIDByEnv             map[string]map[string]string
 	PhraseSearchQueryByEnv           map[string]map[string]string
 	PhraseRepresentativeSupportByEnv map[string]map[string]int
@@ -328,8 +327,8 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		ClusterSignaturesByEnv:           map[string][]topSignature{},
 		PhraseSupportByEnv:               map[string]map[string]int{},
 		PhrasePostGoodByEnv:              map[string]map[string]int{},
-		PhraseReferencesByEnv:            map[string]map[string][]triagehtml.RunReference{},
-		PhraseContributingTestsByEnv:     map[string]map[string][]triagehtml.ContributingTest{},
+		PhraseReferencesByEnv:            map[string]map[string][]RunReference{},
+		PhraseContributingTestsByEnv:     map[string]map[string][]ContributingTest{},
 		PhraseClusterIDByEnv:             map[string]map[string]string{},
 		PhraseSearchQueryByEnv:           map[string]map[string]string{},
 		PhraseRepresentativeSupportByEnv: map[string]map[string]int{},
@@ -383,7 +382,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		out.PhrasePostGoodByEnv[environment][phrase] += postGood
 
 		if _, ok := out.PhraseReferencesByEnv[environment]; !ok {
-			out.PhraseReferencesByEnv[environment] = map[string][]triagehtml.RunReference{}
+			out.PhraseReferencesByEnv[environment] = map[string][]RunReference{}
 		}
 		out.PhraseReferencesByEnv[environment][phrase] = append(
 			out.PhraseReferencesByEnv[environment][phrase],
@@ -392,7 +391,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
 			out.PhraseReferencesByEnv[environment][phrase] = append(
 				out.PhraseReferencesByEnv[environment][phrase],
-				triagehtml.RunReference{
+				RunReference{
 					RunURL:      sourceRunURL,
 					SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
 				},
@@ -400,7 +399,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		}
 
 		if _, ok := out.PhraseContributingTestsByEnv[environment]; !ok {
-			out.PhraseContributingTestsByEnv[environment] = map[string][]triagehtml.ContributingTest{}
+			out.PhraseContributingTestsByEnv[environment] = map[string][]ContributingTest{}
 		}
 		out.PhraseContributingTestsByEnv[environment][phrase] = mergeFailurePatternContributingTests(
 			out.PhraseContributingTestsByEnv[environment][phrase],
@@ -448,10 +447,10 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 			signatureIDs[signatureID] = struct{}{}
 		}
 
-		qualityCodes := triagehtml.QualityIssueCodes(strings.TrimSpace(phrase))
+		qualityCodes := QualityIssueCodes(strings.TrimSpace(phrase))
 		qualityLabels := make([]string, 0, len(qualityCodes))
 		for _, code := range qualityCodes {
-			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+			qualityLabels = append(qualityLabels, QualityIssueLabel(code))
 		}
 		linkedChildren := []topSignature(nil)
 		linkedChildrenRaw := linkedChildrenByMergedClusterKey[weeklyClusterGroupKey(environment, row.Phase2ClusterID)]
@@ -460,7 +459,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		}
 		rowReferences := toFailurePatternRunReferences(row.References)
 		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
-			rowReferences = append(rowReferences, triagehtml.RunReference{
+			rowReferences = append(rowReferences, RunReference{
 				RunURL:      sourceRunURL,
 				SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
 			})
@@ -472,9 +471,9 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
 			SupportCount:      support,
 			PostGoodCount:     postGood,
-			QualityScore:      triagehtml.QualityScore(qualityCodes),
+			QualityScore:      QualityScore(qualityCodes),
 			QualityNoteLabels: qualityLabels,
-			ContributingTests: triagehtml.OrderedContributingTests(toFailurePatternContributingTests(row.ContributingTests)),
+			ContributingTests: OrderedContributingTests(toFailurePatternContributingTests(row.ContributingTests)),
 			References:        rowReferences,
 			LinkedChildren:    linkedChildren,
 		})
@@ -741,8 +740,8 @@ func rankTopSignaturesByEnvironmentFromClusters(snapshot semanticSnapshot, limit
 			if minShare > 0 && share < minShare {
 				continue
 			}
-			references := append([]triagehtml.RunReference(nil), source.References...)
-			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.FailurePatternRow{
+			references := append([]RunReference(nil), source.References...)
+			badPRScore, _ := BadPRScoreAndReasons(FailurePatternRow{
 				Environment:        environment,
 				AfterLastPushCount: source.PostGoodCount,
 				AlsoIn:             otherEnvironments,
@@ -773,8 +772,8 @@ func rankTopSignaturesByEnvironmentFromClusters(snapshot semanticSnapshot, limit
 					PostGoodCount:     child.PostGoodCount,
 					QualityScore:      child.QualityScore,
 					QualityNoteLabels: append([]string(nil), child.QualityNoteLabels...),
-					ContributingTests: append([]triagehtml.ContributingTest(nil), child.ContributingTests...),
-					References:        append([]triagehtml.RunReference(nil), child.References...),
+					ContributingTests: append([]ContributingTest(nil), child.ContributingTests...),
+					References:        append([]RunReference(nil), child.References...),
 					FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[childEnvironment][childPhrase]...),
 				})
 			}
@@ -790,7 +789,7 @@ func rankTopSignaturesByEnvironmentFromClusters(snapshot semanticSnapshot, limit
 				SeenInOtherEnvs:   otherEnvironments,
 				QualityScore:      source.QualityScore,
 				QualityNoteLabels: append([]string(nil), source.QualityNoteLabels...),
-				ContributingTests: append([]triagehtml.ContributingTest(nil), source.ContributingTests...),
+				ContributingTests: append([]ContributingTest(nil), source.ContributingTests...),
 				References:        references,
 				FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
 				LinkedChildren:    linkedChildren,
@@ -839,13 +838,13 @@ func rankTopSignaturesByEnvironmentFromPhrases(snapshot semanticSnapshot, limit 
 			if minShare > 0 && share < minShare {
 				continue
 			}
-			qualityCodes := triagehtml.QualityIssueCodes(strings.TrimSpace(phrase))
+			qualityCodes := QualityIssueCodes(strings.TrimSpace(phrase))
 			qualityLabels := make([]string, 0, len(qualityCodes))
 			for _, code := range qualityCodes {
-				qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+				qualityLabels = append(qualityLabels, QualityIssueLabel(code))
 			}
-			references := append([]triagehtml.RunReference(nil), snapshot.PhraseReferencesByEnv[environment][phrase]...)
-			badPRScore, _ := triagehtml.BadPRScoreAndReasons(triagehtml.FailurePatternRow{
+			references := append([]RunReference(nil), snapshot.PhraseReferencesByEnv[environment][phrase]...)
+			badPRScore, _ := BadPRScoreAndReasons(FailurePatternRow{
 				Environment:        environment,
 				AfterLastPushCount: postGoodByPhrase[phrase],
 				AlsoIn:             otherEnvironments,
@@ -861,9 +860,9 @@ func rankTopSignaturesByEnvironmentFromPhrases(snapshot semanticSnapshot, limit 
 				PostGoodCount:     postGoodByPhrase[phrase],
 				BadPRScore:        badPRScore,
 				SeenInOtherEnvs:   otherEnvironments,
-				QualityScore:      triagehtml.QualityScore(qualityCodes),
+				QualityScore:      QualityScore(qualityCodes),
 				QualityNoteLabels: qualityLabels,
-				ContributingTests: append([]triagehtml.ContributingTest(nil), snapshot.PhraseContributingTestsByEnv[environment][phrase]...),
+				ContributingTests: append([]ContributingTest(nil), snapshot.PhraseContributingTestsByEnv[environment][phrase]...),
 				References:        references,
 				FullErrorSamples:  append([]string(nil), snapshot.PhraseFullErrorsByEnv[environment][phrase]...),
 			})
@@ -911,14 +910,14 @@ func topSignaturesFromFailurePatternClusters(rows []semanticcontracts.FailurePat
 		if postGood < 0 {
 			postGood = 0
 		}
-		qualityCodes := triagehtml.QualityIssueCodes(phrase)
+		qualityCodes := QualityIssueCodes(phrase)
 		qualityLabels := make([]string, 0, len(qualityCodes))
 		for _, code := range qualityCodes {
-			qualityLabels = append(qualityLabels, triagehtml.QualityIssueLabel(code))
+			qualityLabels = append(qualityLabels, QualityIssueLabel(code))
 		}
 		references := toFailurePatternRunReferences(row.References)
 		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
-			references = append(references, triagehtml.RunReference{
+			references = append(references, RunReference{
 				RunURL:      sourceRunURL,
 				SignatureID: strings.TrimSpace(row.SearchQuerySourceSignatureID),
 			})
@@ -930,9 +929,9 @@ func topSignaturesFromFailurePatternClusters(rows []semanticcontracts.FailurePat
 			SearchQuery:       strings.TrimSpace(row.SearchQueryPhrase),
 			SupportCount:      support,
 			PostGoodCount:     postGood,
-			QualityScore:      triagehtml.QualityScore(qualityCodes),
+			QualityScore:      QualityScore(qualityCodes),
 			QualityNoteLabels: qualityLabels,
-			ContributingTests: triagehtml.OrderedContributingTests(toFailurePatternContributingTests(row.ContributingTests)),
+			ContributingTests: OrderedContributingTests(toFailurePatternContributingTests(row.ContributingTests)),
 			References:        references,
 		})
 	}
@@ -1022,10 +1021,10 @@ func weeklyClusterGroupKey(environment string, clusterID string) string {
 	return env + "|" + cluster
 }
 
-func toFailurePatternRunReferences(rows []semanticcontracts.ReferenceRecord) []triagehtml.RunReference {
-	out := make([]triagehtml.RunReference, 0, len(rows))
+func toFailurePatternRunReferences(rows []semanticcontracts.ReferenceRecord) []RunReference {
+	out := make([]RunReference, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.RunReference{
+		out = append(out, RunReference{
 			RunURL:      strings.TrimSpace(row.RunURL),
 			OccurredAt:  strings.TrimSpace(row.OccurredAt),
 			SignatureID: strings.TrimSpace(row.SignatureID),
@@ -1035,10 +1034,10 @@ func toFailurePatternRunReferences(rows []semanticcontracts.ReferenceRecord) []t
 	return out
 }
 
-func toFailurePatternContributingTests(rows []semanticcontracts.ContributingTestRecord) []triagehtml.ContributingTest {
-	out := make([]triagehtml.ContributingTest, 0, len(rows))
+func toFailurePatternContributingTests(rows []semanticcontracts.ContributingTestRecord) []ContributingTest {
+	out := make([]ContributingTest, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.ContributingTest{
+		out = append(out, ContributingTest{
 			FailedAt:    strings.TrimSpace(row.Lane),
 			JobName:     strings.TrimSpace(row.JobName),
 			TestName:    strings.TrimSpace(row.TestName),
@@ -1048,7 +1047,7 @@ func toFailurePatternContributingTests(rows []semanticcontracts.ContributingTest
 	return out
 }
 
-func mergeFailurePatternContributingTests(existing []triagehtml.ContributingTest, incoming []triagehtml.ContributingTest) []triagehtml.ContributingTest {
+func mergeFailurePatternContributingTests(existing []ContributingTest, incoming []ContributingTest) []ContributingTest {
 	if len(incoming) == 0 {
 		return existing
 	}
@@ -1057,7 +1056,7 @@ func mergeFailurePatternContributingTests(existing []triagehtml.ContributingTest
 		job  string
 		test string
 	}
-	merged := make(map[mergeKey]triagehtml.ContributingTest, len(existing)+len(incoming))
+	merged := make(map[mergeKey]ContributingTest, len(existing)+len(incoming))
 	for _, item := range existing {
 		merged[mergeKey{
 			lane: strings.TrimSpace(item.FailedAt),
@@ -1079,11 +1078,11 @@ func mergeFailurePatternContributingTests(existing []triagehtml.ContributingTest
 		existingItem.Occurrences += item.Occurrences
 		merged[key] = existingItem
 	}
-	out := make([]triagehtml.ContributingTest, 0, len(merged))
+	out := make([]ContributingTest, 0, len(merged))
 	for _, item := range merged {
 		out = append(out, item)
 	}
-	return triagehtml.OrderedContributingTests(out)
+	return OrderedContributingTests(out)
 }
 
 func loadSignatureFullErrorSamplesByEnvironment(

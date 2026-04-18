@@ -1,4 +1,4 @@
-package service
+package readmodel
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
@@ -432,8 +431,8 @@ func failurePatternReportAttachFullErrorSamples(
 		samples := make([]string, 0, limit)
 		orderedRefs := append([]FailurePatternReportReference(nil), cluster.References...)
 		sort.Slice(orderedRefs, func(i, j int) bool {
-			ti, okI := triagehtml.ParseReferenceTimestamp(orderedRefs[i].OccurredAt)
-			tj, okJ := triagehtml.ParseReferenceTimestamp(orderedRefs[j].OccurredAt)
+			ti, okI := ParseReferenceTimestamp(orderedRefs[i].OccurredAt)
+			tj, okJ := ParseReferenceTimestamp(orderedRefs[j].OccurredAt)
 			switch {
 			case okI && okJ && !ti.Equal(tj):
 				return ti.After(tj)

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
+	frontui "ci-failure-atlas/pkg/frontend/ui"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 	"ci-failure-atlas/pkg/store/postgres/initdb"
@@ -87,7 +87,7 @@ func TestBuildHTMLInlinesGoalDefinitionsInExecutiveTable(t *testing.T) {
 		nil,
 		nil,
 		"/run-log",
-		triagehtml.ReportChromeOptions{},
+		frontui.ReportChromeOptions{},
 	)
 
 	for _, snippet := range []string{

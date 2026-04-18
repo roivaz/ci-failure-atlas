@@ -13,7 +13,7 @@ import (
 	"time"
 
 	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
+	frontui "ci-failure-atlas/pkg/frontend/ui"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
@@ -37,7 +37,7 @@ type Options struct {
 	HistoryHorizonWeeks int
 	HistoryResolver     semhistory.FailurePatternHistoryResolver
 	RunLogDayBasePath   string
-	Chrome              triagehtml.ReportChromeOptions
+	Chrome              frontui.ReportChromeOptions
 }
 
 type validatedOptions struct {
@@ -48,7 +48,7 @@ type validatedOptions struct {
 	HistoryHorizonWeeks int
 	HistoryResolver     semhistory.FailurePatternHistoryResolver
 	RunLogDayBasePath   string
-	Chrome              triagehtml.ReportChromeOptions
+	Chrome              frontui.ReportChromeOptions
 }
 
 type counts = frontservice.WeeklyCounts
@@ -217,9 +217,9 @@ func buildHTML(
 	previousReports []envReport,
 	targetRate float64,
 	testsBelowTargetByEnv map[string][]belowTargetTest,
-	topSignaturesByEnv map[string][]triagehtml.FailurePatternRow,
+	topSignaturesByEnv map[string][]frontservice.FailurePatternRow,
 	runLogDayBasePath string,
-	chrome triagehtml.ReportChromeOptions,
+	chrome frontui.ReportChromeOptions,
 ) string {
 	var b strings.Builder
 	failurePatternsBaseHref := strings.TrimSpace(chrome.FailurePatternsHref)
@@ -232,7 +232,7 @@ func buildHTML(
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
 	b.WriteString("  <title>CI Report</title>\n")
-	b.WriteString(triagehtml.ThemeInitScriptTag())
+	b.WriteString(frontui.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 4px; }\n")
@@ -287,15 +287,15 @@ func buildHTML(
 	b.WriteString("    .detail-table details { margin: 0; }\n")
 	b.WriteString("    .detail-table summary { cursor: pointer; color: #1d4ed8; }\n")
 	b.WriteString("    .detail-table pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0 0; }\n")
-	b.WriteString(triagehtml.ReportChromeCSS())
-	b.WriteString(triagehtml.StylesCSS())
-	b.WriteString(triagehtml.ThemeCSS())
+	b.WriteString(frontui.ReportChromeCSS())
+	b.WriteString(frontui.StylesCSS())
+	b.WriteString(frontui.ThemeCSS())
 	b.WriteString("    body[data-chart-mode=\"count\"] .mode-percent { display: none; }\n")
 	b.WriteString("    body[data-chart-mode=\"percent\"] .mode-count { display: none; }\n")
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body data-chart-mode=\"count\">\n")
-	b.WriteString(triagehtml.ReportChromeHTML(chrome))
+	b.WriteString(frontui.ReportChromeHTML(chrome))
 	b.WriteString("  <h1>CI Report</h1>\n")
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
 		startDate.Format("2006-01-02"),
@@ -586,9 +586,9 @@ func buildHTML(
 				html.EscapeString(failurePatternReportHref),
 			))
 		}
-		failurePatternRows := make([]triagehtml.FailurePatternRow, 0, len(topSignaturesByEnv[environment]))
+		failurePatternRows := make([]frontservice.FailurePatternRow, 0, len(topSignaturesByEnv[environment]))
 		for _, row := range topSignaturesByEnv[environment] {
-			if weeklyTriageRowImpactPercent(row, report.Totals.RunCount) < weeklySignatureMinImpactPct {
+			if weeklyFailurePatternRowImpactPercent(row, report.Totals.RunCount) < weeklySignatureMinImpactPct {
 				continue
 			}
 			failurePatternRows = append(failurePatternRows, row)
@@ -596,7 +596,7 @@ func buildHTML(
 		if len(failurePatternRows) == 0 {
 			b.WriteString("      <p class=\"panel-empty\">No failure patterns available for this environment in the selected window.</p>\n")
 		} else {
-			b.WriteString(triagehtml.RenderTable(failurePatternRows, triagehtml.TableOptions{
+			b.WriteString(frontui.RenderTable(failurePatternRows, frontui.TableOptions{
 				IncludeTrend:       true,
 				ImpactTotalJobs:    report.Totals.RunCount,
 				LoadedRowsLimit:    weeklySignatureLoadedRowsLimit,
@@ -607,7 +607,7 @@ func buildHTML(
 		b.WriteString("  </section>\n")
 	}
 
-	b.WriteString(triagehtml.ThemeToggleScriptTag())
+	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("<script>\n")
 	b.WriteString("(function(){\n")
 	b.WriteString("  function applyChartMode(mode) {\n")
@@ -687,20 +687,20 @@ func weeklyTopSignatureImpactPercent(item topSignature, overallJobs int) float64
 
 func weeklyTopSignatureJobsAffected(item topSignature) int {
 	if len(item.LinkedChildren) == 0 {
-		return len(triagehtml.OrderedUniqueReferences(item.References))
+		return len(frontservice.OrderedUniqueReferences(item.References))
 	}
 	total := 0
 	for _, child := range item.LinkedChildren {
-		total += len(triagehtml.OrderedUniqueReferences(child.References))
+		total += len(frontservice.OrderedUniqueReferences(child.References))
 	}
 	if total > 0 {
 		return total
 	}
-	return len(triagehtml.OrderedUniqueReferences(item.References))
+	return len(frontservice.OrderedUniqueReferences(item.References))
 }
 
-func topSignatureToTriageRow(item topSignature) triagehtml.FailurePatternRow {
-	row := triagehtml.FailurePatternRow{
+func topSignatureToFailurePatternRow(item topSignature) frontservice.FailurePatternRow {
+	row := frontservice.FailurePatternRow{
 		Environment:        item.Environment,
 		FailurePattern:     item.Phrase,
 		FailurePatternID:   item.ClusterID,
@@ -711,16 +711,16 @@ func topSignatureToTriageRow(item topSignature) triagehtml.FailurePatternRow {
 		AlsoIn:             append([]string(nil), item.SeenInOtherEnvs...),
 		QualityScore:       item.QualityScore,
 		QualityNoteLabels:  append([]string(nil), item.QualityNoteLabels...),
-		ContributingTests:  append([]triagehtml.ContributingTest(nil), item.ContributingTests...),
+		ContributingTests:  append([]frontservice.ContributingTest(nil), item.ContributingTests...),
 		FullErrorSamples:   append([]string(nil), item.FullErrorSamples...),
-		AffectedRuns:       append([]triagehtml.RunReference(nil), item.References...),
+		AffectedRuns:       append([]frontservice.RunReference(nil), item.References...),
 	}
 	if len(item.LinkedChildren) == 0 {
 		return row
 	}
-	row.LinkedPatterns = make([]triagehtml.FailurePatternRow, 0, len(item.LinkedChildren))
+	row.LinkedPatterns = make([]frontservice.FailurePatternRow, 0, len(item.LinkedChildren))
 	for _, child := range item.LinkedChildren {
-		childRow := topSignatureToTriageRow(child)
+		childRow := topSignatureToFailurePatternRow(child)
 		childRow.LinkedPatterns = nil
 		row.LinkedPatterns = append(row.LinkedPatterns, childRow)
 	}
@@ -731,15 +731,15 @@ func legacyWeeklyFailurePatternRowsByEnv(
 	source map[string][]topSignature,
 	historyResolver semhistory.FailurePatternHistoryResolver,
 	endDate time.Time,
-) map[string][]triagehtml.FailurePatternRow {
-	out := make(map[string][]triagehtml.FailurePatternRow, len(source))
+) map[string][]frontservice.FailurePatternRow {
+	out := make(map[string][]frontservice.FailurePatternRow, len(source))
 	for environment, items := range source {
-		rows := make([]triagehtml.FailurePatternRow, 0, len(items))
+		rows := make([]frontservice.FailurePatternRow, 0, len(items))
 		for _, item := range items {
-			triageRow := topSignatureToTriageRow(item)
+			failurePatternRow := topSignatureToFailurePatternRow(item)
 			if historyResolver != nil {
 				presence := semhistory.FailurePatternPresence{}
-				if len(triageRow.LinkedPatterns) > 0 && strings.TrimSpace(item.ClusterID) != "" {
+				if len(failurePatternRow.LinkedPatterns) > 0 && strings.TrimSpace(item.ClusterID) != "" {
 					presence = historyResolver.PresenceForPhase3Cluster(item.Environment, item.ClusterID)
 				} else {
 					presence = historyResolver.PresenceFor(semhistory.FailurePatternKey{
@@ -748,23 +748,23 @@ func legacyWeeklyFailurePatternRowsByEnv(
 						SearchQuery: item.SearchQuery,
 					})
 				}
-				triageRow.PriorWeeksPresent = presence.PriorWeeksPresent
-				triageRow.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
-				triageRow.PriorRunsAffected = presence.PriorJobsAffected
+				failurePatternRow.PriorWeeksPresent = presence.PriorWeeksPresent
+				failurePatternRow.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
+				failurePatternRow.PriorRunsAffected = presence.PriorJobsAffected
 				if !presence.PriorLastSeenAt.IsZero() {
-					triageRow.PriorLastSeenAt = presence.PriorLastSeenAt.UTC().Format(time.RFC3339)
+					failurePatternRow.PriorLastSeenAt = presence.PriorLastSeenAt.UTC().Format(time.RFC3339)
 				}
 			}
-			if sparkline, counts, sparkRange, ok := triagehtml.DailyDensitySparkline(
-				triageRow.AffectedRuns,
+			if sparkline, counts, sparkRange, ok := frontservice.DailyDensitySparkline(
+				failurePatternRow.AffectedRuns,
 				windowDays,
 				endDate,
 			); ok {
-				triageRow.TrendSparkline = sparkline
-				triageRow.TrendCounts = append([]int(nil), counts...)
-				triageRow.TrendRange = sparkRange
+				failurePatternRow.TrendSparkline = sparkline
+				failurePatternRow.TrendCounts = append([]int(nil), counts...)
+				failurePatternRow.TrendRange = sparkRange
 			}
-			rows = append(rows, triageRow)
+			rows = append(rows, failurePatternRow)
 		}
 		out[environment] = rows
 	}
@@ -773,8 +773,8 @@ func legacyWeeklyFailurePatternRowsByEnv(
 
 func reportWindowedFailurePatternRowsByEnv(
 	source map[string][]frontservice.FailurePatternsRow,
-) map[string][]triagehtml.FailurePatternRow {
-	out := make(map[string][]triagehtml.FailurePatternRow, len(source))
+) map[string][]frontservice.FailurePatternRow {
+	out := make(map[string][]frontservice.FailurePatternRow, len(source))
 	for environment, rows := range source {
 		out[environment] = reportWindowedFailurePatternRows(rows, reportWindowedFailureTotal(rows))
 	}
@@ -784,10 +784,10 @@ func reportWindowedFailurePatternRowsByEnv(
 func reportWindowedFailurePatternRows(
 	rows []frontservice.FailurePatternsRow,
 	totalEnvironmentFailures int,
-) []triagehtml.FailurePatternRow {
-	out := make([]triagehtml.FailurePatternRow, 0, len(rows))
+) []frontservice.FailurePatternRow {
+	out := make([]frontservice.FailurePatternRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.FailurePatternRow{
+		out = append(out, frontservice.FailurePatternRow{
 			Environment:        strings.TrimSpace(row.Environment),
 			FailedAt:           strings.TrimSpace(row.Lane),
 			JobName:            strings.TrimSpace(row.JobName),
@@ -825,10 +825,10 @@ func reportWindowedFailurePatternRows(
 	return out
 }
 
-func reportWindowedRunReferences(rows []frontservice.FailurePatternReportReference) []triagehtml.RunReference {
-	out := make([]triagehtml.RunReference, 0, len(rows))
+func reportWindowedRunReferences(rows []frontservice.FailurePatternReportReference) []frontservice.RunReference {
+	out := make([]frontservice.RunReference, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.RunReference{
+		out = append(out, frontservice.RunReference{
 			RunURL:      strings.TrimSpace(row.RunURL),
 			OccurredAt:  strings.TrimSpace(row.OccurredAt),
 			SignatureID: strings.TrimSpace(row.SignatureID),
@@ -838,10 +838,10 @@ func reportWindowedRunReferences(rows []frontservice.FailurePatternReportReferen
 	return out
 }
 
-func reportWindowedContributingTests(rows []frontservice.FailurePatternReportContributingTest) []triagehtml.ContributingTest {
-	out := make([]triagehtml.ContributingTest, 0, len(rows))
+func reportWindowedContributingTests(rows []frontservice.FailurePatternReportContributingTest) []frontservice.ContributingTest {
+	out := make([]frontservice.ContributingTest, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.ContributingTest{
+		out = append(out, frontservice.ContributingTest{
 			FailedAt:    strings.TrimSpace(row.Lane),
 			JobName:     strings.TrimSpace(row.JobName),
 			TestName:    strings.TrimSpace(row.TestName),
@@ -873,29 +873,29 @@ func reportInclusiveDays(startDate time.Time, endDate time.Time) int {
 	return int(endDate.Sub(startDate)/(24*time.Hour)) + 1
 }
 
-func weeklyTriageRowImpactPercent(item triagehtml.FailurePatternRow, overallJobs int) float64 {
+func weeklyFailurePatternRowImpactPercent(item frontservice.FailurePatternRow, overallJobs int) float64 {
 	if overallJobs <= 0 {
 		return 0
 	}
-	jobsAffected := weeklyTriageRowJobsAffected(item)
+	jobsAffected := weeklyFailurePatternRowJobsAffected(item)
 	if jobsAffected <= 0 {
 		return 0
 	}
 	return (float64(jobsAffected) * 100.0) / float64(overallJobs)
 }
 
-func weeklyTriageRowJobsAffected(item triagehtml.FailurePatternRow) int {
+func weeklyFailurePatternRowJobsAffected(item frontservice.FailurePatternRow) int {
 	if len(item.LinkedPatterns) == 0 {
-		return len(triagehtml.OrderedUniqueReferences(item.AffectedRuns))
+		return len(frontservice.OrderedUniqueReferences(item.AffectedRuns))
 	}
 	total := 0
 	for _, child := range item.LinkedPatterns {
-		total += len(triagehtml.OrderedUniqueReferences(child.AffectedRuns))
+		total += len(frontservice.OrderedUniqueReferences(child.AffectedRuns))
 	}
 	if total > 0 {
 		return total
 	}
-	return len(triagehtml.OrderedUniqueReferences(item.AffectedRuns))
+	return len(frontservice.OrderedUniqueReferences(item.AffectedRuns))
 }
 
 func dailyRunOutcomeCounts(day counts) (successfulRuns int, ciInfraFailedRuns int, provisionFailedRuns int, e2eFailedRuns int) {

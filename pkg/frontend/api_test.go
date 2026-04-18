@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	frontservice "ci-failure-atlas/pkg/frontend/service"
+	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
@@ -72,7 +72,7 @@ type reviewActionTestResponse struct {
 	TotalAnchorCount     int      `json:"total_anchor_count"`
 }
 
-func TestHandleAPIDailyTriageRouteRemoved(t *testing.T) {
+func TestHandleAPIDailyFailurePatternsRouteRemoved(t *testing.T) {
 	t.Parallel()
 
 	fixture := newHandlerFixture(t)
@@ -200,7 +200,7 @@ func TestHandleAPIFailurePatternsReturnsJSONError(t *testing.T) {
 	}
 }
 
-func TestHandleTriagePageWindowRendersHTML(t *testing.T) {
+func TestHandleFailurePatternsPageWindowRendersHTML(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -279,7 +279,7 @@ func TestHandleTriagePageWindowRendersHTML(t *testing.T) {
 	}
 }
 
-func TestHandleTriagePageDefaultsToFullWeekWindow(t *testing.T) {
+func TestHandleFailurePatternsPageDefaultsToFullWeekWindow(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()

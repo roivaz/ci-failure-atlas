@@ -1,4 +1,4 @@
-package service
+package readmodel
 
 import (
 	"context"
@@ -78,16 +78,16 @@ func (s *Service) BuildReportData(ctx context.Context, query ReportQuery) (Repor
 		return ReportData{}, fmt.Errorf("load report tests below target: %w", err)
 	}
 
-	triageData, err := s.BuildFailurePatterns(ctx, FailurePatternsQuery{
+	failurePatternData, err := s.BuildFailurePatterns(ctx, FailurePatternsQuery{
 		StartDate: scope.StartDate,
 		EndDate:   scope.EndDate,
 	})
 	if err != nil {
-		return ReportData{}, fmt.Errorf("build report signature data: %w", err)
+		return ReportData{}, fmt.Errorf("build report failure-pattern data: %w", err)
 	}
-	topSignaturesByEnv := make(map[string][]FailurePatternsRow, len(triageData.Environments))
-	for _, environment := range triageData.Environments {
-		topSignaturesByEnv[environment.Environment] = append([]FailurePatternsRow(nil), environment.Rows...)
+	failurePatternsByEnv := make(map[string][]FailurePatternsRow, len(failurePatternData.Environments))
+	for _, environment := range failurePatternData.Environments {
+		failurePatternsByEnv[environment.Environment] = append([]FailurePatternsRow(nil), environment.Rows...)
 	}
 
 	generatedAt := query.GeneratedAt
@@ -106,7 +106,7 @@ func (s *Service) BuildReportData(ctx context.Context, query ReportQuery) (Repor
 		PreviousReports:       previousReports,
 		TargetRate:            weeklyTestSuccessTarget,
 		TestsBelowTargetByEnv: testsBelowTargetByEnv,
-		TopSignaturesByEnv:    topSignaturesByEnv,
+		TopSignaturesByEnv:    failurePatternsByEnv,
 		NavigationAnchorWeek:  scope.AnchorWeek,
 	}, nil
 }

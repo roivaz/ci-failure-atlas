@@ -39,7 +39,7 @@ func TestNormalizeReportPageModeDefaultsToReport(t *testing.T) {
 	}
 }
 
-func TestHandleLegacyGlobalRedirectsToTriage(t *testing.T) {
+func TestHandleLegacyGlobalRedirectsToFailurePatterns(t *testing.T) {
 	t.Parallel()
 
 	req := httptest.NewRequest(http.MethodGet, "/global?week=2026-03-15", nil)

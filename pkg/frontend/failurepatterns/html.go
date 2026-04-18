@@ -8,7 +8,7 @@ import (
 	"time"
 
 	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
+	frontui "ci-failure-atlas/pkg/frontend/ui"
 	sourceoptions "ci-failure-atlas/pkg/source/options"
 )
 
@@ -18,7 +18,7 @@ const (
 )
 
 type PageOptions struct {
-	Chrome triagehtml.ReportChromeOptions
+	Chrome frontui.ReportChromeOptions
 	Query  frontservice.FailurePatternsQuery
 }
 
@@ -41,7 +41,7 @@ func RenderHTML(
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
 	b.WriteString("  <title>CI Failure Patterns</title>\n")
-	b.WriteString(triagehtml.ThemeInitScriptTag())
+	b.WriteString(frontui.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 6px; }\n")
@@ -66,9 +66,9 @@ func RenderHTML(
 	b.WriteString("    .window-apply:hover { background: #1f2937; }\n")
 	b.WriteString("    .window-reset:hover { background: #f3f4f6; }\n")
 	b.WriteString("    .window-help { margin-top: 8px; font-size: 12px; color: #6b7280; }\n")
-	b.WriteString(triagehtml.ReportChromeCSS())
-	b.WriteString(triagehtml.StylesCSS())
-	b.WriteString(triagehtml.ThemeCSS())
+	b.WriteString(frontui.ReportChromeCSS())
+	b.WriteString(frontui.StylesCSS())
+	b.WriteString(frontui.ThemeCSS())
 	b.WriteString("    :root[data-theme=\"dark\"] .window-controls { background: #111827; border-color: #334155; }\n")
 	b.WriteString("    :root[data-theme=\"dark\"] .window-field label, :root[data-theme=\"dark\"] .window-help { color: #94a3b8; }\n")
 	b.WriteString("    :root[data-theme=\"dark\"] .window-field input { background: #0f172a; border-color: #334155; color: #e2e8f0; }\n")
@@ -79,7 +79,7 @@ func RenderHTML(
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
-	b.WriteString(triagehtml.ReportChromeHTML(options.Chrome))
+	b.WriteString(frontui.ReportChromeHTML(options.Chrome))
 	b.WriteString("  <h1>CI Failure Patterns</h1>\n")
 	if hasWindow {
 		b.WriteString(fmt.Sprintf(
@@ -121,7 +121,7 @@ func RenderHTML(
 			environment.Summary.TotalRuns,
 			environment.Summary.JobsAffected,
 		))
-		b.WriteString(triagehtml.RenderTable(failurePatternRows, triagehtml.TableOptions{
+		b.WriteString(frontui.RenderTable(failurePatternRows, frontui.TableOptions{
 			IncludeTrend:       true,
 			GitHubRepoOwner:    sourceoptions.DefaultGitHubRepoOwner(),
 			GitHubRepoName:     sourceoptions.DefaultGitHubRepoName(),
@@ -132,7 +132,7 @@ func RenderHTML(
 		b.WriteString("  </section>\n")
 	}
 
-	b.WriteString(triagehtml.ThemeToggleScriptTag())
+	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")
 	return b.String()
@@ -141,10 +141,10 @@ func RenderHTML(
 func failurePatternsFailurePatternRows(
 	rows []frontservice.FailurePatternsRow,
 	totalEnvironmentFailures int,
-) []triagehtml.FailurePatternRow {
-	out := make([]triagehtml.FailurePatternRow, 0, len(rows))
+) []frontservice.FailurePatternRow {
+	out := make([]frontservice.FailurePatternRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.FailurePatternRow{
+		out = append(out, frontservice.FailurePatternRow{
 			Environment:        strings.TrimSpace(row.Environment),
 			FailedAt:           strings.TrimSpace(row.Lane),
 			JobName:            strings.TrimSpace(row.JobName),
@@ -182,10 +182,10 @@ func failurePatternsFailurePatternRows(
 	return out
 }
 
-func failurePatternsRunReferences(rows []frontservice.FailurePatternReportReference) []triagehtml.RunReference {
-	out := make([]triagehtml.RunReference, 0, len(rows))
+func failurePatternsRunReferences(rows []frontservice.FailurePatternReportReference) []frontservice.RunReference {
+	out := make([]frontservice.RunReference, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.RunReference{
+		out = append(out, frontservice.RunReference{
 			RunURL:      strings.TrimSpace(row.RunURL),
 			OccurredAt:  strings.TrimSpace(row.OccurredAt),
 			SignatureID: strings.TrimSpace(row.SignatureID),
@@ -195,10 +195,10 @@ func failurePatternsRunReferences(rows []frontservice.FailurePatternReportRefere
 	return out
 }
 
-func failurePatternsContributingTests(rows []frontservice.FailurePatternReportContributingTest) []triagehtml.ContributingTest {
-	out := make([]triagehtml.ContributingTest, 0, len(rows))
+func failurePatternsContributingTests(rows []frontservice.FailurePatternReportContributingTest) []frontservice.ContributingTest {
+	out := make([]frontservice.ContributingTest, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.ContributingTest{
+		out = append(out, frontservice.ContributingTest{
 			FailedAt:    strings.TrimSpace(row.Lane),
 			JobName:     strings.TrimSpace(row.JobName),
 			TestName:    strings.TrimSpace(row.TestName),

@@ -8,13 +8,13 @@ import (
 	"time"
 
 	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
+	frontui "ci-failure-atlas/pkg/frontend/ui"
 	sourceoptions "ci-failure-atlas/pkg/source/options"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
 type PageOptions struct {
-	Chrome              triagehtml.ReportChromeOptions
+	Chrome              frontui.ReportChromeOptions
 	Query               frontservice.RunLogDayQuery
 	FailurePatternsHref string
 	APIHref             string
@@ -38,7 +38,7 @@ func RenderHTML(
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
 	b.WriteString("  <title>CI Runs</title>\n")
-	b.WriteString(triagehtml.ThemeInitScriptTag())
+	b.WriteString(frontui.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 6px; }\n")
@@ -77,8 +77,8 @@ func RenderHTML(
 	b.WriteString("    .raw-failure-toggle > summary { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #d1d5db; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 600; color: #1f2937; background: #ffffff; }\n")
 	b.WriteString("    .raw-failure-toggle[open] > summary { background: #f3f4f6; }\n")
 	b.WriteString("    pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #f9fafb; padding: 8px; border-radius: 6px; font-size: 11px; margin: 8px 0 0; }\n")
-	b.WriteString(triagehtml.ReportChromeCSS())
-	b.WriteString(triagehtml.ThemeCSS())
+	b.WriteString(frontui.ReportChromeCSS())
+	b.WriteString(frontui.ThemeCSS())
 	b.WriteString("    :root[data-theme=\"dark\"] .meta, :root[data-theme=\"dark\"] .muted, :root[data-theme=\"dark\"] .label, :root[data-theme=\"dark\"] .section-note, :root[data-theme=\"dark\"] .job-submeta, :root[data-theme=\"dark\"] .phrase-submeta, :root[data-theme=\"dark\"] .detail-meta { color: #94a3b8; }\n")
 	b.WriteString("    :root[data-theme=\"dark\"] .card, :root[data-theme=\"dark\"] .section, :root[data-theme=\"dark\"] .detail-item { background: #111827; border-color: #334155; color: #e2e8f0; }\n")
 	b.WriteString("    :root[data-theme=\"dark\"] .runs-table th { background: #1f2937; color: #e2e8f0; border-color: #334155; }\n")
@@ -95,7 +95,7 @@ func RenderHTML(
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
-	b.WriteString(triagehtml.ReportChromeHTML(options.Chrome))
+	b.WriteString(frontui.ReportChromeHTML(options.Chrome))
 	b.WriteString("  <h1>CI Runs</h1>\n")
 	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Date (UTC): <strong>%s</strong></p>\n",
 		html.EscapeString(strings.TrimSpace(data.Meta.Date)),
@@ -130,7 +130,7 @@ func RenderHTML(
 		b.WriteString("  </section>\n")
 	}
 
-	b.WriteString(triagehtml.ThemeToggleScriptTag())
+	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")
 	return b.String()
@@ -302,7 +302,7 @@ func runLogDayBadPRFlagHTML(row frontservice.JobHistoryRunRow) string {
 	if score != 3 {
 		return ""
 	}
-	tooltip := triagehtml.FormatBadPRTooltip(reasons)
+	tooltip := frontui.FormatBadPRTooltip(reasons)
 	_ = score
 	return fmt.Sprintf(
 		"<span class=\"bad-pr-flag\" title=\"%s\" aria-label=\"%s\">⚠</span>",

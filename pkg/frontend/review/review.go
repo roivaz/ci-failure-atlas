@@ -14,7 +14,7 @@ import (
 	"time"
 
 	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
+	frontui "ci-failure-atlas/pkg/frontend/ui"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	sourceoptions "ci-failure-atlas/pkg/source/options"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
@@ -481,7 +481,7 @@ func (h *handler) noticeRedirectURL(week string, notice string) string {
 	return target
 }
 
-func reviewAPIRows(rows []triagehtml.FailurePatternRow) []apiWeekRow {
+func reviewAPIRows(rows []frontservice.FailurePatternRow) []apiWeekRow {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -492,7 +492,7 @@ func reviewAPIRows(rows []triagehtml.FailurePatternRow) []apiWeekRow {
 	return out
 }
 
-func reviewAPIRow(row triagehtml.FailurePatternRow) apiWeekRow {
+func reviewAPIRow(row frontservice.FailurePatternRow) apiWeekRow {
 	return apiWeekRow{
 		Environment:         row.Environment,
 		Lane:                row.FailedAt,
@@ -528,7 +528,7 @@ func reviewAPIRow(row triagehtml.FailurePatternRow) apiWeekRow {
 	}
 }
 
-func reviewAPIContributingTests(rows []triagehtml.ContributingTest) []apiWeekContributingTest {
+func reviewAPIContributingTests(rows []frontservice.ContributingTest) []apiWeekContributingTest {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -544,7 +544,7 @@ func reviewAPIContributingTests(rows []triagehtml.ContributingTest) []apiWeekCon
 	return out
 }
 
-func reviewAPIRunReferences(rows []triagehtml.RunReference) []apiWeekRunReference {
+func reviewAPIRunReferences(rows []frontservice.RunReference) []apiWeekRunReference {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -603,7 +603,7 @@ func parseSemanticWeek(value string) (time.Time, bool) {
 }
 
 func signatureMatchKeysForSelectedClusters(
-	rows []triagehtml.FailurePatternRow,
+	rows []frontservice.FailurePatternRow,
 	selectedClusterIDs []string,
 ) map[string]struct{} {
 	selected := map[string]struct{}{}
@@ -638,7 +638,7 @@ func signatureMatchKeysForSelectedClusters(
 	return keys
 }
 
-func rowMatchesSelection(row triagehtml.FailurePatternRow, selected map[string]struct{}) bool {
+func rowMatchesSelection(row frontservice.FailurePatternRow, selected map[string]struct{}) bool {
 	selectionID := strings.TrimSpace(row.SelectionValue)
 	if selectionID != "" {
 		if _, include := selected[selectionID]; include {
@@ -941,7 +941,7 @@ func (h *handler) renderPage(snapshot weekSnapshot, notice string) string {
 	if strings.TrimSpace(snapshot.NextWeek) != "" {
 		nextHref = h.viewHref(h.routePath("/"), snapshot.NextWeek)
 	}
-	chrome := triagehtml.ReportChromeHTML(triagehtml.ReportChromeOptions{
+	chrome := frontui.ReportChromeHTML(frontui.ReportChromeOptions{
 		CurrentWeek:         snapshot.Week,
 		PreviousWeek:        snapshot.PreviousWeek,
 		PreviousHref:        previousHref,
@@ -956,12 +956,12 @@ func (h *handler) renderPage(snapshot weekSnapshot, notice string) string {
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
 	b.WriteString("  <title>CI Failure Atlas - Semantic Review</title>\n")
-	b.WriteString(triagehtml.ThemeInitScriptTag())
+	b.WriteString(frontui.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
-	b.WriteString(triagehtml.StylesCSS())
+	b.WriteString(frontui.StylesCSS())
 	b.WriteString("\n")
-	b.WriteString(triagehtml.ReportChromeCSS())
-	b.WriteString(triagehtml.ThemeCSS())
+	b.WriteString(frontui.ReportChromeCSS())
+	b.WriteString(frontui.ThemeCSS())
 	b.WriteString("\n")
 	b.WriteString(strings.Join([]string{
 		"    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }",
@@ -1019,7 +1019,7 @@ func (h *handler) renderPage(snapshot weekSnapshot, notice string) string {
 			b.WriteString(fmt.Sprintf("      <section id=\"%s\" class=\"phase3-environment-section\">\n", html.EscapeString("env-"+environment)))
 			b.WriteString(fmt.Sprintf("        <h2>Environment: %s</h2>\n", html.EscapeString(strings.ToUpper(environment))))
 			b.WriteString(fmt.Sprintf("        <p class=\"phase3-environment-note\">Rows loaded: %d</p>\n", len(environmentRows)))
-			b.WriteString(triagehtml.RenderTable(environmentRows, triagehtml.TableOptions{
+			b.WriteString(frontui.RenderTable(environmentRows, frontui.TableOptions{
 				ShowQualityScore:       true,
 				ShowQualityFlags:       true,
 				ShowReviewFlags:        true,
@@ -1048,7 +1048,7 @@ func (h *handler) renderPage(snapshot weekSnapshot, notice string) string {
 		html.EscapeString(h.routePath("/api/week?week="+snapshot.Week)),
 	))
 	b.WriteString("  </div>\n")
-	b.WriteString(triagehtml.ThemeToggleScriptTag())
+	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("  <script>\n")
 	b.WriteString(strings.Join([]string{
 		"    (function() {",
@@ -1074,8 +1074,8 @@ func (h *handler) renderPage(snapshot weekSnapshot, notice string) string {
 	return b.String()
 }
 
-func groupRowsByEnvironment(rows []triagehtml.FailurePatternRow) (map[string][]triagehtml.FailurePatternRow, []string) {
-	grouped := map[string][]triagehtml.FailurePatternRow{}
+func groupRowsByEnvironment(rows []frontservice.FailurePatternRow) (map[string][]frontservice.FailurePatternRow, []string) {
+	grouped := map[string][]frontservice.FailurePatternRow{}
 	for _, row := range rows {
 		environment := normalizeEnvironment(row.Environment)
 		if environment == "" {
@@ -1087,7 +1087,7 @@ func groupRowsByEnvironment(rows []triagehtml.FailurePatternRow) (map[string][]t
 	return grouped, ordered
 }
 
-func orderedReviewEnvironments(grouped map[string][]triagehtml.FailurePatternRow) []string {
+func orderedReviewEnvironments(grouped map[string][]frontservice.FailurePatternRow) []string {
 	fixedOrder := sourceoptions.SupportedEnvironments()
 	set := map[string]struct{}{}
 	for environment := range grouped {

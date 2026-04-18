@@ -1,4 +1,4 @@
-package service
+package readmodel
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	triagehtml "ci-failure-atlas/pkg/frontend/ui"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
@@ -539,7 +538,7 @@ func buildWindowedTrend(references []FailurePatternReportReference, trendAnchor 
 	if trendAnchor.IsZero() {
 		return nil, "", false
 	}
-	if _, counts, trendRange, ok := triagehtml.DailyDensitySparkline(toWindowedHTMLRunReferences(references), 7, trendAnchor); ok {
+	if _, counts, trendRange, ok := DailyDensitySparkline(toWindowedHTMLRunReferences(references), 7, trendAnchor); ok {
 		return append([]int(nil), counts...), trendRange, true
 	}
 	return nil, "", false
@@ -949,8 +948,8 @@ func sortFailurePatternsRows(rows []FailurePatternsRow) {
 
 func sortWindowedReferences(rows []FailurePatternReportReference) {
 	sort.Slice(rows, func(i, j int) bool {
-		ti, okI := triagehtml.ParseReferenceTimestamp(rows[i].OccurredAt)
-		tj, okJ := triagehtml.ParseReferenceTimestamp(rows[j].OccurredAt)
+		ti, okI := ParseReferenceTimestamp(rows[i].OccurredAt)
+		tj, okJ := ParseReferenceTimestamp(rows[j].OccurredAt)
 		switch {
 		case okI && okJ && !ti.Equal(tj):
 			return ti.After(tj)
@@ -966,8 +965,8 @@ func sortWindowedReferences(rows []FailurePatternReportReference) {
 
 func sortWindowedRawFailures(rows []storecontracts.RawFailureRecord) {
 	sort.Slice(rows, func(i, j int) bool {
-		ti, okI := triagehtml.ParseReferenceTimestamp(rows[i].OccurredAt)
-		tj, okJ := triagehtml.ParseReferenceTimestamp(rows[j].OccurredAt)
+		ti, okI := ParseReferenceTimestamp(rows[i].OccurredAt)
+		tj, okJ := ParseReferenceTimestamp(rows[j].OccurredAt)
 		switch {
 		case okI && okJ && !ti.Equal(tj):
 			return ti.After(tj)
@@ -984,10 +983,10 @@ func sortWindowedRawFailures(rows []storecontracts.RawFailureRecord) {
 	})
 }
 
-func toWindowedHTMLRunReferences(rows []FailurePatternReportReference) []triagehtml.RunReference {
-	out := make([]triagehtml.RunReference, 0, len(rows))
+func toWindowedHTMLRunReferences(rows []FailurePatternReportReference) []RunReference {
+	out := make([]RunReference, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, triagehtml.RunReference{
+		out = append(out, RunReference{
 			RunURL:      strings.TrimSpace(row.RunURL),
 			OccurredAt:  strings.TrimSpace(row.OccurredAt),
 			SignatureID: strings.TrimSpace(row.SignatureID),
