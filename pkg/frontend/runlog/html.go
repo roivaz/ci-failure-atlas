@@ -427,10 +427,7 @@ func runLogDayFailureMeta(row frontservice.JobHistoryFailureRow) string {
 }
 
 func runLogDayFailureFlagsHTML(row frontservice.JobHistoryFailureRow) string {
-	flags := make([]string, 0, 2)
-	if issueID := strings.TrimSpace(row.Phase3IssueID); issueID != "" {
-		flags = append(flags, "phase3 "+issueID)
-	}
+	flags := make([]string, 0, 1)
 	if row.NonArtifactBacked {
 		flags = append(flags, "synthetic raw row")
 	}

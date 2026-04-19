@@ -82,22 +82,8 @@ func BuildFailurePatternReportData(ctx context.Context, store storecontracts.Sto
 		return FailurePatternReportData{}, err
 	}
 
-	sourceClusterRows := append([]semanticcontracts.FailurePatternRecord(nil), weekData.SourceFailurePatterns...)
-	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
-	materializedClusterRows := append([]semanticcontracts.FailurePatternRecord(nil), weekData.FailurePatterns...)
-	linkedChildrenByClusterKey, err := failurePatternReportLinkedChildrenByMergedClusterKey(sourceClusterRows, phase3Links)
-	if err != nil {
-		return FailurePatternReportData{}, fmt.Errorf("build linked child clusters: %w", err)
-	}
-
-	reportRows := toFailurePatternReportClusters(materializedClusterRows)
-	reportLinkedChildrenByClusterKey := toFailurePatternReportClusterGroupMap(linkedChildrenByClusterKey)
+	reportRows := toFailurePatternReportClusters(weekData.FailurePatterns)
 	rawFailuresByRun := failurePatternReportIndexRawFailuresByEnvironmentRun(weekData.RawFailures)
-	reportLinkedChildrenByClusterKey = failurePatternReportAttachFullErrorSamplesByGroup(
-		reportLinkedChildrenByClusterKey,
-		failurePatternReportFullErrorExamplesLimit,
-		rawFailuresByRun,
-	)
 
 	targetEnvironments := semanticquery.ResolveTargetEnvironments(opts.Environments, weekData)
 	metricWindowStart, metricWindowEnd := failurePatternReportMetricWindowBounds(opts.Week)
@@ -130,7 +116,6 @@ func BuildFailurePatternReportData(ctx context.Context, store storecontracts.Sto
 	}
 
 	failurePatternRows := failurePatternReportAttachFullErrorSamples(reportRows, failurePatternReportFullErrorExamplesLimit, rawFailuresByRun)
-	failurePatternRows = failurePatternReportAttachLinkedChildren(failurePatternRows, reportLinkedChildrenByClusterKey)
 
 	return FailurePatternReportData{
 		WeekSchemaVersion:              weekData.WeekSchemaVersion,
@@ -232,101 +217,6 @@ func failurePatternReportParseMetricDate(value string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return parsed.UTC(), true
-}
-
-func failurePatternReportLinkedChildrenByMergedClusterKey(
-	sourceClusters []semanticcontracts.FailurePatternRecord,
-	phase3Links []semanticcontracts.Phase3LinkRecord,
-) (map[string][]semanticcontracts.FailurePatternRecord, error) {
-	phase3ClusterByAnchor := map[string]string{}
-	for _, row := range phase3Links {
-		phase3ClusterID := strings.TrimSpace(row.IssueID)
-		if phase3ClusterID == "" {
-			continue
-		}
-		key := phase3AnchorKey(row.Environment, row.RunURL, row.RowID)
-		if key == "" {
-			continue
-		}
-		phase3ClusterByAnchor[key] = phase3ClusterID
-	}
-
-	grouped := map[string][]semanticcontracts.FailurePatternRecord{}
-	for _, cluster := range sourceClusters {
-		environment := normalizeEnvironment(cluster.Environment)
-		clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
-		if environment == "" || clusterID == "" {
-			return nil, fmt.Errorf("phase2 cluster record missing environment and/or phase2_cluster_id")
-		}
-		phase3ClusterIDs := failurePatternReportPhase3ClusterIDsForCluster(cluster, phase3ClusterByAnchor)
-		if len(phase3ClusterIDs) > 1 {
-			return nil, fmt.Errorf(
-				"phase3 conflict: semantic cluster %s resolves to multiple phase3 cluster IDs (%s)",
-				clusterID,
-				strings.Join(phase3ClusterIDs, ", "),
-			)
-		}
-		if len(phase3ClusterIDs) == 0 {
-			continue
-		}
-		groupKey := failurePatternReportClusterKey(environment, phase3ClusterIDs[0])
-		grouped[groupKey] = append(grouped[groupKey], cluster)
-	}
-
-	for key := range grouped {
-		rows := grouped[key]
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].SupportCount != rows[j].SupportCount {
-				return rows[i].SupportCount > rows[j].SupportCount
-			}
-			if strings.TrimSpace(rows[i].CanonicalEvidencePhrase) != strings.TrimSpace(rows[j].CanonicalEvidencePhrase) {
-				return strings.TrimSpace(rows[i].CanonicalEvidencePhrase) < strings.TrimSpace(rows[j].CanonicalEvidencePhrase)
-			}
-			return strings.TrimSpace(rows[i].Phase2ClusterID) < strings.TrimSpace(rows[j].Phase2ClusterID)
-		})
-		grouped[key] = rows
-	}
-	return grouped, nil
-}
-
-func failurePatternReportPhase3ClusterIDsForCluster(
-	cluster semanticcontracts.FailurePatternRecord,
-	phase3ClusterByAnchor map[string]string,
-) []string {
-	set := map[string]struct{}{}
-	environment := normalizeEnvironment(cluster.Environment)
-	for _, reference := range cluster.References {
-		key := phase3AnchorKey(environment, reference.RunURL, reference.RowID)
-		if key == "" {
-			continue
-		}
-		phase3ClusterID := strings.TrimSpace(phase3ClusterByAnchor[key])
-		if phase3ClusterID == "" {
-			continue
-		}
-		set[phase3ClusterID] = struct{}{}
-	}
-	return sortedStringSet(set)
-}
-
-func failurePatternReportClusterKey(environment string, clusterID string) string {
-	normalizedEnvironment := normalizeEnvironment(environment)
-	trimmedClusterID := strings.TrimSpace(clusterID)
-	if normalizedEnvironment == "" || trimmedClusterID == "" {
-		return ""
-	}
-	return normalizedEnvironment + "|" + trimmedClusterID
-}
-
-func toFailurePatternReportClusterGroupMap(groups map[string][]semanticcontracts.FailurePatternRecord) map[string][]FailurePatternReportCluster {
-	if len(groups) == 0 {
-		return nil
-	}
-	out := make(map[string][]FailurePatternReportCluster, len(groups))
-	for key, rows := range groups {
-		out[key] = toFailurePatternReportClusters(rows)
-	}
-	return out
 }
 
 func toFailurePatternReportClusters(rows []semanticcontracts.FailurePatternRecord) []FailurePatternReportCluster {
@@ -461,45 +351,6 @@ func failurePatternReportAttachFullErrorSamples(
 			}
 		}
 		out[index].FullErrorSamples = samples
-	}
-	return out
-}
-
-func failurePatternReportAttachFullErrorSamplesByGroup(
-	groups map[string][]FailurePatternReportCluster,
-	limit int,
-	runFailuresByRun map[string][]storecontracts.RawFailureRecord,
-) map[string][]FailurePatternReportCluster {
-	if len(groups) == 0 {
-		return nil
-	}
-	out := make(map[string][]FailurePatternReportCluster, len(groups))
-	keys := make([]string, 0, len(groups))
-	for key := range groups {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		out[key] = failurePatternReportAttachFullErrorSamples(groups[key], limit, runFailuresByRun)
-	}
-	return out
-}
-
-func failurePatternReportAttachLinkedChildren(
-	rows []FailurePatternReportCluster,
-	linkedChildrenByClusterKey map[string][]FailurePatternReportCluster,
-) []FailurePatternReportCluster {
-	if len(rows) == 0 || len(linkedChildrenByClusterKey) == 0 {
-		return rows
-	}
-	out := append([]FailurePatternReportCluster(nil), rows...)
-	for index := range out {
-		key := failurePatternReportClusterKey(out[index].Environment, out[index].Phase2ClusterID)
-		children := linkedChildrenByClusterKey[key]
-		if len(children) == 0 {
-			continue
-		}
-		out[index].LinkedChildren = append([]FailurePatternReportCluster(nil), children...)
 	}
 	return out
 }

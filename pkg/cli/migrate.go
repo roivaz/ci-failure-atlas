@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 	postgresoptions "ci-failure-atlas/pkg/store/postgres/options"
@@ -49,9 +48,7 @@ func NewMigrateCommand() (*cobra.Command, error) {
 			cmd.Printf("  facts.metrics_daily: %d\n", counts.MetricsDaily)
 			cmd.Printf("  facts.test_metadata_daily: %d\n", counts.TestMetadataDaily)
 			cmd.Printf("  state.checkpoints: %d\n", counts.Checkpoints)
-			cmd.Printf("  state.phase3.issues: %d\n", counts.Phase3Issues)
-			cmd.Printf("  state.phase3.links: %d\n", counts.Phase3Links)
-			cmd.Printf("  skipped: state.dead_letters, state.phase3.events\n")
+			cmd.Printf("  skipped: state.dead_letters, state.phase3\n")
 			return nil
 		},
 	}
@@ -78,8 +75,6 @@ type legacyImportCounts struct {
 	MetricsDaily      int
 	TestMetadataDaily int
 	Checkpoints       int
-	Phase3Issues      int
-	Phase3Links       int
 }
 
 func importLegacyFactsAndState(ctx context.Context, dataDirectory string, dst storecontracts.Store) (legacyImportCounts, error) {
@@ -163,24 +158,6 @@ func importLegacyFactsAndState(ctx context.Context, dataDirectory string, dst st
 		return counts, fmt.Errorf("import state.checkpoints: %w", err)
 	}
 	counts.Checkpoints = len(checkpoints)
-
-	phase3Issues, err := readJSONLinesFile[semanticcontracts.Phase3IssueRecord](filepath.Join(statePath, "phase3", "issues.ndjson"))
-	if err != nil {
-		return counts, err
-	}
-	if err := dst.UpsertPhase3Issues(ctx, phase3Issues); err != nil {
-		return counts, fmt.Errorf("import state.phase3.issues: %w", err)
-	}
-	counts.Phase3Issues = len(phase3Issues)
-
-	phase3Links, err := readJSONLinesFile[semanticcontracts.Phase3LinkRecord](filepath.Join(statePath, "phase3", "links.ndjson"))
-	if err != nil {
-		return counts, err
-	}
-	if err := dst.UpsertPhase3Links(ctx, phase3Links); err != nil {
-		return counts, fmt.Errorf("import state.phase3.links: %w", err)
-	}
-	counts.Phase3Links = len(phase3Links)
 
 	return counts, nil
 }

@@ -1,13 +1,13 @@
 # CI Failure Atlas Design
 
 Status: current architecture snapshot  
-Last updated: 2026-04-18
+Last updated: 2026-04-19
 
 ## Purpose
 
 CI Failure Atlas ingests CI run/failure data, materializes semantic failure clusters by week, and serves operator-facing report, failure-patterns, run-log, and review workflows.
 
-The important architectural point is that the Go app + PostgreSQL runtime is no longer the target state. It is the current state.
+The important architectural point is that the Go app + PostgreSQL runtime is the current architecture, not a future target state.
 
 ## System Overview
 
@@ -21,10 +21,11 @@ The runtime has three main planes:
 2. **Semantic materialization**
    - Builds one semantic week from facts already stored in PostgreSQL.
    - Main entrypoint: `cfa semantic materialize`
-   - Phase1 and phase2 execute in memory; persisted outputs are the user-facing week datasets.
+   - Phase1 and phase2 execute in memory; the stored week contains phase2 failure patterns plus the review queue.
+   - Legacy Phase3 link tables may still exist, but the runtime no longer reapplies them in read models.
 
 3. **Product surfaces**
-   - `cfa app` serves report/failure-patterns/run-log/review views from PostgreSQL.
+   - `cfa app` serves report/failure-patterns/run-log views from PostgreSQL plus internal diagnostics APIs.
    - Azure Storage can still host a tiny redirect page that points users at the hosted app URL.
 
 ## Codebase Map
@@ -50,7 +51,6 @@ The architecture maps to the repository roughly like this:
   - `pkg/frontend/report`
   - `pkg/frontend/failurepatterns`
   - `pkg/frontend/runlog`
-  - `pkg/frontend/review`
 - Runtime storage contract and PostgreSQL implementation:
   - `pkg/store/contracts`
   - `pkg/store/postgres`
@@ -59,23 +59,58 @@ The architecture maps to the repository roughly like this:
   - `Dockerfile`
   - `infra/azure/`
 
-## Semantic Pipeline
+## Semantic Week Contract
 
-The semantic workflow is still logically split into three phases:
+The semantic partitioning contract is explicit:
 
-1. **Phase1: normalize + test-scoped clustering**
-   - Build enriched failure evidence from facts.
-   - Normalize failure text.
+- one stored semantic partition equals one UTC week
+- a week is keyed by a Sunday-starting `YYYY-MM-DD`
+- materialization replaces the full stored week, not partial per-environment slices
+- supported environments are materialized together
+- history/navigation in the app is composed from these stored weeks
+
+This avoids the old ambiguity around ad hoc semantic subdirectories or free-form persisted windows.
+
+## Semantic Materialization Model
+
+The semantic workflow is logically split into two runtime phases plus one diagnostic output:
+
+1. **Phase1: enrichment, extraction, and test-scoped clustering**
+   - Read fact tables from PostgreSQL for the requested week window.
+   - Build enriched failure rows with lane/test/run/PR context.
+   - Extract `failure_pattern` text and a search-query phrase from raw failure text.
    - Classify failures into deterministic test-scoped clusters.
 
-2. **Phase2: global merge**
-   - Merge test-scoped clusters into cross-test failure patterns.
-   - Produce the failure-pattern rows used by report/failure-patterns and review flows.
+2. **Phase2: environment-scoped merge**
+   - Merge phase1 test clusters into cross-test failure patterns.
+   - Produce the stored failure-pattern rows used by report/failure-patterns/run-log.
+   - Emit review items when heuristics detect an ambiguous merge or extraction outcome.
 
-3. **Phase3: human linking and reconciliation**
-   - Operators link semantically equivalent signatures in the review UI.
-   - Durable row-level anchors remain `environment + run_url + row_id`.
-   - Stored Phase3 state is reapplied across the live app surfaces and shared frontend UI renderers.
+3. **Review queue and diagnostics**
+   - Review items are quality-improvement hints, not a source of semantic truth.
+   - The runtime exposes them through an internal JSON endpoint for agent/operator analysis.
+   - Improvements happen by changing extraction or merge logic and rematerializing affected weeks.
+
+For the detailed workflow and invariants, see `docs/semantic-materialization.md`.
+
+## Semantic Identity V2
+
+The current semantic contract is schema version `v2`.
+
+Key rules:
+
+- semantic identity is driven by extracted `failure_pattern` text, not by the raw `signature_id`
+- `signature_id` is still retained as provenance/debug context and as one possible search pivot
+- durable raw-to-semantic joins use stored row/run anchors, especially `(environment, run_url, row_id)`
+- materialized weeks carry an explicit `schema_version`
+- window/history composition only combines schema-compatible weeks
+- the app only loads current-schema weeks; legacy `v1` weeks must be rematerialized/backfilled before they reappear in weekly navigation or cross-week operator views
+
+This matters because semantic quality problems now tend to fall into three classes:
+
+- extraction is too generic, so distinct failures overmerge
+- extraction is too noisy or instance-specific, so identical failures undermerge
+- extraction misses the most useful nested detail, so the resulting `failure_pattern` is low quality even if clustering is technically correct
 
 ## Terminology And Search Notes
 
@@ -123,7 +158,6 @@ The following user-facing terms are used consistently across all report and fail
 - Full flake signal scoring breakdown in the expanded detail row — the label alone is sufficient there; the breakdown is in the column hover tooltip.
 - Bad PR score and reasons in the expanded detail row — this is already factored into the flake signal.
 - Quality flag badges (`context type stub leaked`, `source deserialization/no-output error`, `struct/object fragment`, etc.) — internal diagnostics only.
-- `Phase3 cluster` column header — use `Linked group ID` if the column must appear.
 - `Failure-pattern threshold` summary card — remove entirely.
 - Internal names such as `signature`, `support`, `lane`, `matched failure support` — use the table above.
 
@@ -137,27 +171,21 @@ The current persisted model is:
 - semantic week tables for:
   - `cfa_sem_global_clusters`
   - `cfa_sem_review_queue`
-- Phase3 state tables for:
+- older schemas created legacy Phase3 tables that current migrations now drop:
   - `cfa_phase3_issues`
   - `cfa_phase3_links`
   - `cfa_phase3_events`
 
+Important persistence rule:
+
+- `ReplaceMaterializedWeek` deletes and replaces the phase2 failure-pattern rows plus review queue rows for the target week
+- read models load the stored week directly; legacy Phase3 rows are ignored by the runtime
+
 NDJSON is no longer part of the runtime architecture. It remains only as a legacy import format for `cfa migrate import-legacy-data`.
 
-## Semantic Week Contract
+## Presentation Windows
 
-The semantic partitioning contract is now explicit:
-
-- one stored semantic partition equals one UTC week
-- a week is keyed by a Sunday-starting `YYYY-MM-DD`
-- materialization replaces the full stored week, not partial per-environment slices
-- history/navigation in the app is composed from these stored weeks
-
-This removes the old ambiguity around generic semantic subdirectories or ad hoc materialization windows.
-
-### Presentation windows
-
-User-facing report surfaces now resolve a presentation window independently from the persisted semantic partitioning:
+User-facing report surfaces resolve a presentation window independently from the persisted semantic partitioning:
 
 - `/report` accepts either `week=YYYY-MM-DD` or `start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
 - `/` redirects to a rolling 7-day `/report` window
@@ -169,17 +197,15 @@ The important invariant is that this does **not** change semantic storage:
 - the app loads every stored semantic week that intersects the requested UTC date window
 - cross-week operator views are composed in memory at query/render time
 
-Cross-week signature identity follows explicit rules:
+Identity across weeks follows explicit rules:
 
-- use Phase3 issue ID as the strongest cross-week identity when present
-- otherwise fall back to `environment + canonical phrase + search query`
+- use the environment plus extracted semantic text/search query from the stored phase2 rows
+- never treat `signature_id` alone as semantic identity
 
 The field contract also stays explicit:
 
-- window-local fields are recomputed across the requested range, for example jobs affected, impact, seen-in, references, and samples
-- week-anchored heuristics such as flake score, trend, and after-last-push stay anchored to an explicit contributing semantic week rather than pretending a multi-week window is itself a stored semantic partition
-
-The non-preferred alternative is to add larger persisted semantic partitions such as monthly materializations. That remains intentionally out of scope because it would introduce a second canonical semantic granularity, complicate identity/link semantics, and still leave boundary problems at larger partition edges.
+- window-local fields are recomputed across the requested range, for example runs affected, impact, seen-in, references, and samples
+- week-anchored heuristics such as flake score, trend, and after-last-push stay anchored to a contributing semantic week rather than pretending a multi-week window is itself a stored semantic partition
 
 ## Local Runtime Model
 
@@ -200,7 +226,7 @@ In practice:
 - report view (`/report`) with classic week-shaped and arbitrary-window modes
 - failure-patterns view
 - day-scoped run history view (`/run-log`, `/api/run-log/day`)
-- Phase3 review/linking workflow
+- internal review-signals endpoint (`/api/review/signals/week`)
 - cross-week history lookups based on stored semantic weeks
 
 ### Day run history view and current fact gap
@@ -209,7 +235,7 @@ The run-history surface is intentionally day-scoped and run-centric:
 
 - it loads the requested UTC day of `RunRecord` + `RawFailureRecord` facts
 - resolves the requested day through the shared presentation-window rules used by the other report surfaces
-- enriches each raw failure row by matching its `signature_id` against the contributing stored semantic clusters for that day
+- enriches each raw failure row by matching its stored anchors against the contributing semantic clusters for that day
 
 This gives a Prow-like operator view, but it is not yet a full Prow-history data model.
 
@@ -248,18 +274,21 @@ Secondary maintenance/debug commands:
 ## Key Design Decisions
 
 1. **App + DB is the primary runtime**
-   - Report, failure-patterns, run-log, and review all read from PostgreSQL-backed state.
+   - Report, failure-patterns, run-log, and diagnostics all read from PostgreSQL-backed state.
 
 2. **Semantic weeks are canonical**
    - The UI, materialization contract, and storage schema all agree on Sunday-starting week partitions.
 
-3. **Only user-facing semantic outputs are persisted by default**
-   - Phase1 internals remain in-memory unless future debugging needs justify additional persistence.
+3. **Semantic identity is text-first**
+   - Extracted failure-pattern text drives merge semantics; `signature_id` remains provenance only.
 
-4. **Phase3 source of truth is durable link state**
-   - The review workflow stores stable issue/link/event records rather than collapsing decisions into transient export artifacts.
+4. **Only phase2 user-facing outputs are persisted by default**
+   - Phase1 internals remain in memory unless future debugging needs justify additional persistence.
 
-5. **Storage-account publishing is redirect-only compatibility**
+5. **Review queue drives improvement loops**
+   - Semantic quality is improved by inspecting review signals, refining phase1/2 behavior, and rematerializing weeks.
+
+6. **Storage-account publishing is redirect-only compatibility**
    - It preserves an existing entrypoint without duplicating the report surface outside the live app.
 
 ## Developer Orientation
@@ -285,4 +314,4 @@ That work includes:
 - adding auth, deployment automation, backups, and runbooks
 - operating the storage-account redirect and hosted app path together until the redirect is no longer needed
 
-The architecture refactor is largely complete; the next work is operationalization.
+The architecture refactor is largely complete; the next work is operationalization and continuous semantic-quality improvement.

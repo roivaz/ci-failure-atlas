@@ -1,6 +1,6 @@
 # CI Failure Atlas
 
-CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing report/failure-patterns/run-log/review views.
+CI Failure Atlas is a PostgreSQL-backed Go application for ingesting ARO CI data, materializing weekly semantic failure clusters, and serving operator-facing report/failure-patterns/run-log views plus internal diagnostics APIs.
 
 The app+DB runtime is the primary architecture. Dynamic HTML is served directly from PostgreSQL-backed state.
 
@@ -8,7 +8,7 @@ The app+DB runtime is the primary architecture. Dynamic HTML is served directly 
 
 - `cfa run` continuously ingests Sippy, Prow, and GitHub data and derives normalized facts into PostgreSQL.
 - `cfa semantic materialize` builds one semantic week from those facts and replaces that stored week in PostgreSQL.
-- `cfa app` serves the unified report, failure patterns, run log, and review UI from PostgreSQL.
+- `cfa app` serves the unified report, failure patterns, run log, and internal review-signals API from PostgreSQL.
 
 Local development defaults to embedded PostgreSQL with initialization and migrations enabled. Remote PostgreSQL is supported through the usual `--storage.postgres.*` flags.
 
@@ -17,9 +17,9 @@ Local development defaults to embedded PostgreSQL with initialization and migrat
 - `cmd/main.go` bootstraps the Cobra CLI.
 - `pkg/cli` defines the command surface and shared PostgreSQL setup.
 - `pkg/run`, `pkg/controllers`, and `pkg/source` implement continuous ingestion and source clients.
-- `pkg/semantic` owns phase1/2/3 processing, week materialization, and history/query helpers.
-- `pkg/frontend` serves the unified report/failure-patterns/run-log/review app and API surface.
-- `pkg/frontend/readmodel` holds shared week/store/history helpers; `pkg/frontend/ui` holds shared chrome/table rendering; `pkg/frontend/report`, `pkg/frontend/failurepatterns`, `pkg/frontend/runlog`, and `pkg/frontend/review` own the active product-surface packages.
+- `pkg/semantic` owns phase1/2 processing, week materialization, and history/query helpers.
+- `pkg/frontend` serves the unified report/failure-patterns/run-log app and API surface.
+- `pkg/frontend/readmodel` holds shared week/store/history helpers; `pkg/frontend/ui` holds shared chrome/table rendering; `pkg/frontend/report`, `pkg/frontend/failurepatterns`, and `pkg/frontend/runlog` own the active product-surface packages.
 - `pkg/store/contracts` defines the store interfaces; `pkg/store/postgres` implements the active runtime store, migrations, and init/bootstrap helpers.
 - `deploy/` contains the standalone Helm chart for Postgres, the app, controllers, and cronjobs.
 - `Dockerfile` builds the container image for the Go application.
@@ -61,6 +61,8 @@ If `--week` is omitted, the command defaults to the current UTC week start. For 
 make semantic-backfill SEMANTIC_WEEKS=8
 ```
 
+The app only loads current semantic-schema weeks. If older weeks were materialized with a legacy schema version, rematerialize/backfill them before expecting them to participate in history, weekly navigation, or cross-week failure-pattern windows.
+
 ### 3. Run the app
 
 ```bash
@@ -70,7 +72,7 @@ go run cmd/main.go app \
   --history.weeks 4
 ```
 
-Open `http://127.0.0.1:8082/` for the rolling 7-day report, `http://127.0.0.1:8082/report` for the report surface, or `http://127.0.0.1:8082/review/` for Phase3 review/linking.
+Open `http://127.0.0.1:8082/` for the rolling 7-day report or `http://127.0.0.1:8082/report` for the report surface.
 
 Key app routes:
 
@@ -78,6 +80,7 @@ Key app routes:
 - `/report?week=YYYY-MM-DD` renders the classic week-shaped report view
 - `/report?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` renders an arbitrary UTC report window
 - `/failure-patterns?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` renders the failure-patterns window view
+- `/api/review/signals/week?week=YYYY-MM-DD` returns internal review-signal diagnostics for one semantic week
 
 The day-scoped run history surface is:
 
@@ -171,7 +174,7 @@ make check
 
 Useful focused loops:
 
-- `go test ./pkg/semantic/...` for phase1/2/3 or materialization changes
+- `go test ./pkg/semantic/...` for phase1/2 or materialization changes
 - `go test ./pkg/frontend/...` for UI, API, and report rendering changes
 - `go test ./pkg/store/postgres/...` for schema, migration, or query-layer changes
 
@@ -205,5 +208,7 @@ The remaining big phase is hosted operation rather than more architectural refac
 
 ## Reference
 
-- Architecture notes: `design.md`
+- Architecture notes: `docs/design.md`
+- Semantic workflow details: `docs/semantic-materialization.md`
+- Agent review prompt: `docs/semantic-materialization-review-agent-prompt.md`
 - Agent-oriented working notes: `AGENTS.md`

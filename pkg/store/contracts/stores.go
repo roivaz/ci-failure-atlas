@@ -182,16 +182,6 @@ type SemanticStore interface {
 	GetSemanticWeekSummary(ctx context.Context) (SemanticWeekSummary, error)
 
 	ListReviewQueue(ctx context.Context) ([]semanticcontracts.ReviewItemRecord, error)
-
-	UpsertPhase3Issues(ctx context.Context, rows []semanticcontracts.Phase3IssueRecord) error
-	ListPhase3Issues(ctx context.Context) ([]semanticcontracts.Phase3IssueRecord, error)
-
-	UpsertPhase3Links(ctx context.Context, rows []semanticcontracts.Phase3LinkRecord) error
-	DeletePhase3Links(ctx context.Context, rows []semanticcontracts.Phase3LinkRecord) error
-	ListPhase3Links(ctx context.Context) ([]semanticcontracts.Phase3LinkRecord, error)
-
-	AppendPhase3Events(ctx context.Context, rows []semanticcontracts.Phase3EventRecord) error
-	ListPhase3Events(ctx context.Context, limit int) ([]semanticcontracts.Phase3EventRecord, error)
 }
 
 type Store interface {

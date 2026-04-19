@@ -13,10 +13,9 @@ import (
 
 	frontfailurepatterns "ci-failure-atlas/pkg/frontend/failurepatterns"
 	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
-	reportreview "ci-failure-atlas/pkg/frontend/review"
+	reportweekly "ci-failure-atlas/pkg/frontend/report"
 	frontrunlog "ci-failure-atlas/pkg/frontend/runlog"
 	frontui "ci-failure-atlas/pkg/frontend/ui"
-	reportweekly "ci-failure-atlas/pkg/frontend/report"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -47,17 +46,6 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	reviewHandler, err := reportreview.NewHandler(reportreview.HandlerOptions{
-		DefaultWeek:         service.DefaultWeek(),
-		HistoryHorizonWeeks: service.HistoryHorizonWeeks(),
-		PostgresPool:        opts.PostgresPool,
-		RoutePrefix:         "/review",
-		ReportPath:          "/report",
-		FailurePatternsPath: "/failure-patterns",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create review handler: %w", err)
-	}
 	h := &handler{
 		service: service,
 	}
@@ -66,22 +54,21 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	mux.HandleFunc("/", h.handleRoot)
 	mux.HandleFunc("/api/run-log/day", h.handleAPIRunsDay)
 	mux.HandleFunc("/api/failure-patterns/window", h.handleAPIFailurePatterns)
+	mux.HandleFunc("/api/review/signals/week", h.handleAPIReviewSignalsWeek)
 	mux.HandleFunc("/report", h.handleReportPage)
 	mux.HandleFunc("/run-log", h.handleRunsPage)
 	mux.HandleFunc("/failure-patterns", h.handleFailurePatternsPage)
 	mux.HandleFunc("/global", h.handleLegacyGlobalRedirect)
-	mux.HandleFunc("/review", h.handleReviewRoot)
-	mux.Handle("/review/", http.StripPrefix("/review", reviewHandler))
 	return mux, nil
 }
 
 func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	if r.URL == nil || strings.TrimSpace(r.URL.Path) != "/" {
 		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	href, err := h.currentRollingReportHref(r.Context())
@@ -168,20 +155,29 @@ func (h *handler) handleReportPage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(reportHTML))
 }
 
-func (h *handler) handleReviewRoot(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	http.Redirect(w, r, viewHref("/review/", strings.TrimSpace(r.URL.Query().Get("week"))), http.StatusFound)
-}
-
 func (h *handler) handleAPIFailurePatterns(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 		return
 	}
 	response, err := h.service.BuildFailurePatterns(r.Context(), failurePatternsQueryFromRequest(r))
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
+			statusCode = http.StatusNotFound
+		}
+		writeJSONError(w, statusCode, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *handler) handleAPIReviewSignalsWeek(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		return
+	}
+	response, err := h.service.BuildReviewSignalsWeek(r.Context(), strings.TrimSpace(r.URL.Query().Get("week")))
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {

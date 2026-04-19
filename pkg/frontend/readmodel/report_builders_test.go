@@ -10,69 +10,74 @@ import (
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
-func TestBuildReviewWeekUsesServiceReadModel(t *testing.T) {
+func TestBuildFailurePatternReportDataIgnoresDeprecatedPhase3Links(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
-	previousStore := fixture.openWeekStore(t, "2026-03-08")
+	store := fixture.openWeekStore(t, "2026-03-15")
 
-	if err := currentStore.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
-		t.Fatalf("seed current materialized week: %v", err)
+	if err := store.ReplaceMaterializedWeek(ctx, jobHistoryMaterializedWeekWithExtraCluster()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
 	}
-	if err := previousStore.ReplaceMaterializedWeek(ctx, previousMaterializedWeek()); err != nil {
-		t.Fatalf("seed previous materialized week: %v", err)
-	}
-	if err := currentStore.UpsertRawFailures(ctx, sampleRawFailuresFixture()); err != nil {
+	rawFailures := append(sampleRawFailuresFixture(), storecontracts.RawFailureRecord{
+		Environment:    "dev",
+		RowID:          "row-4",
+		RunURL:         "https://prow.example.com/view/1",
+		TestName:       "should throttle",
+		TestSuite:      "suite-c",
+		SignatureID:    "sig-c",
+		OccurredAt:     "2026-03-16T08:07:00Z",
+		RawText:        "API throttling while reconciling install state",
+		NormalizedText: "api throttling while reconciling install state",
+	})
+	if err := store.UpsertRawFailures(ctx, rawFailures); err != nil {
 		t.Fatalf("seed raw failures: %v", err)
 	}
-	if err := currentStore.UpsertMetricsDaily(ctx, reportMetricsDaily()); err != nil {
+	if err := store.UpsertMetricsDaily(ctx, reportMetricsDaily()); err != nil {
 		t.Fatalf("seed metrics daily: %v", err)
 	}
-	if err := currentStore.UpsertPhase3Issues(ctx, []semanticcontracts.Phase3IssueRecord{{
-		SchemaVersion: semanticcontracts.CurrentSchemaVersion,
-		IssueID:       "QE-123",
-		Title:         "OAuth flake",
-		CreatedAt:     "2026-03-16T12:00:00Z",
-		UpdatedAt:     "2026-03-16T12:00:00Z",
-	}}); err != nil {
-		t.Fatalf("seed phase3 issue: %v", err)
-	}
-	if err := currentStore.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{{
-		SchemaVersion: semanticcontracts.CurrentSchemaVersion,
-		IssueID:       "QE-123",
-		Environment:   "dev",
-		RunURL:        "https://prow.example.com/view/1",
-		RowID:         "row-1",
-		UpdatedAt:     "2026-03-16T12:00:00Z",
-	}}); err != nil {
-		t.Fatalf("seed phase3 link: %v", err)
-	}
+	fixture.seedDeprecatedPhase3Links(t,
+		semanticcontracts.Phase3LinkRecord{
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
+			IssueID:       "QE-123",
+			Environment:   "dev",
+			RunURL:        "https://prow.example.com/view/1",
+			RowID:         "row-1",
+			UpdatedAt:     "2026-03-16T12:00:00Z",
+		},
+		semanticcontracts.Phase3LinkRecord{
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
+			IssueID:       "QE-123",
+			Environment:   "dev",
+			RunURL:        "https://prow.example.com/view/1",
+			RowID:         "row-4",
+			UpdatedAt:     "2026-03-16T12:00:00Z",
+		},
+	)
 
-	snapshot, err := fixture.service.BuildReviewWeek(ctx, "2026-03-15")
+	data, err := BuildFailurePatternReportData(ctx, store, FailurePatternReportBuildOptions{
+		Week:         "2026-03-15",
+		Environments: []string{"dev"},
+	})
 	if err != nil {
-		t.Fatalf("build review week: %v", err)
+		t.Fatalf("build failure-pattern report data: %v", err)
 	}
 
-	if got, want := snapshot.Week, "2026-03-15"; got != want {
-		t.Fatalf("unexpected week: got=%q want=%q", got, want)
+	if got, want := len(data.FailurePatternClusters), 2; got != want {
+		t.Fatalf("unexpected cluster count after deprecated phase3 seeding: got=%d want=%d", got, want)
 	}
-	if got, want := snapshot.TotalClusters, 1; got != want {
-		t.Fatalf("unexpected cluster count: got=%d want=%d", got, want)
+	clusterIDs := []string{
+		data.FailurePatternClusters[0].Phase2ClusterID,
+		data.FailurePatternClusters[1].Phase2ClusterID,
 	}
-	if got, want := snapshot.OverallJobsByEnv["dev"], 7; got != want {
-		t.Fatalf("unexpected overall jobs: got=%d want=%d", got, want)
+	if got, want := strings.Join(clusterIDs, ","), "cluster-dev-a,cluster-dev-c"; got != want {
+		t.Fatalf("unexpected failure-pattern ids: got=%q want=%q", got, want)
 	}
-	if got, want := len(snapshot.Rows), 1; got != want {
-		t.Fatalf("unexpected row count: got=%d want=%d", got, want)
-	}
-	row := snapshot.Rows[0]
-	if got, want := row.ManualIssueID, "QE-123"; got != want {
-		t.Fatalf("unexpected manual issue id: got=%q want=%q", got, want)
-	}
-	if len(row.FullErrorSamples) == 0 {
-		t.Fatalf("expected review row to include full error samples")
+	for _, row := range data.FailurePatternClusters {
+		if len(row.LinkedChildren) != 0 {
+			t.Fatalf("expected deprecated phase3 links to produce no linked children, got=%d for %s", len(row.LinkedChildren), row.Phase2ClusterID)
+		}
 	}
 }
 

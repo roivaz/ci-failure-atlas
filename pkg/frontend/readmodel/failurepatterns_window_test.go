@@ -107,6 +107,83 @@ func TestBuildFailurePatternsProjectsWeeklyRowsIntoWindow(t *testing.T) {
 	}
 }
 
+func TestBuildFailurePatternsIgnoresDeprecatedPhase3Links(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t, "")
+	store := fixture.openWeekStore(t, "2026-03-15")
+
+	if err := store.ReplaceMaterializedWeek(ctx, jobHistoryMaterializedWeekWithExtraCluster()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, sampleRunsFixture()); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	rawFailures := append(sampleRawFailuresFixture(), storecontracts.RawFailureRecord{
+		Environment:    "dev",
+		RowID:          "row-4",
+		RunURL:         "https://prow.example.com/view/1",
+		TestName:       "should throttle",
+		TestSuite:      "suite-c",
+		SignatureID:    "sig-c",
+		OccurredAt:     "2026-03-16T08:07:00Z",
+		RawText:        "API throttling while reconciling install state",
+		NormalizedText: "api throttling while reconciling install state",
+	})
+	if err := store.UpsertRawFailures(ctx, rawFailures); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+	if err := store.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
+		{Environment: "dev", Date: "2026-03-16", Metric: "run_count", Value: 4},
+	}); err != nil {
+		t.Fatalf("seed metrics daily: %v", err)
+	}
+	fixture.seedDeprecatedPhase3Links(t,
+		semanticcontracts.Phase3LinkRecord{
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
+			IssueID:       "QE-123",
+			Environment:   "dev",
+			RunURL:        "https://prow.example.com/view/1",
+			RowID:         "row-1",
+			UpdatedAt:     "2026-03-16T12:00:00Z",
+		},
+		semanticcontracts.Phase3LinkRecord{
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
+			IssueID:       "QE-123",
+			Environment:   "dev",
+			RunURL:        "https://prow.example.com/view/1",
+			RowID:         "row-4",
+			UpdatedAt:     "2026-03-16T12:00:00Z",
+		},
+	)
+
+	data, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
+		StartDate:    "2026-03-16",
+		EndDate:      "2026-03-16",
+		Environments: []string{"dev"},
+	})
+	if err != nil {
+		t.Fatalf("build failure patterns: %v", err)
+	}
+
+	environment := data.Environments[0]
+	if got, want := len(environment.Rows), 2; got != want {
+		t.Fatalf("unexpected row count after deprecated phase3 seeding: got=%d want=%d", got, want)
+	}
+	if got, want := environment.Rows[0].ClusterID, "cluster-dev-a"; got != want {
+		t.Fatalf("unexpected first cluster id: got=%q want=%q", got, want)
+	}
+	if got, want := environment.Rows[1].ClusterID, "cluster-dev-c"; got != want {
+		t.Fatalf("unexpected second cluster id: got=%q want=%q", got, want)
+	}
+	for _, row := range environment.Rows {
+		if len(row.LinkedChildren) != 0 {
+			t.Fatalf("expected deprecated phase3 links to produce no linked children, got=%d for %s", len(row.LinkedChildren), row.ClusterID)
+		}
+	}
+}
+
 func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 	t.Parallel()
 

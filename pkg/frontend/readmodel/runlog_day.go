@@ -69,7 +69,6 @@ type JobHistoryFailureRow struct {
 	FailureText        string                       `json:"failure_text,omitempty"`
 	NonArtifactBacked  bool                         `json:"non_artifact_backed,omitempty"`
 	SemanticAttachment JobHistorySemanticAttachment `json:"failure_pattern_match"`
-	Phase3IssueID      string                       `json:"phase3_issue_id,omitempty"`
 	BadPRScore         int                          `json:"-"`
 	BadPRReasons       []string                     `json:"-"`
 }
@@ -146,7 +145,6 @@ func (s *Service) BuildRunLogDay(ctx context.Context, query RunLogDayQuery) (Run
 	}
 
 	clusterByReference := buildJobHistoryReferenceIndex(weekData.FailurePatterns)
-	phase3IssueByAnchor := buildJobHistoryPhase3IssueIndex(weekData.Phase3Links)
 
 	generatedAt := query.GeneratedAt
 	if generatedAt.IsZero() {
@@ -163,7 +161,6 @@ func (s *Service) BuildRunLogDay(ctx context.Context, query RunLogDayQuery) (Run
 			normalizedEnvironment,
 			factsByEnvironment[normalizedEnvironment],
 			clusterByReference,
-			phase3IssueByAnchor,
 		)
 		environments = append(environments, RunLogDayEnvironment{
 			Environment: normalizedEnvironment,
@@ -204,7 +201,6 @@ func buildJobHistoryRunRows(
 	environment string,
 	facts failurePatternsEnvironmentFacts,
 	clusterByReference map[string]jobHistoryReferenceCluster,
-	phase3IssueByAnchor map[string]string,
 ) []JobHistoryRunRow {
 	rawFailuresByRun := map[string][]storecontracts.RawFailureRecord{}
 	for _, row := range facts.RawFailures {
@@ -225,7 +221,6 @@ func buildJobHistoryRunRows(
 			environment,
 			rawFailuresByRun[runURL],
 			clusterByReference,
-			phase3IssueByAnchor,
 		)
 		badPRScore, badPRReasons := jobHistoryWeeklyBadPR(failures)
 		runRows = append(runRows, JobHistoryRunRow{
@@ -247,7 +242,6 @@ func buildJobHistoryFailureRows(
 	environment string,
 	rawFailures []storecontracts.RawFailureRecord,
 	clusterByReference map[string]jobHistoryReferenceCluster,
-	phase3IssueByAnchor map[string]string,
 ) []JobHistoryFailureRow {
 	rows := make([]JobHistoryFailureRow, 0, len(rawFailures))
 	for _, row := range rawFailures {
@@ -277,7 +271,6 @@ func buildJobHistoryFailureRows(
 			FailureText:        jobHistoryFailureText(row),
 			NonArtifactBacked:  row.NonArtifactBacked,
 			SemanticAttachment: attachment,
-			Phase3IssueID:      strings.TrimSpace(phase3IssueByAnchor[phase3AnchorKey(environment, row.RunURL, row.RowID)]),
 			BadPRScore:         cluster.BadPRScore,
 			BadPRReasons:       append([]string(nil), cluster.BadPRReasons...),
 		})
@@ -437,19 +430,6 @@ func jobHistoryRunReferences(rows []semanticcontracts.ReferenceRecord) []RunRefe
 		})
 	}
 	return out
-}
-
-func buildJobHistoryPhase3IssueIndex(links []semanticcontracts.Phase3LinkRecord) map[string]string {
-	index := map[string]string{}
-	for _, link := range links {
-		key := phase3AnchorKey(link.Environment, link.RunURL, link.RowID)
-		issueID := strings.TrimSpace(link.IssueID)
-		if key == "" || issueID == "" {
-			continue
-		}
-		index[key] = issueID
-	}
-	return index
 }
 
 func jobHistoryPrefersClusterCandidate(current jobHistoryReferenceCluster, candidate jobHistoryReferenceCluster) bool {

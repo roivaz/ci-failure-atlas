@@ -66,16 +66,6 @@ func sampleFailureText(row storecontracts.RawFailureRecord) string {
 	return text
 }
 
-func phase3AnchorKey(environment string, runURL string, rowID string) string {
-	normalizedEnvironment := normalizeEnvironment(environment)
-	trimmedRunURL := strings.TrimSpace(runURL)
-	trimmedRowID := strings.TrimSpace(rowID)
-	if normalizedEnvironment == "" || trimmedRunURL == "" || trimmedRowID == "" {
-		return ""
-	}
-	return normalizedEnvironment + "|" + trimmedRunURL + "|" + trimmedRowID
-}
-
 func normalizeEnvironment(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }

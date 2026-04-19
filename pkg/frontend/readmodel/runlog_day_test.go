@@ -19,17 +19,6 @@ func TestBuildRunLogDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
-	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
-		{
-			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
-			IssueID:       "issue-dev-oauth",
-			Environment:   "dev",
-			RunURL:        "https://prow.example.com/view/1",
-			RowID:         "row-1",
-		},
-	}); err != nil {
-		t.Fatalf("seed phase3 links: %v", err)
-	}
 	if err := store.UpsertRuns(ctx, sampleRunsFixture()); err != nil {
 		t.Fatalf("seed runs: %v", err)
 	}
@@ -93,9 +82,6 @@ func TestBuildRunLogDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 	if got, want := matchedRun.FailureRows[0].SemanticAttachment.CanonicalEvidencePhrase, "OAuth timeout"; got != want {
 		t.Fatalf("unexpected matched phrase: got=%q want=%q", got, want)
 	}
-	if got, want := matchedRun.FailureRows[0].Phase3IssueID, "issue-dev-oauth"; got != want {
-		t.Fatalf("unexpected phase3 issue id: got=%q want=%q", got, want)
-	}
 
 	unmatchedRun := jobHistoryRunByURL(t, environment, "https://prow.example.com/view/2")
 	if got, want := unmatchedRun.SemanticRollups.AttachmentSummary, "unmatched_only"; got != want {
@@ -139,6 +125,24 @@ func TestBuildRunLogDayHandlesMultipleSignaturesOnOneRun(t *testing.T) {
 	if err := store.UpsertRawFailures(ctx, rawFailures); err != nil {
 		t.Fatalf("seed raw failures: %v", err)
 	}
+	fixture.seedDeprecatedPhase3Links(t,
+		semanticcontracts.Phase3LinkRecord{
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
+			IssueID:       "issue-dev-linked",
+			Environment:   "dev",
+			RunURL:        "https://prow.example.com/view/1",
+			RowID:         "row-1",
+			UpdatedAt:     "2026-03-16T12:00:00Z",
+		},
+		semanticcontracts.Phase3LinkRecord{
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
+			IssueID:       "issue-dev-linked",
+			Environment:   "dev",
+			RunURL:        "https://prow.example.com/view/1",
+			RowID:         "row-4",
+			UpdatedAt:     "2026-03-16T12:00:00Z",
+		},
+	)
 
 	data, err := fixture.service.BuildRunLogDay(ctx, RunLogDayQuery{
 		Date:         "2026-03-16",

@@ -36,12 +36,10 @@ type FailurePatternPresence struct {
 
 type FailurePatternHistoryResolver interface {
 	PresenceFor(FailurePatternKey) FailurePatternPresence
-	PresenceForPhase3Cluster(environment string, phase3ClusterID string) FailurePatternPresence
 }
 
 type globalSignatureResolver struct {
-	byKey              map[string]FailurePatternPresence
-	byPhase3ClusterKey map[string]FailurePatternPresence
+	byKey map[string]FailurePatternPresence
 }
 
 type signaturePresenceAggregate struct {
@@ -61,32 +59,15 @@ func (r *globalSignatureResolver) PresenceFor(key FailurePatternKey) FailurePatt
 	return presence
 }
 
-func (r *globalSignatureResolver) PresenceForPhase3Cluster(environment string, phase3ClusterID string) FailurePatternPresence {
-	if r == nil || len(r.byPhase3ClusterKey) == 0 {
-		return FailurePatternPresence{}
-	}
-	presence, ok := r.byPhase3ClusterKey[phase3ClusterHistoryKey(environment, phase3ClusterID)]
-	if !ok {
-		return FailurePatternPresence{}
-	}
-	return presence
-}
-
 func BuildFailurePatternHistoryResolver(ctx context.Context, opts BuildOptions) (FailurePatternHistoryResolver, error) {
 	currentWeekLabel := strings.TrimSpace(opts.CurrentWeek)
 	if currentWeekLabel == "" {
-		return &globalSignatureResolver{
-			byKey:              map[string]FailurePatternPresence{},
-			byPhase3ClusterKey: map[string]FailurePatternPresence{},
-		}, nil
+		return &globalSignatureResolver{byKey: map[string]FailurePatternPresence{}}, nil
 	}
 
 	currentWeek, ok := parseWeekStart(currentWeekLabel)
 	if !ok {
-		return &globalSignatureResolver{
-			byKey:              map[string]FailurePatternPresence{},
-			byPhase3ClusterKey: map[string]FailurePatternPresence{},
-		}, nil
+		return &globalSignatureResolver{byKey: map[string]FailurePatternPresence{}}, nil
 	}
 
 	lookbackWeeks := opts.FailurePatternHistoryLookbackWeeks
@@ -97,10 +78,7 @@ func BuildFailurePatternHistoryResolver(ctx context.Context, opts BuildOptions) 
 
 	semanticWeeksLister := opts.ListWeeks
 	if semanticWeeksLister == nil {
-		return &globalSignatureResolver{
-			byKey:              map[string]FailurePatternPresence{},
-			byPhase3ClusterKey: map[string]FailurePatternPresence{},
-		}, nil
+		return &globalSignatureResolver{byKey: map[string]FailurePatternPresence{}}, nil
 	}
 	weekNames, err := semanticWeeksLister(ctx)
 	if err != nil {
@@ -109,14 +87,10 @@ func BuildFailurePatternHistoryResolver(ctx context.Context, opts BuildOptions) 
 
 	storeOpener := opts.OpenStore
 	if storeOpener == nil {
-		return &globalSignatureResolver{
-			byKey:              map[string]FailurePatternPresence{},
-			byPhase3ClusterKey: map[string]FailurePatternPresence{},
-		}, nil
+		return &globalSignatureResolver{byKey: map[string]FailurePatternPresence{}}, nil
 	}
 
 	signatureAggregates := map[string]*signaturePresenceAggregate{}
-	phase3ClusterAggregates := map[string]*signaturePresenceAggregate{}
 	for _, rawWeekName := range weekNames {
 		weekName := strings.TrimSpace(rawWeekName)
 		if weekName == "" {
@@ -160,15 +134,8 @@ func BuildFailurePatternHistoryResolver(ctx context.Context, opts BuildOptions) 
 			_ = weekStore.Close()
 			return nil, err
 		}
-		phase3Links, err := weekStore.ListPhase3Links(ctx)
 		_ = weekStore.Close()
-		if err != nil {
-			return nil, fmt.Errorf("list phase3 links for week %q: %w", weekName, err)
-		}
 		collectGlobalFailurePatternPresence(rows, weekName, signatureAggregates)
-		if err := collectPhase3ClusterPresence(rows, phase3Links, weekName, phase3ClusterAggregates); err != nil {
-			return nil, fmt.Errorf("collect phase3-cluster presence for week %q: %w", weekName, err)
-		}
 	}
 
 	byKey := map[string]FailurePatternPresence{}
@@ -185,24 +152,7 @@ func BuildFailurePatternHistoryResolver(ctx context.Context, opts BuildOptions) 
 			PriorLastSeenAt:   item.lastSeen,
 		}
 	}
-	byPhase3ClusterKey := map[string]FailurePatternPresence{}
-	for key, item := range phase3ClusterAggregates {
-		weeks := make([]string, 0, len(item.weeks))
-		for week := range item.weeks {
-			weeks = append(weeks, week)
-		}
-		sort.Strings(weeks)
-		byPhase3ClusterKey[key] = FailurePatternPresence{
-			PriorWeeksPresent: len(weeks),
-			PriorWeekStarts:   weeks,
-			PriorJobsAffected: len(item.jobs),
-			PriorLastSeenAt:   item.lastSeen,
-		}
-	}
-	return &globalSignatureResolver{
-		byKey:              byKey,
-		byPhase3ClusterKey: byPhase3ClusterKey,
-	}, nil
+	return &globalSignatureResolver{byKey: byKey}, nil
 }
 
 func collectGlobalFailurePatternPresence(rows []semanticcontracts.FailurePatternRecord, weekName string, aggregates map[string]*signaturePresenceAggregate) {
@@ -239,89 +189,6 @@ func collectGlobalFailurePatternPresence(rows []semanticcontracts.FailurePattern
 	}
 }
 
-func collectPhase3ClusterPresence(
-	rows []semanticcontracts.FailurePatternRecord,
-	phase3Links []semanticcontracts.Phase3LinkRecord,
-	weekName string,
-	aggregates map[string]*signaturePresenceAggregate,
-) error {
-	phase3ClusterByAnchor := map[string]string{}
-	for _, row := range phase3Links {
-		phase3ClusterID := strings.TrimSpace(row.IssueID)
-		if phase3ClusterID == "" {
-			continue
-		}
-		key := phase3AnchorHistoryKey(row.Environment, row.RunURL, row.RowID)
-		if key == "" {
-			continue
-		}
-		phase3ClusterByAnchor[key] = phase3ClusterID
-	}
-	for _, row := range rows {
-		environment := normalizeEnvironment(row.Environment)
-		if environment == "" {
-			continue
-		}
-		phase3ClusterIDSet := map[string]struct{}{}
-		for _, reference := range row.References {
-			anchorKey := phase3AnchorHistoryKey(environment, reference.RunURL, reference.RowID)
-			if anchorKey == "" {
-				continue
-			}
-			phase3ClusterID := strings.TrimSpace(phase3ClusterByAnchor[anchorKey])
-			if phase3ClusterID == "" {
-				continue
-			}
-			phase3ClusterIDSet[phase3ClusterID] = struct{}{}
-		}
-		if len(phase3ClusterIDSet) == 0 {
-			continue
-		}
-		phase3ClusterIDs := make([]string, 0, len(phase3ClusterIDSet))
-		for phase3ClusterID := range phase3ClusterIDSet {
-			phase3ClusterIDs = append(phase3ClusterIDs, phase3ClusterID)
-		}
-		sort.Strings(phase3ClusterIDs)
-		if len(phase3ClusterIDs) > 1 {
-			return fmt.Errorf(
-				"phase3 conflict: failure pattern %s resolves to multiple phase3 cluster IDs (%s)",
-				strings.TrimSpace(row.Phase2ClusterID),
-				strings.Join(phase3ClusterIDs, ", "),
-			)
-		}
-		key := phase3ClusterHistoryKey(environment, phase3ClusterIDs[0])
-		if key == "" {
-			continue
-		}
-		item, ok := aggregates[key]
-		if !ok {
-			item = &signaturePresenceAggregate{
-				weeks: map[string]struct{}{},
-				jobs:  map[string]struct{}{},
-			}
-			aggregates[key] = item
-		}
-		item.weeks[weekName] = struct{}{}
-		for _, reference := range row.References {
-			runKey := normalizedRunReferenceKey(
-				reference.RunURL,
-				reference.SignatureID,
-				reference.OccurredAt,
-				reference.PRNumber,
-			)
-			if runKey != "" {
-				item.jobs[runKey] = struct{}{}
-			}
-			if ts, ok := parseReferenceTimestamp(reference.OccurredAt); ok {
-				if item.lastSeen.IsZero() || ts.After(item.lastSeen) {
-					item.lastSeen = ts
-				}
-			}
-		}
-	}
-	return nil
-}
-
 func normalizedRunReferenceKey(runURL string, signatureID string, occurredAt string, prNumber int) string {
 	if trimmed := strings.TrimSpace(runURL); trimmed != "" {
 		return trimmed
@@ -345,25 +212,6 @@ func signatureHistoryKey(environment string, phrase string, searchQuery string) 
 		return ""
 	}
 	return normalizedEnvironment + "|" + signatureText
-}
-
-func phase3ClusterHistoryKey(environment string, phase3ClusterID string) string {
-	normalizedEnvironment := normalizeEnvironment(environment)
-	trimmedPhase3ClusterID := strings.TrimSpace(phase3ClusterID)
-	if normalizedEnvironment == "" || trimmedPhase3ClusterID == "" {
-		return ""
-	}
-	return normalizedEnvironment + "|" + trimmedPhase3ClusterID
-}
-
-func phase3AnchorHistoryKey(environment string, runURL string, rowID string) string {
-	normalizedEnvironment := normalizeEnvironment(environment)
-	trimmedRunURL := strings.TrimSpace(runURL)
-	trimmedRowID := strings.TrimSpace(rowID)
-	if normalizedEnvironment == "" || trimmedRunURL == "" || trimmedRowID == "" {
-		return ""
-	}
-	return normalizedEnvironment + "|" + trimmedRunURL + "|" + trimmedRowID
 }
 
 func normalizedSignatureText(phrase string, searchQuery string) string {

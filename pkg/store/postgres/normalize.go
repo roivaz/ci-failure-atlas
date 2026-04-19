@@ -393,40 +393,6 @@ func normalizeReviewItemRecord(row semanticcontracts.ReviewItemRecord) semanticc
 	}
 }
 
-func normalizePhase3IssueRecord(row semanticcontracts.Phase3IssueRecord) semanticcontracts.Phase3IssueRecord {
-	return semanticcontracts.Phase3IssueRecord{
-		SchemaVersion: semanticcontracts.NormalizeSchemaVersion(row.SchemaVersion),
-		IssueID:       strings.TrimSpace(row.IssueID),
-		Title:         strings.TrimSpace(row.Title),
-		CreatedAt:     strings.TrimSpace(row.CreatedAt),
-		UpdatedAt:     strings.TrimSpace(row.UpdatedAt),
-	}
-}
-
-func normalizePhase3LinkRecord(row semanticcontracts.Phase3LinkRecord) semanticcontracts.Phase3LinkRecord {
-	return semanticcontracts.Phase3LinkRecord{
-		SchemaVersion: semanticcontracts.NormalizeSchemaVersion(row.SchemaVersion),
-		IssueID:       strings.TrimSpace(row.IssueID),
-		Environment:   normalizeSemanticEnvironment(row.Environment),
-		RunURL:        strings.TrimSpace(row.RunURL),
-		RowID:         strings.TrimSpace(row.RowID),
-		UpdatedAt:     strings.TrimSpace(row.UpdatedAt),
-	}
-}
-
-func normalizePhase3EventRecord(row semanticcontracts.Phase3EventRecord) semanticcontracts.Phase3EventRecord {
-	return semanticcontracts.Phase3EventRecord{
-		SchemaVersion: semanticcontracts.NormalizeSchemaVersion(row.SchemaVersion),
-		EventID:       strings.TrimSpace(row.EventID),
-		Action:        strings.TrimSpace(row.Action),
-		IssueID:       strings.TrimSpace(row.IssueID),
-		Environment:   normalizeSemanticEnvironment(row.Environment),
-		RunURL:        strings.TrimSpace(row.RunURL),
-		RowID:         strings.TrimSpace(row.RowID),
-		At:            strings.TrimSpace(row.At),
-	}
-}
-
 func runRecordKey(row storecontracts.RunRecord) string {
 	if row.Environment == "" || row.RunURL == "" {
 		return ""
@@ -478,30 +444,4 @@ func reviewItemKey(row semanticcontracts.ReviewItemRecord) string {
 		return ""
 	}
 	return environment + "|" + reviewID
-}
-
-func phase3IssueKey(row semanticcontracts.Phase3IssueRecord) string {
-	issueID := strings.TrimSpace(row.IssueID)
-	if issueID == "" {
-		return ""
-	}
-	return issueID
-}
-
-func phase3LinkKey(row semanticcontracts.Phase3LinkRecord) string {
-	environment := normalizeSemanticEnvironment(row.Environment)
-	runURL := strings.TrimSpace(row.RunURL)
-	rowID := strings.TrimSpace(row.RowID)
-	if environment == "" || runURL == "" || rowID == "" {
-		return ""
-	}
-	return environment + "|" + runURL + "|" + rowID
-}
-
-func phase3EventKey(row semanticcontracts.Phase3EventRecord) string {
-	eventID := strings.TrimSpace(row.EventID)
-	if eventID == "" {
-		return ""
-	}
-	return eventID
 }

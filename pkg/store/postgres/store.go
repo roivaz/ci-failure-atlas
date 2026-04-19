@@ -289,55 +289,6 @@ func (s *Store) GetSemanticWeekSummary(ctx context.Context) (storecontracts.Sema
 	return s.getSemanticWeekSummaryImpl(ctx)
 }
 
-func (s *Store) UpsertPhase3Issues(ctx context.Context, rows []semanticcontracts.Phase3IssueRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.upsertPhase3IssuesImpl(ctx, rows)
-}
-
-func (s *Store) ListPhase3Issues(ctx context.Context) ([]semanticcontracts.Phase3IssueRecord, error) {
-	if err := requireContext(ctx); err != nil {
-		return nil, err
-	}
-	return s.listPhase3IssuesImpl(ctx)
-}
-
-func (s *Store) UpsertPhase3Links(ctx context.Context, rows []semanticcontracts.Phase3LinkRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.upsertPhase3LinksImpl(ctx, rows)
-}
-
-func (s *Store) DeletePhase3Links(ctx context.Context, rows []semanticcontracts.Phase3LinkRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.deletePhase3LinksImpl(ctx, rows)
-}
-
-func (s *Store) ListPhase3Links(ctx context.Context) ([]semanticcontracts.Phase3LinkRecord, error) {
-	if err := requireContext(ctx); err != nil {
-		return nil, err
-	}
-	return s.listPhase3LinksImpl(ctx)
-}
-
-func (s *Store) AppendPhase3Events(ctx context.Context, rows []semanticcontracts.Phase3EventRecord) error {
-	if err := requireContext(ctx); err != nil {
-		return err
-	}
-	return s.appendPhase3EventsImpl(ctx, rows)
-}
-
-func (s *Store) ListPhase3Events(ctx context.Context, limit int) ([]semanticcontracts.Phase3EventRecord, error) {
-	if err := requireContext(ctx); err != nil {
-		return nil, err
-	}
-	return s.listPhase3EventsImpl(ctx, limit)
-}
-
 func requireContext(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("context is required")

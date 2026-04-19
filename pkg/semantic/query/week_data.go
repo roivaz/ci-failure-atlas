@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
-	phase3engine "ci-failure-atlas/pkg/semantic/engine/phase3"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
 
@@ -20,7 +19,6 @@ type WeekData struct {
 	SourceFailurePatterns     []semanticcontracts.FailurePatternRecord
 	FailurePatterns           []semanticcontracts.FailurePatternRecord
 	ReviewQueue               []semanticcontracts.ReviewItemRecord
-	Phase3Links               []semanticcontracts.Phase3LinkRecord
 	RawFailures               []storecontracts.RawFailureRecord
 	TestClusterCountsByEnv    map[string]int
 	ReviewQueueCountsByEnv    map[string]int
@@ -72,14 +70,6 @@ func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeek
 	if err != nil {
 		return WeekData{}, fmt.Errorf("get semantic week summary: %w", err)
 	}
-	phase3Links, err := store.ListPhase3Links(ctx)
-	if err != nil {
-		return WeekData{}, fmt.Errorf("list phase3 links: %w", err)
-	}
-	globalClusters, err := phase3engine.Merge(sourceFailurePatterns, phase3Links)
-	if err != nil {
-		return WeekData{}, fmt.Errorf("apply phase3 materialized view: %w", err)
-	}
 
 	rawFailures := []storecontracts.RawFailureRecord(nil)
 	if opts.IncludeRawFailures {
@@ -91,10 +81,9 @@ func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeek
 
 	return WeekData{
 		WeekSchemaVersion:         weekSchemaVersion,
-		SourceFailurePatterns:     sourceFailurePatterns,
-		FailurePatterns:           globalClusters,
+		SourceFailurePatterns:     append([]semanticcontracts.FailurePatternRecord(nil), sourceFailurePatterns...),
+		FailurePatterns:           append([]semanticcontracts.FailurePatternRecord(nil), sourceFailurePatterns...),
 		ReviewQueue:               reviewQueue,
-		Phase3Links:               phase3Links,
 		RawFailures:               rawFailures,
 		TestClusterCountsByEnv:    summary.TestClusterCountsByEnv,
 		ReviewQueueCountsByEnv:    summary.ReviewQueueCountsByEnv,

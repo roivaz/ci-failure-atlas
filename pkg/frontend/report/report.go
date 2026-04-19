@@ -738,16 +738,11 @@ func legacyWeeklyFailurePatternRowsByEnv(
 		for _, item := range items {
 			failurePatternRow := topSignatureToFailurePatternRow(item)
 			if historyResolver != nil {
-				presence := semhistory.FailurePatternPresence{}
-				if len(failurePatternRow.LinkedPatterns) > 0 && strings.TrimSpace(item.ClusterID) != "" {
-					presence = historyResolver.PresenceForPhase3Cluster(item.Environment, item.ClusterID)
-				} else {
-					presence = historyResolver.PresenceFor(semhistory.FailurePatternKey{
-						Environment: item.Environment,
-						Phrase:      item.Phrase,
-						SearchQuery: item.SearchQuery,
-					})
-				}
+				presence := historyResolver.PresenceFor(semhistory.FailurePatternKey{
+					Environment: item.Environment,
+					Phrase:      item.Phrase,
+					SearchQuery: item.SearchQuery,
+				})
 				failurePatternRow.PriorWeeksPresent = presence.PriorWeeksPresent
 				failurePatternRow.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
 				failurePatternRow.PriorRunsAffected = presence.PriorJobsAffected

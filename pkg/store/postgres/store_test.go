@@ -51,6 +51,27 @@ func TestNormalizeWeekRejectsNonSunday(t *testing.T) {
 	}
 }
 
+func TestMigrationsDropDeprecatedPhase3Tables(t *testing.T) {
+	t.Parallel()
+
+	store := newIntegrationStore(t, "")
+	ctx := context.Background()
+	for _, table := range []string{
+		"cfa_phase3_issues",
+		"cfa_phase3_links",
+		"cfa_phase3_events",
+	} {
+		var registered string
+		err := store.pool.QueryRow(ctx, "SELECT COALESCE(to_regclass($1)::text, '')", "public."+table).Scan(&registered)
+		if err != nil {
+			t.Fatalf("check dropped table %q: %v", table, err)
+		}
+		if registered != "" {
+			t.Fatalf("expected deprecated table %q to be absent after migrations, got %q", table, registered)
+		}
+	}
+}
+
 func TestReplaceMaterializedWeekClearsPriorSnapshot(t *testing.T) {
 	store := newIntegrationStore(t, "2026-03-15")
 	ctx := context.Background()

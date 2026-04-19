@@ -344,14 +344,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		PhraseFullErrorsByEnv:            map[string]map[string][]string{},
 	}
 
-	sourceClusters := append([]semanticcontracts.FailurePatternRecord(nil), weekData.SourceFailurePatterns...)
-	phase3Links := append([]semanticcontracts.Phase3LinkRecord(nil), weekData.Phase3Links...)
-	linkedChildrenByMergedClusterKey, err := weeklyLinkedChildrenByMergedClusterKey(sourceClusters, phase3Links)
-	if err != nil {
-		return out, err
-	}
-	materializedClusters := append([]semanticcontracts.FailurePatternRecord(nil), weekData.FailurePatterns...)
-	for _, row := range materializedClusters {
+	for _, row := range weekData.FailurePatterns {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
 			continue
@@ -437,11 +430,6 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		for _, code := range qualityCodes {
 			qualityLabels = append(qualityLabels, QualityIssueLabel(code))
 		}
-		linkedChildren := []topSignature(nil)
-		linkedChildrenRaw := linkedChildrenByMergedClusterKey[weeklyClusterGroupKey(environment, row.Phase2ClusterID)]
-		if len(linkedChildrenRaw) > 0 {
-			linkedChildren = topSignaturesFromFailurePatternClusters(linkedChildrenRaw)
-		}
 		rowReferences := toFailurePatternRunReferences(row.References)
 		if sourceRunURL := strings.TrimSpace(row.SearchQuerySourceRunURL); sourceRunURL != "" {
 			rowReferences = append(rowReferences, RunReference{
@@ -460,11 +448,10 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 			QualityNoteLabels: qualityLabels,
 			ContributingTests: OrderedContributingTests(toFailurePatternContributingTests(row.ContributingTests)),
 			References:        rowReferences,
-			LinkedChildren:    linkedChildren,
 		})
 	}
 
-	for _, row := range sourceClusters {
+	for _, row := range weekData.SourceFailurePatterns {
 		environment := normalizeReportEnvironment(row.Environment)
 		if environment == "" {
 			continue
@@ -898,89 +885,6 @@ func topSignaturesFromFailurePatternClusters(rows []semanticcontracts.FailurePat
 		})
 	}
 	return out
-}
-
-func weeklyLinkedChildrenByMergedClusterKey(
-	clusters []semanticcontracts.FailurePatternRecord,
-	phase3Links []semanticcontracts.Phase3LinkRecord,
-) (map[string][]semanticcontracts.FailurePatternRecord, error) {
-	if len(clusters) == 0 || len(phase3Links) == 0 {
-		return map[string][]semanticcontracts.FailurePatternRecord{}, nil
-	}
-	phase3ClusterByAnchor := make(map[string]string, len(phase3Links))
-	for _, link := range phase3Links {
-		anchor := weeklyPhase3AnchorKey(link.Environment, link.RunURL, link.RowID)
-		clusterID := strings.TrimSpace(link.IssueID)
-		if anchor == "" || clusterID == "" {
-			continue
-		}
-		phase3ClusterByAnchor[anchor] = clusterID
-	}
-
-	grouped := map[string][]semanticcontracts.FailurePatternRecord{}
-	for _, cluster := range clusters {
-		clusterIDs := weeklyPhase3ClusterIDsForCluster(cluster, phase3ClusterByAnchor)
-		if len(clusterIDs) == 0 {
-			continue
-		}
-		if len(clusterIDs) > 1 {
-			return nil, fmt.Errorf("phase2 cluster %q/%q maps to multiple phase3 IDs: %v", cluster.Environment, cluster.Phase2ClusterID, clusterIDs)
-		}
-		key := weeklyClusterGroupKey(cluster.Environment, clusterIDs[0])
-		grouped[key] = append(grouped[key], cluster)
-	}
-	for key := range grouped {
-		rows := grouped[key]
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].SupportCount != rows[j].SupportCount {
-				return rows[i].SupportCount > rows[j].SupportCount
-			}
-			if strings.TrimSpace(rows[i].CanonicalEvidencePhrase) != strings.TrimSpace(rows[j].CanonicalEvidencePhrase) {
-				return strings.TrimSpace(rows[i].CanonicalEvidencePhrase) < strings.TrimSpace(rows[j].CanonicalEvidencePhrase)
-			}
-			return strings.TrimSpace(rows[i].Phase2ClusterID) < strings.TrimSpace(rows[j].Phase2ClusterID)
-		})
-		grouped[key] = rows
-	}
-	return grouped, nil
-}
-
-func weeklyPhase3ClusterIDsForCluster(
-	cluster semanticcontracts.FailurePatternRecord,
-	phase3ClusterByAnchor map[string]string,
-) []string {
-	seen := map[string]struct{}{}
-	for _, reference := range cluster.References {
-		clusterID := strings.TrimSpace(phase3ClusterByAnchor[weeklyPhase3AnchorKey(
-			cluster.Environment,
-			reference.RunURL,
-			reference.RowID,
-		)])
-		if clusterID == "" {
-			continue
-		}
-		seen[clusterID] = struct{}{}
-	}
-	return sortedStringSet(seen)
-}
-
-func weeklyPhase3AnchorKey(environment string, runURL string, rowID string) string {
-	env := normalizeReportEnvironment(environment)
-	run := strings.TrimSpace(runURL)
-	row := strings.TrimSpace(rowID)
-	if env == "" || run == "" || row == "" {
-		return ""
-	}
-	return env + "|" + run + "|" + row
-}
-
-func weeklyClusterGroupKey(environment string, clusterID string) string {
-	env := normalizeReportEnvironment(environment)
-	cluster := strings.TrimSpace(clusterID)
-	if env == "" || cluster == "" {
-		return ""
-	}
-	return env + "|" + cluster
 }
 
 func toFailurePatternRunReferences(rows []semanticcontracts.ReferenceRecord) []RunReference {

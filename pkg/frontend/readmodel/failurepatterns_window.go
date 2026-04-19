@@ -515,20 +515,15 @@ func buildFailurePatternsRow(
 		ScoringReferences:       append([]FailurePatternReportReference(nil), references...),
 		LinkedChildren:          children,
 		AnchorWeek:              strings.TrimSpace(anchorWeek),
-		MergeKey:                failurePatternsMergeKeyForCluster(cluster, len(children) > 0),
+		MergeKey:                failurePatternsMergeKeyForCluster(cluster),
 	}
 
 	if historyResolver != nil {
-		presence := semhistory.FailurePatternPresence{}
-		if len(children) > 0 {
-			presence = historyResolver.PresenceForPhase3Cluster(row.Environment, row.ClusterID)
-		} else {
-			presence = historyResolver.PresenceFor(semhistory.FailurePatternKey{
-				Environment: row.Environment,
-				Phrase:      row.CanonicalEvidencePhrase,
-				SearchQuery: row.SearchQueryPhrase,
-			})
-		}
+		presence := historyResolver.PresenceFor(semhistory.FailurePatternKey{
+			Environment: row.Environment,
+			Phrase:      row.CanonicalEvidencePhrase,
+			SearchQuery: row.SearchQueryPhrase,
+		})
 		row.PriorWeeksPresent = presence.PriorWeeksPresent
 		row.PriorWeekStarts = append([]string(nil), presence.PriorWeekStarts...)
 		row.PriorJobsAffected = presence.PriorJobsAffected
@@ -564,15 +559,12 @@ func failurePatternsTrendAnchor(week string) time.Time {
 	return weekStart.UTC().AddDate(0, 0, 7).Add(-time.Nanosecond)
 }
 
-func failurePatternsMergeKeyForCluster(cluster FailurePatternReportCluster, linked bool) string {
+func failurePatternsMergeKeyForCluster(cluster FailurePatternReportCluster) string {
 	environment := normalizeEnvironment(cluster.Environment)
 	if environment == "" {
 		return ""
 	}
 	clusterID := strings.TrimSpace(cluster.Phase2ClusterID)
-	if linked && clusterID != "" {
-		return "phase3|" + environment + "|" + clusterID
-	}
 	phraseKey := normalizePhrase(cluster.CanonicalEvidencePhrase)
 	searchKey := normalizePhrase(cluster.SearchQueryPhrase)
 	if phraseKey == "" && searchKey == "" {
