@@ -199,8 +199,10 @@ func TestExtractEvidenceUsesAzureInnerThrottlingCodeAndMessage(t *testing.T) {
 	if !strings.Contains(strings.ToLower(evidence.CanonicalEvidencePhrase), "detail message number of 'read' requests for subscription") {
 		t.Fatalf("expected canonical phrase to include throttling message summary, got=%q", evidence.CanonicalEvidencePhrase)
 	}
-	if strings.Contains(evidence.CanonicalEvidencePhrase, "provider Microsoft.ManagedIdentity") {
-		t.Fatalf("expected provider-only fallback to be replaced by inner detail, got=%q", evidence.CanonicalEvidencePhrase)
+	// Provider is always appended to ERROR CODE patterns; verify it is present
+	// in addition to the richer inner detail (not instead of it).
+	if !strings.Contains(evidence.CanonicalEvidencePhrase, "provider Microsoft.ManagedIdentity") {
+		t.Fatalf("expected provider Microsoft.ManagedIdentity to be included alongside inner detail, got=%q", evidence.CanonicalEvidencePhrase)
 	}
 }
 
@@ -245,8 +247,9 @@ ERROR CODE: DeploymentFailed
 	if !strings.Contains(evidence.CanonicalEvidencePhrase, "detail code Conflict") {
 		t.Fatalf("expected canonical phrase to keep generic inner conflict code, got=%q", evidence.CanonicalEvidencePhrase)
 	}
-	if strings.Contains(strings.ToLower(evidence.CanonicalEvidencePhrase), "provider microsoft.eventgrid") {
-		t.Fatalf("expected canonical phrase to prefer inner detail code over provider fallback, got=%q", evidence.CanonicalEvidencePhrase)
+	// Provider is always appended alongside the detail code.
+	if !strings.Contains(strings.ToLower(evidence.CanonicalEvidencePhrase), "provider microsoft.eventgrid") {
+		t.Fatalf("expected provider Microsoft.EventGrid to be appended alongside detail code, got=%q", evidence.CanonicalEvidencePhrase)
 	}
 }
 
@@ -660,5 +663,118 @@ func TestExtractEvidenceLogfmtTimestampStripped(t *testing.T) {
 	}
 	if strings.Contains(gotA, "2026-04-17") || strings.Contains(gotA, "2026-04-18") {
 		t.Fatalf("canonical phrase must not contain raw timestamps, got=%q", gotA)
+	}
+}
+
+// Prow entrypoint: the "msg" field must be extracted so the canonical phrase is
+// the human-readable message, not the full JSON object.
+func TestExtractEvidenceProwEntrypointExtractsMsgField(t *testing.T) {
+	t.Parallel()
+
+	raw := `{"component":"entrypoint","file":"sigs.k8s.io/prow/pkg/entrypoint/run.go:169","func":"sigs.k8s.io/prow/pkg/entrypoint.Options.ExecuteProcess","level":"error","msg":"Process did not finish before 2h0m0s timeout","severity":"error","time":"2026-04-18T01:21:20Z"}`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if got != "Process did not finish before 2h0m0s timeout" {
+		t.Fatalf("expected clean msg value as canonical phrase, got=%q", got)
+	}
+}
+
+// Provider must always be appended to ERROR CODE canonical phrases when a
+// non-ignored resource provider is found in the error text.
+func TestExtractEvidenceErrorCodeIncludesProvider(t *testing.T) {
+	t.Parallel()
+
+	raw := `GET https://management.azure.com/subscriptions/XXXX/providers/Microsoft.Network/virtualNetworks
+RESPONSE 429: 429 Too Many Requests
+ERROR CODE: ResourceCollectionRequestsThrottled`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if !strings.Contains(strings.ToLower(got), "provider microsoft.network") {
+		t.Fatalf("expected provider Microsoft.Network in canonical phrase, got=%q", got)
+	}
+	if !strings.Contains(got, "ERROR CODE: ResourceCollectionRequestsThrottled") {
+		t.Fatalf("expected error code preserved in canonical phrase, got=%q", got)
+	}
+}
+
+// Microsoft.RedHatOpenShift must not be ignored so that our own RP errors are
+// attributed to their source in the canonical phrase.
+func TestExtractEvidenceRedHatOpenShiftProviderIncluded(t *testing.T) {
+	t.Parallel()
+
+	raw := `GET https://rp.example/subscriptions/XXXX/providers/Microsoft.RedHatOpenShift/locations/westus3/hcpOperationStatuses/abc
+RESPONSE 500: 500 Internal Server Error
+ERROR CODE: InternalServerError`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if !strings.Contains(strings.ToLower(got), "provider microsoft.redhatopenshift") {
+		t.Fatalf("expected provider Microsoft.RedHatOpenShift in canonical phrase, got=%q", got)
+	}
+}
+
+// OCP candidate version strings must be normalized so different versions that
+// produce the same "doesn't exist" error merge into a single failure pattern.
+func TestExtractEvidenceOCPVersionStringNormalized(t *testing.T) {
+	t.Parallel()
+
+	rawV4 := `PUT https://rp.example/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/cluster
+RESPONSE 400: 400 Bad Request
+ERROR CODE: InvalidRequestContent
+{"error":{"code":"InvalidRequestContent","message":"Version 'openshift-v4.22.0-candidate' doesn't exist"}}`
+
+	rawV5 := `PUT https://rp.example/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/cluster
+RESPONSE 400: 400 Bad Request
+ERROR CODE: InvalidRequestContent
+{"error":{"code":"InvalidRequestContent","message":"Version 'openshift-v5.1.0-candidate' doesn't exist"}}`
+
+	gotV4 := extractEvidence(rawV4).CanonicalEvidencePhrase
+	gotV5 := extractEvidence(rawV5).CanonicalEvidencePhrase
+	if gotV4 != gotV5 {
+		t.Fatalf("different OCP candidate versions must produce the same canonical:\n  v4=%q\n  v5=%q", gotV4, gotV5)
+	}
+	if strings.Contains(gotV4, "4.22.0") || strings.Contains(gotV4, "5.1.0") {
+		t.Fatalf("canonical phrase must not contain raw version numbers, got=%q", gotV4)
+	}
+}
+
+// Cluster internal IDs (OCM-style 32-char alphanumeric) must be normalized so
+// the same error class for different cluster instances merges into one pattern.
+func TestExtractEvidenceClusterInternalIDNormalized(t *testing.T) {
+	t.Parallel()
+
+	rawA := `PATCH https://management.azure.com/subscriptions/XXXX/resourceGroups/rg-a/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/cluster
+RESPONSE 400: 400 Bad Request
+ERROR CODE: InvalidRequestContent
+{"error":{"code":"InvalidRequestContent","message":"Cluster '2pmeojr923nt08rchn2mn56al24muh61' is in state 'pending_update', can't update"}}`
+
+	rawB := `PATCH https://management.azure.com/subscriptions/XXXX/resourceGroups/rg-b/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/cluster
+RESPONSE 400: 400 Bad Request
+ERROR CODE: InvalidRequestContent
+{"error":{"code":"InvalidRequestContent","message":"Cluster '2pni671e890elvabbe631mnqcb4pi6te' is in state 'pending_update', can't update"}}`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if gotA != gotB {
+		t.Fatalf("same cluster-state error with different cluster IDs must canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+	if strings.Contains(gotA, "2pmeojr923nt08rchn2mn56al24muh61") {
+		t.Fatalf("canonical phrase must not contain raw cluster IDs, got=%q", gotA)
+	}
+}
+
+// Logfmt step-error lines: the err= field must be extracted as the canonical
+// so the actionable message is not truncated by the boilerplate prefix.
+func TestExtractEvidenceLogfmtStepErrorExtracts(t *testing.T) {
+	t.Parallel()
+
+	raw := `time=2026-04-17T11:04:14.653Z level=INFO msg="Running step." serviceGroup=Microsoft.Azure.ARO.HCP.Management.Infra resourceGroup=management step=delete-non-swift-user-nodepools
+time=2026-04-17T11:04:19.211Z level=ERROR msg="Step errored." serviceGroup=Microsoft.Azure.ARO.HCP.Management.Infra resourceGroup=management step=delete-non-swift-user-nodepools err="failed to prepare kubeconfig: failed to ensure cluster admin role: /me request is only valid with delegated authentication flow."`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if strings.Contains(strings.ToLower(got), "step errored") {
+		t.Fatalf("canonical phrase should not contain logfmt boilerplate 'Step errored.', got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "failed to prepare kubeconfig") {
+		t.Fatalf("canonical phrase should contain the actionable err= value, got=%q", got)
 	}
 }

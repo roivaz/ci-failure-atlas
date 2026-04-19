@@ -448,7 +448,7 @@ func providerAnchor(text string) string {
 
 func isIgnoredProvider(value string) bool {
 	switch value {
-	case "Microsoft.Resources", "Microsoft.RedHatOpenShift", "Microsoft.Azure.ARO":
+	case "Microsoft.Resources", "Microsoft.Azure.ARO":
 		return true
 	default:
 		return strings.HasPrefix(value, "Microsoft.Azure.ARO.HCP")

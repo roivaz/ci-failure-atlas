@@ -69,6 +69,16 @@ var (
 	// Gomega "Expected success, but got an error:" followed by optional type
 	// wrapper line, then the real error message.
 	reGomegaSuccessFailure = regexp.MustCompile(`(?i)Expected success, but got an error:\s*\n(?:[ \t]*<[^>\n]*>[ \t]*:?[ \t]*\n)?[ \t]*([^\n.]+)`)
+	// OCP version strings like openshift-v4.22.0-candidate (the version number
+	// is instance-specific; normalize so the same class of error merges).
+	reCleanOCPVersion = regexp.MustCompile(`\bopenshift-v[0-9]+\.[0-9]+\.[0-9]+-[a-z]+\b`)
+	// Single-quoted opaque alphanumeric IDs (≥20 chars) such as OCM cluster
+	// internal IDs that appear in Azure RP error messages.
+	reCleanQuotedOpaqueID = regexp.MustCompile(`'[a-z0-9]{20,}'`)
+	// logfmt err= field value extracted from a step-error log line.
+	// The pattern matches level=error … msg="Step errored." … err="<value>" to
+	// capture the actionable error message without logfmt boilerplate fields.
+	reLogfmtStepErroredErr = regexp.MustCompile(`(?i)level=error[^"]*msg="step errored\."[^"]*err="([^"]+)"`)
 )
 
 var normalizePickPatterns = []*regexp.Regexp{
@@ -219,17 +229,28 @@ func extractEvidence(text string) extractedEvidence {
 		}
 	}
 
-	if picked == "" {
-		picked = bestSignalErrorLine(raw)
-	}
-
 	// Prow entrypoint JSON lines are single-line structured logs whose only
 	// varying field across occurrences is "time".  Extract just the "msg"
 	// value so all instances of the same timeout canonicalize identically.
+	// This must run before bestSignalErrorLine so that the JSON line itself
+	// is not claimed as the canonical phrase.
 	if picked == "" {
 		if match := reProwEntrypointMsg.FindStringSubmatch(raw); len(match) > 1 {
 			picked = strings.TrimSpace(match[1])
 		}
+	}
+
+	// Logfmt step-error lines: extract only the err= value from the raw text
+	// before bestSignalErrorLine can claim the full (potentially long) line and
+	// truncate it before the closing quote, preventing extraction of err=.
+	if picked == "" {
+		if match := reLogfmtStepErroredErr.FindStringSubmatch(raw); len(match) > 1 {
+			picked = strings.TrimSpace(match[1])
+		}
+	}
+
+	if picked == "" {
+		picked = bestSignalErrorLine(raw)
 	}
 
 	if picked == "" {
@@ -298,7 +319,7 @@ func extractEvidence(text string) extractedEvidence {
 		if leafMessage != "" {
 			parts = append(parts, "detail message "+leafMessage)
 		}
-		if leafCode == "" && leafMessage == "" && provider != "" {
+		if provider != "" {
 			parts = append(parts, "provider "+provider)
 		}
 		canonical = strings.Join(parts, "; ")
@@ -340,6 +361,15 @@ func extractEvidence(text string) extractedEvidence {
 		}
 	}
 
+	// For non-generic error codes the provider is not added by the block above;
+	// append it here so that every ERROR CODE canonical phrase identifies the
+	// resource provider that returned the error.
+	if code != "" && !isGenericCode(code) && provider != "" &&
+		strings.HasPrefix(strings.ToLower(canonical), "error code:") &&
+		!strings.Contains(strings.ToLower(canonical), "; provider ") {
+		canonical += "; provider " + provider
+	}
+
 	searchPhrase := chooseSearchPhrase(raw, []string{picked, canonical})
 	_, genericCanonical := map[string]struct{}{
 		"interrupted by user":         {},
@@ -349,7 +379,7 @@ func extractEvidence(text string) extractedEvidence {
 	}[strings.ToLower(canonical)]
 	genericPhrase := genericCanonical
 	if code != "" && isGenericCode(code) {
-		genericPhrase = leafCode == "" && leafMessage == ""
+		genericPhrase = leafCode == "" && leafMessage == "" && provider == ""
 	}
 
 	return extractedEvidence{
@@ -389,7 +419,7 @@ func providerAnchor(text string) string {
 
 func isIgnoredProvider(value string) bool {
 	switch value {
-	case "Microsoft.Resources", "Microsoft.RedHatOpenShift", "Microsoft.Azure.ARO":
+	case "Microsoft.Resources", "Microsoft.Azure.ARO":
 		return true
 	default:
 		return strings.HasPrefix(value, "Microsoft.Azure.ARO.HCP")
@@ -425,6 +455,8 @@ func cleanCanonical(value string) string {
 	text = reCleanDialTCPAddress.ReplaceAllString(text, "dial tcp <ip>:<port>")
 	text = reCleanLogfmtTimestamp.ReplaceAllString(text, "")
 	text = reCleanJSONTimeField.ReplaceAllString(text, "")
+	text = reCleanOCPVersion.ReplaceAllString(text, "openshift-v<version>")
+	text = reCleanQuotedOpaqueID.ReplaceAllString(text, "'<id>'")
 	text = collapseWS(text)
 	if len(text) > 260 {
 		text = truncateCanonical(text, 260)
