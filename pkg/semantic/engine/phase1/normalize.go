@@ -69,6 +69,10 @@ var (
 	// Gomega "Expected success, but got an error:" followed by optional type
 	// wrapper line, then the real error message.
 	reGomegaSuccessFailure = regexp.MustCompile(`(?i)Expected success, but got an error:\s*\n(?:[ \t]*<[^>\n]*>[ \t]*:?[ \t]*\n)?[ \t]*([^\n.]+)`)
+	// HCP API / reserved hostnames (e.g. api.<cluster>.<stamp>.<region>.aroapp-hcp.io).
+	// These appear in x509 certificate-mismatch error text and are cluster/stamp-
+	// specific; normalize so the same class of cert error merges across clusters.
+	reCleanHCPApiHost = regexp.MustCompile(`(?i)\b(?:api|reserved)\.[a-z0-9][a-z0-9.-]*\.aroapp-hcp\.io\b`)
 	// OCP version strings like openshift-v4.22.0-candidate (the version number
 	// is instance-specific; normalize so the same class of error merges).
 	reCleanOCPVersion = regexp.MustCompile(`\bopenshift-v[0-9]+\.[0-9]+\.[0-9]+-[a-z]+\b`)
@@ -455,6 +459,7 @@ func cleanCanonical(value string) string {
 	text = reCleanDialTCPAddress.ReplaceAllString(text, "dial tcp <ip>:<port>")
 	text = reCleanLogfmtTimestamp.ReplaceAllString(text, "")
 	text = reCleanJSONTimeField.ReplaceAllString(text, "")
+	text = reCleanHCPApiHost.ReplaceAllString(text, "<hcp-api-host>")
 	text = reCleanOCPVersion.ReplaceAllString(text, "openshift-v<version>")
 	text = reCleanQuotedOpaqueID.ReplaceAllString(text, "'<id>'")
 	text = collapseWS(text)

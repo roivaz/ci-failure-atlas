@@ -762,6 +762,29 @@ ERROR CODE: InvalidRequestContent
 	}
 }
 
+// HCP API hostnames (api.<cluster>.<stamp>.<region>.aroapp-hcp.io) appear in
+// x509 cert-mismatch error text and must be normalized so the same class of
+// cert error merges across different clusters and stamps.
+func TestCleanCanonicalNormalizesHCPApiHostname(t *testing.T) {
+	t.Parallel()
+
+	rawA := `tls: failed to verify certificate: x509: certificate is valid for api.a5t3f6u4j8a4a5h.4ufg.eastus2.aroapp-hcp.io, reserved.aroapp-hcp.io, not api.a5t3f6u4j8a4a5h.o0jt.eastus2.aroapp-hcp.io`
+	rawB := `tls: failed to verify certificate: x509: certificate is valid for api.ea-cluster.kv02.uksouth.aroapp-hcp.io, reserved.aroapp-hcp.io, not api.ea-cluster.50y5.uksouth.aroapp-hcp.io`
+
+	gotA := cleanCanonical(rawA)
+	gotB := cleanCanonical(rawB)
+
+	if strings.Contains(gotA, "a5t3f6u4j8a4a5h") || strings.Contains(gotA, "4ufg") {
+		t.Fatalf("cleanCanonical should normalize HCP hostname tokens, got=%q", gotA)
+	}
+	if !strings.Contains(gotA, "<hcp-api-host>") {
+		t.Fatalf("cleanCanonical should replace HCP hostname with <hcp-api-host>, got=%q", gotA)
+	}
+	if gotA != gotB {
+		t.Fatalf("cert-mismatch errors from different clusters must canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+}
+
 // Logfmt step-error lines: the err= field must be extracted as the canonical
 // so the actionable message is not truncated by the boilerplate prefix.
 func TestExtractEvidenceLogfmtStepErrorExtracts(t *testing.T) {
