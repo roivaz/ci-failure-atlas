@@ -2,6 +2,7 @@ package readmodel
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func TestBuildReviewWeekUsesServiceReadModel(t *testing.T) {
 		t.Fatalf("seed metrics daily: %v", err)
 	}
 	if err := currentStore.UpsertPhase3Issues(ctx, []semanticcontracts.Phase3IssueRecord{{
-		SchemaVersion: semanticcontracts.SchemaVersionV1,
+		SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 		IssueID:       "QE-123",
 		Title:         "OAuth flake",
 		CreatedAt:     "2026-03-16T12:00:00Z",
@@ -39,7 +40,7 @@ func TestBuildReviewWeekUsesServiceReadModel(t *testing.T) {
 		t.Fatalf("seed phase3 issue: %v", err)
 	}
 	if err := currentStore.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{{
-		SchemaVersion: semanticcontracts.SchemaVersionV1,
+		SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 		IssueID:       "QE-123",
 		Environment:   "dev",
 		RunURL:        "https://prow.example.com/view/1",
@@ -175,6 +176,120 @@ func TestBuildWeeklyReportDataBuildsCurrentAndPreviousReadModels(t *testing.T) {
 	}
 	if got, want := data.PreviousSemantic.ByEnvironment["dev"].FailurePatternClusters, 1; got != want {
 		t.Fatalf("unexpected previous semantic failure-pattern count: got=%d want=%d", got, want)
+	}
+}
+
+func TestBuildWeeklyReportDataUsesStoredReferencesForTopSignatureSamples(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t, "")
+	currentStore := fixture.openWeekStore(t, "2026-03-15")
+
+	if err := currentStore.ReplaceMaterializedWeek(ctx, sharedSignatureMaterializedWeek()); err != nil {
+		t.Fatalf("seed current materialized week: %v", err)
+	}
+	if err := currentStore.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment:    "dev",
+			RowID:          "row-finalize",
+			RunURL:         "https://prow.example.com/view/shared",
+			TestName:       "finalize step",
+			TestSuite:      "suite-a",
+			SignatureID:    "sig-shared",
+			OccurredAt:     "2026-03-15T08:00:00Z",
+			RawText:        "failed post-install: resource not ready, name: finalize-mce-config",
+			NormalizedText: "finalize-mce-config timeout",
+		},
+		{
+			Environment:    "dev",
+			RowID:          "row-propagator",
+			RunURL:         "https://prow.example.com/view/shared",
+			TestName:       "propagator step",
+			TestSuite:      "suite-a",
+			SignatureID:    "sig-shared",
+			OccurredAt:     "2026-03-15T08:05:00Z",
+			RawText:        "resource not ready, name: grc-policy-propagator",
+			NormalizedText: "grc-policy-propagator timeout",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+	if err := currentStore.UpsertMetricsDaily(ctx, reportMetricsDaily()); err != nil {
+		t.Fatalf("seed metrics daily: %v", err)
+	}
+
+	data, err := BuildWeeklyReportData(ctx, currentStore, nil, WeeklyReportBuildOptions{
+		StartDate:  time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC),
+		TargetRate: 95.0,
+		Week:       "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("build weekly report data: %v", err)
+	}
+
+	rowsByPhrase := map[string]WeeklyTopSignature{}
+	for _, row := range data.TopSignaturesByEnv["dev"] {
+		rowsByPhrase[row.Phrase] = row
+	}
+
+	finalizeRow, ok := rowsByPhrase["finalize-mce-config timeout"]
+	if !ok {
+		t.Fatalf("missing finalize top signature: %+v", data.TopSignaturesByEnv["dev"])
+	}
+	if got, want := len(finalizeRow.FullErrorSamples), 1; got != want {
+		t.Fatalf("unexpected finalize sample count: got=%d want=%d", got, want)
+	}
+	if got, want := finalizeRow.FullErrorSamples[0], "failed post-install: resource not ready, name: finalize-mce-config"; got != want {
+		t.Fatalf("unexpected finalize sample: got=%q want=%q", got, want)
+	}
+
+	propagatorRow, ok := rowsByPhrase["grc-policy-propagator timeout"]
+	if !ok {
+		t.Fatalf("missing propagator top signature: %+v", data.TopSignaturesByEnv["dev"])
+	}
+	if got, want := len(propagatorRow.FullErrorSamples), 1; got != want {
+		t.Fatalf("unexpected propagator sample count: got=%d want=%d", got, want)
+	}
+	if got, want := propagatorRow.FullErrorSamples[0], "resource not ready, name: grc-policy-propagator"; got != want {
+		t.Fatalf("unexpected propagator sample: got=%q want=%q", got, want)
+	}
+}
+
+func TestBuildWeeklyReportDataRejectsMixedSchemaComparison(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t, "")
+	currentStore := fixture.openWeekStore(t, "2026-03-15")
+	previousStore := fixture.openWeekStore(t, "2026-03-08")
+
+	if err := currentStore.ReplaceMaterializedWeek(ctx, materializedWeekWithSchemaVersion(currentMaterializedWeek(), semanticcontracts.SchemaVersionV2)); err != nil {
+		t.Fatalf("seed current materialized week: %v", err)
+	}
+	if err := previousStore.ReplaceMaterializedWeek(ctx, materializedWeekWithSchemaVersion(previousMaterializedWeek(), semanticcontracts.SchemaVersionV1)); err != nil {
+		t.Fatalf("seed previous materialized week: %v", err)
+	}
+	if err := currentStore.UpsertRawFailures(ctx, sampleRawFailuresFixture()); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+	if err := currentStore.UpsertMetricsDaily(ctx, reportMetricsDaily()); err != nil {
+		t.Fatalf("seed metrics daily: %v", err)
+	}
+	if err := currentStore.UpsertTestMetadataDaily(ctx, reportTestMetadataDaily()); err != nil {
+		t.Fatalf("seed test metadata daily: %v", err)
+	}
+
+	_, err := BuildWeeklyReportData(ctx, currentStore, previousStore, WeeklyReportBuildOptions{
+		StartDate:  time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC),
+		TargetRate: 95.0,
+		Week:       "2026-03-15",
+	})
+	if err == nil {
+		t.Fatalf("expected mixed-schema weekly comparison to fail")
+	}
+	if !strings.Contains(err.Error(), "semantic week data load uses legacy semantic schema v1") {
+		t.Fatalf("expected mixed-schema comparison error, got=%v", err)
 	}
 }
 

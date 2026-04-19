@@ -176,7 +176,7 @@ func compileMergedGroup(group mergeGroup) semanticcontracts.FailurePatternRecord
 	}
 
 	return semanticcontracts.FailurePatternRecord{
-		SchemaVersion:                semanticcontracts.SchemaVersionV1,
+		SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 		Environment:                  group.Environment,
 		Phase2ClusterID:              strings.TrimSpace(group.OutputClusterID),
 		CanonicalEvidencePhrase:      strings.TrimSpace(representative.CanonicalEvidencePhrase),
@@ -243,7 +243,7 @@ func phase3AnchorKey(environment string, runURL string, rowID string) string {
 
 func normalizeGlobalCluster(row semanticcontracts.FailurePatternRecord) semanticcontracts.FailurePatternRecord {
 	normalized := row
-	normalized.SchemaVersion = semanticcontracts.SchemaVersionV1
+	normalized.SchemaVersion = semanticcontracts.CurrentSchemaVersion
 	normalized.Environment = normalizeEnvironment(row.Environment)
 	normalized.Phase2ClusterID = strings.TrimSpace(row.Phase2ClusterID)
 	normalized.CanonicalEvidencePhrase = strings.TrimSpace(row.CanonicalEvidencePhrase)

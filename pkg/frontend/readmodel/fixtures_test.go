@@ -83,7 +83,7 @@ func currentMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
 		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 				Environment:                  "dev",
 				Phase2ClusterID:              "cluster-dev-a",
 				CanonicalEvidencePhrase:      "OAuth timeout",
@@ -129,7 +129,7 @@ func previousMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
 		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 				Environment:                  "dev",
 				Phase2ClusterID:              "cluster-dev-old",
 				CanonicalEvidencePhrase:      "OAuth timeout",
@@ -161,6 +161,23 @@ func previousMaterializedWeek() storecontracts.MaterializedWeek {
 			},
 		},
 	}
+}
+
+func materializedWeekWithSchemaVersion(
+	week storecontracts.MaterializedWeek,
+	version string,
+) storecontracts.MaterializedWeek {
+	out := storecontracts.MaterializedWeek{
+		FailurePatterns: append([]semanticcontracts.FailurePatternRecord(nil), week.FailurePatterns...),
+		ReviewQueue:     append([]semanticcontracts.ReviewItemRecord(nil), week.ReviewQueue...),
+	}
+	for index := range out.FailurePatterns {
+		out.FailurePatterns[index].SchemaVersion = version
+	}
+	for index := range out.ReviewQueue {
+		out.ReviewQueue[index].SchemaVersion = version
+	}
+	return out
 }
 
 func sampleRunsFixture() []storecontracts.RunRecord {

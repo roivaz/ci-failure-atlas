@@ -234,6 +234,76 @@ func TestExtractEvidenceUsesAzureNestedInvalidRequestDetail(t *testing.T) {
 	}
 }
 
+func TestExtractEvidenceKeepsGenericAzureConflictDetailCode(t *testing.T) {
+	t.Parallel()
+
+	raw := `time=2026-03-02T16:29:57.122Z level=ERROR msg="Step errored." err="failed to run ARM step: failed to wait for deployment completion: GET https://management.azure.com/subscriptions/123/resourcegroups/hcp-underlay/providers/Microsoft.EventGrid/namespaces/arohcp/providers/Microsoft.Resources/deployments/x
+ERROR CODE: DeploymentFailed
+{ "error": { "code": "DeploymentFailed", "details": [ { "code": "Conflict", "message": "operation failed due to an internal server error" } ] } }"`
+
+	evidence := extractEvidence(raw)
+	if !strings.Contains(evidence.CanonicalEvidencePhrase, "detail code Conflict") {
+		t.Fatalf("expected canonical phrase to keep generic inner conflict code, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+	if strings.Contains(strings.ToLower(evidence.CanonicalEvidencePhrase), "provider microsoft.eventgrid") {
+		t.Fatalf("expected canonical phrase to prefer inner detail code over provider fallback, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+}
+
+func TestExtractEvidenceUsesAzureNestedRoleAssignmentLimitDetail(t *testing.T) {
+	t.Parallel()
+
+	raw := `ERROR CODE: DeploymentFailed
+{
+  "status": "Failed",
+  "error": {
+    "code": "DeploymentFailed",
+    "message": "At least one resource deployment operation failed.",
+    "details": [
+      {
+        "code": "Conflict",
+        "message": "{\r\n  \"error\": {\r\n    \"code\": \"RoleAssignmentLimitExceeded\",\r\n    \"message\": \"The role assignment limit for the subscription has been reached.\"\r\n  }\r\n}"
+      }
+    ]
+  }
+}`
+
+	evidence := extractEvidence(raw)
+	if !strings.Contains(evidence.CanonicalEvidencePhrase, "detail code RoleAssignmentLimitExceeded") {
+		t.Fatalf("expected canonical phrase to include role-assignment detail code, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+	if !strings.Contains(strings.ToLower(evidence.CanonicalEvidencePhrase), "detail message the role assignment limit for the subscription has been reached") {
+		t.Fatalf("expected canonical phrase to include role-assignment detail message, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+}
+
+func TestExtractEvidenceUsesAzureOverconstrainedAllocationDetail(t *testing.T) {
+	t.Parallel()
+
+	raw := `ERROR CODE: DeploymentFailed
+{
+  "status": "Failed",
+  "error": {
+    "code": "DeploymentFailed",
+    "message": "At least one resource deployment operation failed.",
+    "details": [
+      {
+        "code": "OverconstrainedZonalAllocationRequest",
+        "message": "Allocation failed. We do not have sufficient capacity for the requested VM size in this zone. Please try again later."
+      }
+    ]
+  }
+}`
+
+	evidence := extractEvidence(raw)
+	if !strings.Contains(evidence.CanonicalEvidencePhrase, "detail code OverconstrainedZonalAllocationRequest") {
+		t.Fatalf("expected canonical phrase to include zonal allocation detail code, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+	if !strings.Contains(strings.ToLower(evidence.CanonicalEvidencePhrase), "detail message allocation failed.") {
+		t.Fatalf("expected canonical phrase to include normalized allocation failure summary, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+}
+
 func TestExtractEvidenceSkipsTruncatedAzureDetailCodeSuffix(t *testing.T) {
 	t.Parallel()
 

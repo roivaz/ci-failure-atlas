@@ -28,7 +28,7 @@ func BuildWorkset(rows []semanticinput.EnrichedFailure) []semanticcontracts.Phas
 		occurredAt := strings.TrimSpace(row.OccurredAt)
 
 		workset = append(workset, semanticcontracts.Phase1WorksetRecord{
-			SchemaVersion:  semanticcontracts.SchemaVersionV1,
+			SchemaVersion:  semanticcontracts.CurrentSchemaVersion,
 			Environment:    environment,
 			RowID:          rowID,
 			GroupKey:       buildGroupKey(environment, lane, defaultKeyPart(jobName, "unknown"), defaultKeyPart(testName, "unknown")),

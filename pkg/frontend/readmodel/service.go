@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
+	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 	postgresstore "ci-failure-atlas/pkg/store/postgres"
 
@@ -79,14 +81,74 @@ func (s *Service) DiscoverSemanticWeeks(ctx context.Context) ([]string, error) {
 	if s == nil {
 		return nil, fmt.Errorf("service is required")
 	}
-	weeks, err := postgresstore.ListWeeks(ctx, s.postgresPool)
+	weeks, err := s.discoverAllSemanticWeeks(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list semantic weeks from postgres: %w", err)
+		return nil, err
 	}
 	if len(weeks) == 0 {
 		return nil, ErrNoSemanticWeeks
 	}
+	loadableWeeks := make([]string, 0, len(weeks))
+	for _, week := range weeks {
+		weekSchemaVersion, err := s.semanticWeekSchemaVersion(ctx, week)
+		if err != nil {
+			return nil, err
+		}
+		if !semanticcontracts.IsCurrentOrUnsetSchemaVersion(weekSchemaVersion) {
+			continue
+		}
+		loadableWeeks = append(loadableWeeks, week)
+	}
+	if len(loadableWeeks) == 0 {
+		return nil, ErrNoSemanticWeeks
+	}
+	return loadableWeeks, nil
+}
+
+func (s *Service) discoverAllSemanticWeeks(ctx context.Context) ([]string, error) {
+	if s == nil {
+		return nil, fmt.Errorf("service is required")
+	}
+	weeks, err := postgresstore.ListWeeks(ctx, s.postgresPool)
+	if err != nil {
+		return nil, fmt.Errorf("list semantic weeks from postgres: %w", err)
+	}
 	return weeks, nil
+}
+
+func (s *Service) semanticWeekSchemaVersion(ctx context.Context, week string) (string, error) {
+	store, err := s.OpenStoreForWeek(week)
+	if err != nil {
+		return "", err
+	}
+	weekSchemaVersion, inferErr := semanticquery.InferStoreWeekSchemaVersion(ctx, store)
+	_ = store.Close()
+	if inferErr != nil {
+		return "", fmt.Errorf("inspect semantic week %s schema version: %w", week, inferErr)
+	}
+	return weekSchemaVersion, nil
+}
+
+func (s *Service) explainUnavailableWeek(ctx context.Context, week string) error {
+	rawWeeks, err := s.discoverAllSemanticWeeks(ctx)
+	if err != nil {
+		return err
+	}
+	index := sort.SearchStrings(rawWeeks, week)
+	if index >= len(rawWeeks) || rawWeeks[index] != week {
+		return fmt.Errorf("%w: %s", ErrSemanticWeekNotFound, week)
+	}
+	weekSchemaVersion, err := s.semanticWeekSchemaVersion(ctx, week)
+	if err != nil {
+		return err
+	}
+	if err := semanticcontracts.RequireCurrentSchemaVersion(
+		weekSchemaVersion,
+		fmt.Sprintf("semantic week %s", week),
+	); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %s", ErrSemanticWeekNotFound, week)
 }
 
 func (s *Service) ResolveWeekWindow(ctx context.Context, requestedWeek string, now time.Time) (WeekWindow, error) {
@@ -131,11 +193,20 @@ func (s *Service) OpenStoreForWeek(week string) (storecontracts.Store, error) {
 }
 
 func (s *Service) BuildHistoryResolver(ctx context.Context, week string) (semhistory.FailurePatternHistoryResolver, error) {
+	return s.BuildHistoryResolverForWeek(ctx, week, "")
+}
+
+func (s *Service) BuildHistoryResolverForWeek(
+	ctx context.Context,
+	week string,
+	currentSchemaVersion string,
+) (semhistory.FailurePatternHistoryResolver, error) {
 	if s == nil {
 		return nil, fmt.Errorf("service is required")
 	}
 	return semhistory.BuildFailurePatternHistoryResolver(ctx, semhistory.BuildOptions{
 		CurrentWeek:                        strings.TrimSpace(week),
+		CurrentSchemaVersion:               currentSchemaVersion,
 		FailurePatternHistoryLookbackWeeks: s.historyWeeks,
 		ListWeeks: func(ctx context.Context) ([]string, error) {
 			return s.DiscoverSemanticWeeks(ctx)
@@ -160,7 +231,7 @@ func (s *Service) ensureWeekExists(ctx context.Context, week string) (string, er
 	}
 	index := sort.SearchStrings(weeks, normalizedWeek)
 	if index >= len(weeks) || weeks[index] != normalizedWeek {
-		return "", fmt.Errorf("%w: %s", ErrSemanticWeekNotFound, normalizedWeek)
+		return "", s.explainUnavailableWeek(ctx, normalizedWeek)
 	}
 	return normalizedWeek, nil
 }

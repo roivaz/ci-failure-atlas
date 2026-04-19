@@ -16,6 +16,7 @@ type LoadWeekDataOptions struct {
 }
 
 type WeekData struct {
+	WeekSchemaVersion         string
 	SourceFailurePatterns     []semanticcontracts.FailurePatternRecord
 	FailurePatterns           []semanticcontracts.FailurePatternRecord
 	ReviewQueue               []semanticcontracts.ReviewItemRecord
@@ -26,6 +27,25 @@ type WeekData struct {
 	FailurePatternCountsByEnv map[string]int
 	OccurrenceTotalsByEnv     map[string]int
 	AvailableEnvironments     []string
+}
+
+func InferStoreWeekSchemaVersion(ctx context.Context, store storecontracts.Store) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("store is required")
+	}
+	sourceFailurePatterns, err := store.ListFailurePatterns(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list failure patterns: %w", err)
+	}
+	reviewQueue, err := store.ListReviewQueue(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list review queue: %w", err)
+	}
+	weekSchemaVersion, err := semanticcontracts.InferWeekSchemaVersion(sourceFailurePatterns, reviewQueue)
+	if err != nil {
+		return "", fmt.Errorf("infer semantic schema version: %w", err)
+	}
+	return weekSchemaVersion, nil
 }
 
 func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeekDataOptions) (WeekData, error) {
@@ -40,6 +60,13 @@ func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeek
 	reviewQueue, err := store.ListReviewQueue(ctx)
 	if err != nil {
 		return WeekData{}, fmt.Errorf("list review queue: %w", err)
+	}
+	weekSchemaVersion, err := semanticcontracts.InferWeekSchemaVersion(sourceFailurePatterns, reviewQueue)
+	if err != nil {
+		return WeekData{}, fmt.Errorf("infer semantic schema version: %w", err)
+	}
+	if err := semanticcontracts.RequireCurrentSchemaVersion(weekSchemaVersion, "semantic week data load"); err != nil {
+		return WeekData{}, err
 	}
 	summary, err := store.GetSemanticWeekSummary(ctx)
 	if err != nil {
@@ -63,6 +90,7 @@ func LoadWeekData(ctx context.Context, store storecontracts.Store, opts LoadWeek
 	}
 
 	return WeekData{
+		WeekSchemaVersion:         weekSchemaVersion,
 		SourceFailurePatterns:     sourceFailurePatterns,
 		FailurePatterns:           globalClusters,
 		ReviewQueue:               reviewQueue,

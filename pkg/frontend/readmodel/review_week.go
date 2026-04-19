@@ -47,7 +47,7 @@ type ReviewWeekSnapshot struct {
 
 type reviewSignalIndex struct {
 	ByPhase1ClusterID map[string]map[string]struct{}
-	BySignatureID     map[string]map[string]struct{}
+	ByReferenceKey    map[string]map[string]struct{}
 }
 
 func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (ReviewWeekSnapshot, error) {
@@ -154,7 +154,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 		return ReviewWeekSnapshot{}, fmt.Errorf("load overall metric run counts: %w", err)
 	}
 
-	historyResolver, err := s.BuildHistoryResolver(ctx, week)
+	historyResolver, err := s.BuildHistoryResolverForWeek(ctx, week, weekData.WeekSchemaVersion)
 	if err != nil {
 		return ReviewWeekSnapshot{}, fmt.Errorf("build signature history resolver: %w", err)
 	}
@@ -339,7 +339,7 @@ func (s *Service) BuildReviewWeek(ctx context.Context, requestedWeek string) (Re
 func buildReviewSignalIndex(rows []semanticcontracts.ReviewItemRecord) reviewSignalIndex {
 	index := reviewSignalIndex{
 		ByPhase1ClusterID: map[string]map[string]struct{}{},
-		BySignatureID:     map[string]map[string]struct{}{},
+		ByReferenceKey:    map[string]map[string]struct{}{},
 	}
 	for _, row := range rows {
 		reason := strings.TrimSpace(row.Reason)
@@ -358,15 +358,11 @@ func buildReviewSignalIndex(rows []semanticcontracts.ReviewItemRecord) reviewSig
 			}
 			set[reason] = struct{}{}
 		}
-		for _, signatureID := range row.MemberSignatureIDs {
-			key := strings.TrimSpace(signatureID)
-			if key == "" {
-				continue
-			}
-			set := index.BySignatureID[key]
+		for _, key := range reviewReferenceKeys(row.Environment, row.References) {
+			set := index.ByReferenceKey[key]
 			if set == nil {
 				set = map[string]struct{}{}
-				index.BySignatureID[key] = set
+				index.ByReferenceKey[key] = set
 			}
 			set[reason] = struct{}{}
 		}
@@ -381,8 +377,8 @@ func reviewReasonsForCluster(cluster semanticcontracts.FailurePatternRecord, ind
 			set[reason] = struct{}{}
 		}
 	}
-	for _, signatureID := range cluster.MemberSignatureIDs {
-		for reason := range index.BySignatureID[strings.TrimSpace(signatureID)] {
+	for _, key := range reviewReferenceKeys(cluster.Environment, cluster.References) {
+		for reason := range index.ByReferenceKey[key] {
 			set[reason] = struct{}{}
 		}
 	}
@@ -392,6 +388,51 @@ func reviewReasonsForCluster(cluster semanticcontracts.FailurePatternRecord, ind
 	}
 	sort.Strings(out)
 	return out
+}
+
+func reviewReferenceKeys(environment string, references []semanticcontracts.ReferenceRecord) []string {
+	if len(references) == 0 {
+		return nil
+	}
+	normalizedEnvironment := normalizeEnvironment(environment)
+	if normalizedEnvironment == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(references)*2)
+	appendKey := func(key string) {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := seen[trimmed]; ok {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	for _, reference := range references {
+		if rowKey := semanticquery.EnvironmentRowKey(normalizedEnvironment, reference.RowID); rowKey != "" {
+			appendKey("row|" + rowKey)
+		}
+		appendKey(reviewReferenceTupleKey(normalizedEnvironment, reference.RunURL, reference.OccurredAt, reference.SignatureID))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func reviewReferenceTupleKey(environment string, runURL string, occurredAt string, signatureID string) string {
+	normalizedEnvironment := normalizeEnvironment(environment)
+	trimmedRunURL := strings.TrimSpace(runURL)
+	trimmedOccurredAt := strings.TrimSpace(occurredAt)
+	trimmedSignatureID := strings.TrimSpace(signatureID)
+	if normalizedEnvironment == "" {
+		return ""
+	}
+	if trimmedRunURL == "" && trimmedOccurredAt == "" && trimmedSignatureID == "" {
+		return ""
+	}
+	return "ref|" + normalizedEnvironment + "|" + trimmedRunURL + "|" + trimmedOccurredAt + "|" + trimmedSignatureID
 }
 
 func reviewAnchorsForCluster(environment string, references []semanticcontracts.ReferenceRecord) []ReviewPhase3Anchor {

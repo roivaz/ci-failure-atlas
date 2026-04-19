@@ -58,6 +58,7 @@ type FailurePatternReportCluster struct {
 }
 
 type FailurePatternReportData struct {
+	WeekSchemaVersion              string
 	FailurePatternClusters         []FailurePatternReportCluster
 	TargetEnvironments             []string
 	OverallJobsByEnvironment       map[string]int
@@ -120,6 +121,7 @@ func BuildFailurePatternReportData(ctx context.Context, store storecontracts.Sto
 		}
 		historyResolver, err = semhistory.BuildFailurePatternHistoryResolver(ctx, semhistory.BuildOptions{
 			CurrentWeek:                        strings.TrimSpace(opts.Week),
+			CurrentSchemaVersion:               weekData.WeekSchemaVersion,
 			FailurePatternHistoryLookbackWeeks: lookbackWeeks,
 		})
 		if err != nil {
@@ -131,6 +133,7 @@ func BuildFailurePatternReportData(ctx context.Context, store storecontracts.Sto
 	failurePatternRows = failurePatternReportAttachLinkedChildren(failurePatternRows, reportLinkedChildrenByClusterKey)
 
 	return FailurePatternReportData{
+		WeekSchemaVersion:              weekData.WeekSchemaVersion,
 		FailurePatternClusters:         failurePatternRows,
 		TargetEnvironments:             append([]string(nil), targetEnvironments...),
 		OverallJobsByEnvironment:       cloneIntMap(overallJobsByEnvironment),
@@ -414,20 +417,9 @@ func failurePatternReportAttachFullErrorSamples(
 	out := append([]FailurePatternReportCluster(nil), clusters...)
 	for index := range out {
 		cluster := out[index]
-		signatureIDs := map[string]struct{}{}
-		for _, signatureID := range cluster.MemberSignatureIDs {
-			trimmed := strings.TrimSpace(signatureID)
-			if trimmed == "" {
-				continue
-			}
-			signatureIDs[trimmed] = struct{}{}
-		}
-		for _, ref := range cluster.References {
-			trimmed := strings.TrimSpace(ref.SignatureID)
-			if trimmed == "" {
-				continue
-			}
-			signatureIDs[trimmed] = struct{}{}
+		referencesByKey := failurePatternsReferenceMatchMap(cluster.References)
+		if len(referencesByKey) == 0 {
+			continue
 		}
 
 		samples := make([]string, 0, limit)
@@ -458,11 +450,8 @@ func failurePatternReportAttachFullErrorSamples(
 				if len(samples) >= limit {
 					break
 				}
-				signatureID := strings.TrimSpace(runRow.SignatureID)
-				if len(signatureIDs) > 0 {
-					if _, ok := signatureIDs[signatureID]; !ok {
-						continue
-					}
+				if _, ok := failurePatternsStoredReferenceForRawFailure(runRow, referencesByKey); !ok {
+					continue
 				}
 				sample := strings.TrimSpace(runRow.RawText)
 				if sample == "" {

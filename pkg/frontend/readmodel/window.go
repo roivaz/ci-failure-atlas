@@ -167,7 +167,7 @@ func (s *Service) resolvePresentationWindow(
 	for _, semanticWeek := range semanticWeeks {
 		index := sort.SearchStrings(availableWeeks, semanticWeek)
 		if index >= len(availableWeeks) || availableWeeks[index] != semanticWeek {
-			return presentationWindow{}, fmt.Errorf("%w: %s", ErrSemanticWeekNotFound, semanticWeek)
+			return presentationWindow{}, s.explainUnavailableWeek(ctx, semanticWeek)
 		}
 	}
 

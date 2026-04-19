@@ -830,7 +830,7 @@ func linkAnchors(ctx context.Context, store storecontracts.Store, phase3ClusterI
 	}
 	if err := store.UpsertPhase3Issues(ctx, []semanticcontracts.Phase3IssueRecord{
 		{
-			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 			IssueID:       normalizedClusterID,
 			CreatedAt:     createdAt,
 			UpdatedAt:     now,
@@ -847,7 +847,7 @@ func linkAnchors(ctx context.Context, store storecontracts.Store, phase3ClusterI
 			continue
 		}
 		linkRows = append(linkRows, semanticcontracts.Phase3LinkRecord{
-			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 			IssueID:       normalizedClusterID,
 			Environment:   normalizeEnvironment(anchor.Environment),
 			RunURL:        strings.TrimSpace(anchor.RunURL),
@@ -855,7 +855,7 @@ func linkAnchors(ctx context.Context, store storecontracts.Store, phase3ClusterI
 			UpdatedAt:     now,
 		})
 		eventRows = append(eventRows, semanticcontracts.Phase3EventRecord{
-			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 			EventID:       phase3EventID(phase3ActionLink, normalizedClusterID, anchor, now),
 			Action:        phase3ActionLink,
 			IssueID:       normalizedClusterID,
@@ -910,7 +910,7 @@ func unlinkAnchors(ctx context.Context, store storecontracts.Store, anchors []ph
 			RowID:       strings.TrimSpace(anchor.RowID),
 		})
 		eventRows = append(eventRows, semanticcontracts.Phase3EventRecord{
-			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 			EventID:       phase3EventID(phase3ActionUnlink, phase3ClusterID, anchor, now),
 			Action:        phase3ActionUnlink,
 			IssueID:       phase3ClusterID,

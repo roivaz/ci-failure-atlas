@@ -137,7 +137,7 @@ func Classify(rows []semanticcontracts.Phase1NormalizedRecord) []semanticcontrac
 					groupKey = buildGroupKey(row.Environment, row.Lane, row.JobName, row.TestName)
 				}
 				assignments = append(assignments, semanticcontracts.Phase1AssignmentRecord{
-					SchemaVersion:                    semanticcontracts.SchemaVersionV1,
+					SchemaVersion:                    semanticcontracts.CurrentSchemaVersion,
 					Environment:                      strings.TrimSpace(row.Environment),
 					RowID:                            row.RowID,
 					GroupKey:                         groupKey,

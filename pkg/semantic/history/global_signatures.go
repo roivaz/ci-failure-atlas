@@ -15,6 +15,7 @@ const defaultLookbackWeeks = 4
 
 type BuildOptions struct {
 	CurrentWeek                        string
+	CurrentSchemaVersion               string
 	FailurePatternHistoryLookbackWeeks int
 	ListWeeks                          func(context.Context) ([]string, error)
 	OpenStore                          func(context.Context, string) (storecontracts.Store, error)
@@ -140,6 +141,24 @@ func BuildFailurePatternHistoryResolver(ctx context.Context, opts BuildOptions) 
 		if err != nil {
 			_ = weekStore.Close()
 			return nil, fmt.Errorf("list failure patterns for week %q: %w", weekName, err)
+		}
+		reviewQueue, err := weekStore.ListReviewQueue(ctx)
+		if err != nil {
+			_ = weekStore.Close()
+			return nil, fmt.Errorf("list review queue for week %q: %w", weekName, err)
+		}
+		weekSchemaVersion, err := semanticcontracts.InferWeekSchemaVersion(rows, reviewQueue)
+		if err != nil {
+			_ = weekStore.Close()
+			return nil, fmt.Errorf("infer semantic schema version for week %q: %w", weekName, err)
+		}
+		if err := semanticcontracts.RequireCompatibleWeekSchemas(
+			opts.CurrentSchemaVersion,
+			weekSchemaVersion,
+			fmt.Sprintf("semantic history for current week %s", currentWeekLabel),
+		); err != nil {
+			_ = weekStore.Close()
+			return nil, err
 		}
 		phase3Links, err := weekStore.ListPhase3Links(ctx)
 		_ = weekStore.Close()

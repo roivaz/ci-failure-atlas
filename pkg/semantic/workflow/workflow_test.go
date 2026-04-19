@@ -360,8 +360,8 @@ func TestRunPhase2BuildsFailurePatternsAndMergedReview(t *testing.T) {
 		t.Fatalf("run phase2: %v", err)
 	}
 
-	if len(phase2Result.FailurePatterns) != 2 {
-		t.Fatalf("unexpected failure-pattern count: got=%d want=2", len(phase2Result.FailurePatterns))
+	if len(phase2Result.FailurePatterns) != 1 {
+		t.Fatalf("unexpected failure-pattern count: got=%d want=1", len(phase2Result.FailurePatterns))
 	}
 	if len(phase2Result.ReviewQueue) != 2 {
 		t.Fatalf("unexpected review queue size: got=%d want=2", len(phase2Result.ReviewQueue))

@@ -2,6 +2,7 @@ package readmodel
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
@@ -187,6 +188,34 @@ func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 	}
 }
 
+func TestBuildFailurePatternsRejectsMixedSchemaAcrossWeeks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t, "")
+	currentStore := fixture.openWeekStore(t, "2026-03-15")
+	nextStore := fixture.openWeekStore(t, "2026-03-22")
+
+	if err := currentStore.ReplaceMaterializedWeek(ctx, materializedWeekWithSchemaVersion(currentMaterializedWeek(), semanticcontracts.SchemaVersionV1)); err != nil {
+		t.Fatalf("seed current materialized week: %v", err)
+	}
+	if err := nextStore.ReplaceMaterializedWeek(ctx, materializedWeekWithSchemaVersion(currentMaterializedWeek(), semanticcontracts.SchemaVersionV2)); err != nil {
+		t.Fatalf("seed next materialized week: %v", err)
+	}
+
+	_, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
+		StartDate:    "2026-03-16",
+		EndDate:      "2026-03-22",
+		Environments: []string{"dev"},
+	})
+	if err == nil {
+		t.Fatalf("expected mixed-schema window build to fail")
+	}
+	if !strings.Contains(err.Error(), "semantic week 2026-03-15 uses legacy semantic schema v1") {
+		t.Fatalf("expected mixed-schema error, got=%v", err)
+	}
+}
+
 func TestBuildFailurePatternsBadPRScoreUsesWindowReferenceSpread(t *testing.T) {
 	t.Parallel()
 
@@ -323,7 +352,7 @@ func TestBuildFailurePatternsUsesStoredReferencesWhenClustersShareSignature(t *t
 	week := storecontracts.MaterializedWeek{
 		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
-				SchemaVersion:           semanticcontracts.SchemaVersionV1,
+				SchemaVersion:           semanticcontracts.CurrentSchemaVersion,
 				Environment:             "dev",
 				Phase2ClusterID:         "cluster-finalize",
 				CanonicalEvidencePhrase: "finalize-mce-config timeout",
@@ -350,7 +379,7 @@ func TestBuildFailurePatternsUsesStoredReferencesWhenClustersShareSignature(t *t
 				},
 			},
 			{
-				SchemaVersion:           semanticcontracts.SchemaVersionV1,
+				SchemaVersion:           semanticcontracts.CurrentSchemaVersion,
 				Environment:             "dev",
 				Phase2ClusterID:         "cluster-propagator",
 				CanonicalEvidencePhrase: "grc-policy-propagator timeout",

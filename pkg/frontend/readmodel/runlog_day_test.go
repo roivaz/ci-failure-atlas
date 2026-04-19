@@ -21,7 +21,7 @@ func TestBuildRunLogDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 	}
 	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
 		{
-			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 			IssueID:       "issue-dev-oauth",
 			Environment:   "dev",
 			RunURL:        "https://prow.example.com/view/1",
@@ -172,6 +172,92 @@ func TestBuildRunLogDayHandlesMultipleSignaturesOnOneRun(t *testing.T) {
 	}
 }
 
+func TestBuildRunLogDayUsesStoredReferencesWhenClustersShareSignature(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t, "")
+	store := fixture.openWeekStore(t, "2026-03-15")
+
+	if err := store.ReplaceMaterializedWeek(ctx, sharedSignatureMaterializedWeek()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/shared",
+			JobName:     "periodic-ci",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T08:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment:    "dev",
+			RowID:          "row-finalize",
+			RunURL:         "https://prow.example.com/view/shared",
+			TestName:       "finalize step",
+			TestSuite:      "suite-a",
+			SignatureID:    "sig-shared",
+			OccurredAt:     "2026-03-16T08:00:00Z",
+			RawText:        "failed post-install: resource not ready, name: finalize-mce-config",
+			NormalizedText: "finalize-mce-config timeout",
+		},
+		{
+			Environment:    "dev",
+			RowID:          "row-propagator",
+			RunURL:         "https://prow.example.com/view/shared",
+			TestName:       "propagator step",
+			TestSuite:      "suite-a",
+			SignatureID:    "sig-shared",
+			OccurredAt:     "2026-03-16T08:05:00Z",
+			RawText:        "resource not ready, name: grc-policy-propagator",
+			NormalizedText: "grc-policy-propagator timeout",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	data, err := fixture.service.BuildRunLogDay(ctx, RunLogDayQuery{
+		Date:         "2026-03-16",
+		Environments: []string{"dev"},
+	})
+	if err != nil {
+		t.Fatalf("build job history day: %v", err)
+	}
+
+	run := jobHistoryRunByURL(t, jobHistoryEnvironmentByName(t, data, "dev"), "https://prow.example.com/view/shared")
+	if got, want := run.SemanticRollups.ClusteredRows, 2; got != want {
+		t.Fatalf("unexpected clustered row count: got=%d want=%d", got, want)
+	}
+	if got, want := len(run.SemanticRollups.DistinctClusterIDs), 2; got != want {
+		t.Fatalf("unexpected distinct cluster count: got=%d want=%d", got, want)
+	}
+
+	rowsByID := map[string]JobHistoryFailureRow{}
+	for _, row := range run.FailureRows {
+		rowsByID[row.RowID] = row
+	}
+
+	finalizeRow := rowsByID["row-finalize"]
+	if got, want := finalizeRow.SemanticAttachment.ClusterID, "cluster-finalize"; got != want {
+		t.Fatalf("unexpected finalize cluster id: got=%q want=%q", got, want)
+	}
+	if got, want := finalizeRow.SemanticAttachment.CanonicalEvidencePhrase, "finalize-mce-config timeout"; got != want {
+		t.Fatalf("unexpected finalize phrase: got=%q want=%q", got, want)
+	}
+
+	propagatorRow := rowsByID["row-propagator"]
+	if got, want := propagatorRow.SemanticAttachment.ClusterID, "cluster-propagator"; got != want {
+		t.Fatalf("unexpected propagator cluster id: got=%q want=%q", got, want)
+	}
+	if got, want := propagatorRow.SemanticAttachment.CanonicalEvidencePhrase, "grc-policy-propagator timeout"; got != want {
+		t.Fatalf("unexpected propagator phrase: got=%q want=%q", got, want)
+	}
+}
+
 func TestBuildRunLogDayFlagsFailedRunsWithoutRawRows(t *testing.T) {
 	t.Parallel()
 
@@ -251,10 +337,75 @@ func TestBuildRunLogDayUsesWeeklySemanticBadPRScore(t *testing.T) {
 	}
 }
 
+func sharedSignatureMaterializedWeek() storecontracts.MaterializedWeek {
+	return storecontracts.MaterializedWeek{
+		FailurePatterns: []semanticcontracts.FailurePatternRecord{
+			{
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
+				Environment:                  "dev",
+				Phase2ClusterID:              "cluster-finalize",
+				CanonicalEvidencePhrase:      "finalize-mce-config timeout",
+				SearchQueryPhrase:            "finalize-mce-config timeout",
+				SearchQuerySourceRunURL:      "https://prow.example.com/view/shared",
+				SearchQuerySourceSignatureID: "sig-shared",
+				SupportCount:                 1,
+				ContributingTestsCount:       1,
+				ContributingTests: []semanticcontracts.ContributingTestRecord{
+					{
+						Lane:         "upgrade",
+						JobName:      "periodic-ci",
+						TestName:     "finalize step",
+						SupportCount: 1,
+					},
+				},
+				MemberPhase1ClusterIDs: []string{"phase1-shared"},
+				MemberSignatureIDs:     []string{"sig-shared"},
+				References: []semanticcontracts.ReferenceRecord{
+					{
+						RowID:       "row-finalize",
+						RunURL:      "https://prow.example.com/view/shared",
+						OccurredAt:  "2026-03-16T08:00:00Z",
+						SignatureID: "sig-shared",
+					},
+				},
+			},
+			{
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
+				Environment:                  "dev",
+				Phase2ClusterID:              "cluster-propagator",
+				CanonicalEvidencePhrase:      "grc-policy-propagator timeout",
+				SearchQueryPhrase:            "grc-policy-propagator timeout",
+				SearchQuerySourceRunURL:      "https://prow.example.com/view/shared",
+				SearchQuerySourceSignatureID: "sig-shared",
+				SupportCount:                 1,
+				ContributingTestsCount:       1,
+				ContributingTests: []semanticcontracts.ContributingTestRecord{
+					{
+						Lane:         "upgrade",
+						JobName:      "periodic-ci",
+						TestName:     "propagator step",
+						SupportCount: 1,
+					},
+				},
+				MemberPhase1ClusterIDs: []string{"phase1-shared"},
+				MemberSignatureIDs:     []string{"sig-shared"},
+				References: []semanticcontracts.ReferenceRecord{
+					{
+						RowID:       "row-propagator",
+						RunURL:      "https://prow.example.com/view/shared",
+						OccurredAt:  "2026-03-16T08:05:00Z",
+						SignatureID: "sig-shared",
+					},
+				},
+			},
+		},
+	}
+}
+
 func jobHistoryMaterializedWeekWithExtraCluster() storecontracts.MaterializedWeek {
 	week := currentMaterializedWeek()
 	week.FailurePatterns = append(week.FailurePatterns, semanticcontracts.FailurePatternRecord{
-		SchemaVersion:                semanticcontracts.SchemaVersionV1,
+		SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 		Environment:                  "dev",
 		Phase2ClusterID:              "cluster-dev-c",
 		CanonicalEvidencePhrase:      "API throttling",

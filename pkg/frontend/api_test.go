@@ -364,7 +364,7 @@ func TestHandleAPIRunsDayReturnsJSON(t *testing.T) {
 	}
 	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
 		{
-			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 			IssueID:       "QE-999",
 			Environment:   "dev",
 			RunURL:        "https://prow.example.com/view/job-history-1",
@@ -611,7 +611,7 @@ func TestHandleReviewAPIWeekReturnsJSON(t *testing.T) {
 	}
 	if err := store.UpsertPhase3Issues(ctx, []semanticcontracts.Phase3IssueRecord{
 		{
-			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 			IssueID:       "QE-123",
 			Title:         "OAuth flake",
 			CreatedAt:     "2026-03-16T12:00:00Z",
@@ -622,7 +622,7 @@ func TestHandleReviewAPIWeekReturnsJSON(t *testing.T) {
 	}
 	if err := store.UpsertPhase3Links(ctx, []semanticcontracts.Phase3LinkRecord{
 		{
-			SchemaVersion: semanticcontracts.SchemaVersionV1,
+			SchemaVersion: semanticcontracts.CurrentSchemaVersion,
 			IssueID:       "QE-123",
 			Environment:   "dev",
 			RunURL:        "https://prow.example.com/view/1",
@@ -930,7 +930,7 @@ func reviewAPIMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
 		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 				Environment:                  "dev",
 				Phase2ClusterID:              "cluster-dev-linked",
 				CanonicalEvidencePhrase:      "OAuth timeout",
@@ -959,7 +959,7 @@ func reviewAPIMaterializedWeek() storecontracts.MaterializedWeek {
 				},
 			},
 			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 				Environment:                  "dev",
 				Phase2ClusterID:              "cluster-dev-unlinked",
 				CanonicalEvidencePhrase:      "CreateNodePool timeout 45 min",
@@ -1030,7 +1030,7 @@ func jobHistoryAPIMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
 		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 				Environment:                  "dev",
 				Phase2ClusterID:              "cluster-dev-oauth",
 				CanonicalEvidencePhrase:      "OAuth timeout",
@@ -1060,7 +1060,7 @@ func jobHistoryAPIMaterializedWeek() storecontracts.MaterializedWeek {
 				},
 			},
 			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 				Environment:                  "dev",
 				Phase2ClusterID:              "cluster-dev-api-throttle",
 				CanonicalEvidencePhrase:      "API throttling",
@@ -1164,7 +1164,7 @@ func reviewActionMaterializedWeek() storecontracts.MaterializedWeek {
 	return storecontracts.MaterializedWeek{
 		FailurePatterns: []semanticcontracts.FailurePatternRecord{
 			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 				Environment:                  "dev",
 				Phase2ClusterID:              "cluster-dev-a",
 				CanonicalEvidencePhrase:      "OAuth timeout waiting for kube-apiserver",
@@ -1193,7 +1193,7 @@ func reviewActionMaterializedWeek() storecontracts.MaterializedWeek {
 				},
 			},
 			{
-				SchemaVersion:                semanticcontracts.SchemaVersionV1,
+				SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 				Environment:                  "dev",
 				Phase2ClusterID:              "cluster-dev-b",
 				CanonicalEvidencePhrase:      "OAuth timeout while cluster operators settle",

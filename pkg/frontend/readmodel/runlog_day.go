@@ -95,7 +95,7 @@ type runLogDayScope struct {
 	ResolvedWeek string
 }
 
-type jobHistorySignatureCluster struct {
+type jobHistoryReferenceCluster struct {
 	ClusterID               string
 	CanonicalEvidencePhrase string
 	SearchQueryPhrase       string
@@ -145,7 +145,7 @@ func (s *Service) BuildRunLogDay(ctx context.Context, query RunLogDayQuery) (Run
 		return RunLogDayData{}, fmt.Errorf("load run history day facts: %w", err)
 	}
 
-	clusterBySignature := buildJobHistorySignatureIndex(weekData.FailurePatterns)
+	clusterByReference := buildJobHistoryReferenceIndex(weekData.FailurePatterns)
 	phase3IssueByAnchor := buildJobHistoryPhase3IssueIndex(weekData.Phase3Links)
 
 	generatedAt := query.GeneratedAt
@@ -162,7 +162,7 @@ func (s *Service) BuildRunLogDay(ctx context.Context, query RunLogDayQuery) (Run
 		runs := buildJobHistoryRunRows(
 			normalizedEnvironment,
 			factsByEnvironment[normalizedEnvironment],
-			clusterBySignature,
+			clusterByReference,
 			phase3IssueByAnchor,
 		)
 		environments = append(environments, RunLogDayEnvironment{
@@ -203,7 +203,7 @@ func resolveRunLogDayScope(query RunLogDayQuery) (runLogDayScope, error) {
 func buildJobHistoryRunRows(
 	environment string,
 	facts failurePatternsEnvironmentFacts,
-	clusterBySignature map[string]jobHistorySignatureCluster,
+	clusterByReference map[string]jobHistoryReferenceCluster,
 	phase3IssueByAnchor map[string]string,
 ) []JobHistoryRunRow {
 	rawFailuresByRun := map[string][]storecontracts.RawFailureRecord{}
@@ -224,7 +224,7 @@ func buildJobHistoryRunRows(
 		failures := buildJobHistoryFailureRows(
 			environment,
 			rawFailuresByRun[runURL],
-			clusterBySignature,
+			clusterByReference,
 			phase3IssueByAnchor,
 		)
 		badPRScore, badPRReasons := jobHistoryWeeklyBadPR(failures)
@@ -246,14 +246,13 @@ func buildJobHistoryRunRows(
 func buildJobHistoryFailureRows(
 	environment string,
 	rawFailures []storecontracts.RawFailureRecord,
-	clusterBySignature map[string]jobHistorySignatureCluster,
+	clusterByReference map[string]jobHistoryReferenceCluster,
 	phase3IssueByAnchor map[string]string,
 ) []JobHistoryFailureRow {
 	rows := make([]JobHistoryFailureRow, 0, len(rawFailures))
 	for _, row := range rawFailures {
 		signatureID := strings.TrimSpace(row.SignatureID)
-		signatureKey := jobHistoryFailurePatternKey(environment, signatureID)
-		cluster, matched := clusterBySignature[signatureKey]
+		cluster, matched := findJobHistoryClusterForRawFailure(environment, row, clusterByReference)
 
 		attachment := JobHistorySemanticAttachment{
 			Status: "unmatched",
@@ -369,8 +368,8 @@ func buildRunLogDaySummary(runs []JobHistoryRunRow) RunLogDaySummary {
 	return summary
 }
 
-func buildJobHistorySignatureIndex(clusters []semanticcontracts.FailurePatternRecord) map[string]jobHistorySignatureCluster {
-	index := map[string]jobHistorySignatureCluster{}
+func buildJobHistoryReferenceIndex(clusters []semanticcontracts.FailurePatternRecord) map[string]jobHistoryReferenceCluster {
+	index := map[string]jobHistoryReferenceCluster{}
 	phraseEnvironments := jobHistoryPhraseEnvironments(clusters)
 	for _, cluster := range clusters {
 		environment := normalizeEnvironment(cluster.Environment)
@@ -387,7 +386,7 @@ func buildJobHistorySignatureIndex(clusters []semanticcontracts.FailurePatternRe
 			AlsoIn:             otherEnvironments,
 			AffectedRuns:       jobHistoryRunReferences(cluster.References),
 		})
-		candidate := jobHistorySignatureCluster{
+		candidate := jobHistoryReferenceCluster{
 			ClusterID:               strings.TrimSpace(cluster.Phase2ClusterID),
 			CanonicalEvidencePhrase: strings.TrimSpace(cluster.CanonicalEvidencePhrase),
 			SearchQueryPhrase:       strings.TrimSpace(cluster.SearchQueryPhrase),
@@ -396,8 +395,7 @@ func buildJobHistorySignatureIndex(clusters []semanticcontracts.FailurePatternRe
 			BadPRScore:              badPRScore,
 			BadPRReasons:            append([]string(nil), badPRReasons...),
 		}
-		for _, signatureID := range cluster.MemberSignatureIDs {
-			key := jobHistoryFailurePatternKey(environment, signatureID)
+		for _, key := range jobHistoryReferenceKeys(environment, cluster.References) {
 			if key == "" {
 				continue
 			}
@@ -454,7 +452,7 @@ func buildJobHistoryPhase3IssueIndex(links []semanticcontracts.Phase3LinkRecord)
 	return index
 }
 
-func jobHistoryPrefersClusterCandidate(current jobHistorySignatureCluster, candidate jobHistorySignatureCluster) bool {
+func jobHistoryPrefersClusterCandidate(current jobHistoryReferenceCluster, candidate jobHistoryReferenceCluster) bool {
 	if candidate.SupportCount != current.SupportCount {
 		return candidate.SupportCount > current.SupportCount
 	}
@@ -466,13 +464,84 @@ func jobHistoryPrefersClusterCandidate(current jobHistorySignatureCluster, candi
 	return strings.TrimSpace(candidate.ClusterID) < strings.TrimSpace(current.ClusterID)
 }
 
-func jobHistoryFailurePatternKey(environment string, signatureID string) string {
+func findJobHistoryClusterForRawFailure(
+	environment string,
+	row storecontracts.RawFailureRecord,
+	clusterByReference map[string]jobHistoryReferenceCluster,
+) (jobHistoryReferenceCluster, bool) {
+	for _, key := range jobHistoryRawFailureKeys(environment, row) {
+		cluster, ok := clusterByReference[key]
+		if ok {
+			return cluster, true
+		}
+	}
+	return jobHistoryReferenceCluster{}, false
+}
+
+func jobHistoryReferenceKeys(environment string, references []semanticcontracts.ReferenceRecord) []string {
+	if len(references) == 0 {
+		return nil
+	}
 	normalizedEnvironment := normalizeEnvironment(environment)
-	trimmedSignatureID := strings.TrimSpace(signatureID)
-	if normalizedEnvironment == "" || trimmedSignatureID == "" {
+	if normalizedEnvironment == "" {
+		return nil
+	}
+	out := make([]string, 0, len(references)*2)
+	seen := map[string]struct{}{}
+	appendKey := func(key string) {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := seen[trimmed]; ok {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	for _, reference := range references {
+		appendKey(jobHistoryReferenceRowKey(normalizedEnvironment, reference.RowID))
+		appendKey(jobHistoryReferenceTupleKey(normalizedEnvironment, reference.RunURL, reference.OccurredAt, reference.SignatureID))
+	}
+	return out
+}
+
+func jobHistoryRawFailureKeys(environment string, row storecontracts.RawFailureRecord) []string {
+	normalizedEnvironment := normalizeEnvironment(environment)
+	if normalizedEnvironment == "" {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	if key := jobHistoryReferenceRowKey(normalizedEnvironment, row.RowID); key != "" {
+		out = append(out, key)
+	}
+	if key := jobHistoryReferenceTupleKey(normalizedEnvironment, row.RunURL, row.OccurredAt, row.SignatureID); key != "" {
+		out = append(out, key)
+	}
+	return out
+}
+
+func jobHistoryReferenceRowKey(environment string, rowID string) string {
+	normalizedEnvironment := normalizeEnvironment(environment)
+	rowKey := semanticquery.EnvironmentRowKey(normalizedEnvironment, rowID)
+	if rowKey == "" {
 		return ""
 	}
-	return normalizedEnvironment + "|" + trimmedSignatureID
+	return "row|" + rowKey
+}
+
+func jobHistoryReferenceTupleKey(environment string, runURL string, occurredAt string, signatureID string) string {
+	normalizedEnvironment := normalizeEnvironment(environment)
+	trimmedRunURL := strings.TrimSpace(runURL)
+	trimmedOccurredAt := strings.TrimSpace(occurredAt)
+	trimmedSignatureID := strings.TrimSpace(signatureID)
+	if normalizedEnvironment == "" {
+		return ""
+	}
+	if trimmedRunURL == "" && trimmedOccurredAt == "" && trimmedSignatureID == "" {
+		return ""
+	}
+	return "ref|" + normalizedEnvironment + "|" + trimmedRunURL + "|" + trimmedOccurredAt + "|" + trimmedSignatureID
 }
 
 func sortJobHistoryRunRows(rows []JobHistoryRunRow) {

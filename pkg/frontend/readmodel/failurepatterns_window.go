@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	semhistory "ci-failure-atlas/pkg/semantic/history"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
@@ -119,22 +120,33 @@ func (s *Service) BuildFailurePatterns(ctx context.Context, query FailurePattern
 	requestedEnvironments := normalizeStringSlice(query.Environments)
 	weeklyDataByWeek := make(map[string]FailurePatternReportData, len(scope.SemanticWeeks))
 	targetEnvironmentSet := map[string]struct{}{}
+	windowSchemaVersion := ""
 	for _, week := range scope.SemanticWeeks {
 		store, err := s.OpenStoreForWeek(week)
 		if err != nil {
 			return FailurePatternsData{}, err
 		}
-		historyResolver, err := s.BuildHistoryResolver(ctx, week)
-		if err != nil {
-			_ = store.Close()
-			return FailurePatternsData{}, fmt.Errorf("build failure-pattern history resolver for %s: %w", week, err)
-		}
 		weeklyData, err := BuildFailurePatternReportData(ctx, store, FailurePatternReportBuildOptions{
 			Week:                week,
 			Environments:        requestedEnvironments,
 			HistoryHorizonWeeks: s.historyWeeks,
-			HistoryResolver:     historyResolver,
 		})
+		if err == nil {
+			err = semanticcontracts.RequireCompatibleWeekSchemas(
+				windowSchemaVersion,
+				weeklyData.WeekSchemaVersion,
+				fmt.Sprintf("failure-pattern window %s..%s", scope.StartDate, scope.EndDate),
+			)
+		}
+		if err == nil && strings.TrimSpace(windowSchemaVersion) == "" {
+			windowSchemaVersion = weeklyData.WeekSchemaVersion
+		}
+		if err == nil {
+			weeklyData.HistoryResolver, err = s.BuildHistoryResolverForWeek(ctx, week, weeklyData.WeekSchemaVersion)
+			if err != nil {
+				err = fmt.Errorf("build failure-pattern history resolver for %s: %w", week, err)
+			}
+		}
 		_ = store.Close()
 		if err != nil {
 			return FailurePatternsData{}, fmt.Errorf("build weekly failure-pattern data for window week %s: %w", week, err)
@@ -724,16 +736,8 @@ func mergeFailurePatternsSamples(existing []string, incoming []string, limit int
 }
 
 func matchFailurePatternsCluster(cluster FailurePatternReportCluster, facts failurePatternsEnvironmentFacts) failurePatternsMatch {
-	signatureSet := map[string]struct{}{}
-	for _, signatureID := range cluster.MemberSignatureIDs {
-		trimmed := strings.TrimSpace(signatureID)
-		if trimmed == "" {
-			continue
-		}
-		signatureSet[trimmed] = struct{}{}
-	}
 	referencesByKey := failurePatternsReferenceMatchMap(cluster.References)
-	if len(signatureSet) == 0 && len(referencesByKey) == 0 {
+	if len(referencesByKey) == 0 {
 		return failurePatternsMatch{}
 	}
 
@@ -743,18 +747,8 @@ func matchFailurePatternsCluster(cluster FailurePatternReportCluster, facts fail
 	}
 	failedRunURLs := map[string]struct{}{}
 	for _, row := range facts.RawFailures {
-		signatureID := strings.TrimSpace(row.SignatureID)
-		if len(referencesByKey) == 0 {
-			if _, ok := signatureSet[signatureID]; !ok {
-				continue
-			}
-		} else {
-			if _, ok := signatureSet[signatureID]; len(signatureSet) > 0 && !ok {
-				continue
-			}
-			if _, ok := failurePatternsStoredReferenceForRawFailure(row, referencesByKey); !ok {
-				continue
-			}
+		if _, ok := failurePatternsStoredReferenceForRawFailure(row, referencesByKey); !ok {
+			continue
 		}
 		match.FailureCount++
 		match.RawFailures = append(match.RawFailures, row)

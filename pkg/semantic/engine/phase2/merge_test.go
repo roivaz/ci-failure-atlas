@@ -65,7 +65,7 @@ func TestMergeBuildsDeterministicGlobalCluster(t *testing.T) {
 	}
 
 	cluster := globalClusters[0]
-	expectedPhase2ID := fingerprint("phase1-a,phase1-b")
+	expectedPhase2ID := fingerprint("unknown|phase2|failed waiting for cluster operators")
 	if cluster.Phase2ClusterID != expectedPhase2ID {
 		t.Fatalf("unexpected phase2 cluster id: got=%q want=%q", cluster.Phase2ClusterID, expectedPhase2ID)
 	}
@@ -86,7 +86,7 @@ func TestMergeBuildsDeterministicGlobalCluster(t *testing.T) {
 	}
 }
 
-func TestMergeSplitsGenericCanonicalByProvider(t *testing.T) {
+func TestMergeMergesGenericCanonicalAcrossProvidersAndAddsReview(t *testing.T) {
 	t.Parallel()
 
 	testClusters := []semanticcontracts.TestClusterRecord{
@@ -122,16 +122,19 @@ func TestMergeSplitsGenericCanonicalByProvider(t *testing.T) {
 		},
 	}
 
-	globalClusters, _, err := Merge(testClusters, nil)
+	globalClusters, reviewItems, err := Merge(testClusters, nil)
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
-	if len(globalClusters) != 2 {
-		t.Fatalf("expected provider split into 2 failure patterns, got=%d", len(globalClusters))
+	if len(globalClusters) != 1 {
+		t.Fatalf("expected provider variants to merge into 1 failure pattern, got=%d", len(globalClusters))
+	}
+	if len(reviewItems) != 1 || reviewItems[0].Reason != "ambiguous_provider_merge" {
+		t.Fatalf("expected ambiguous provider review item after merge, got=%+v", reviewItems)
 	}
 }
 
-func TestMergeDoesNotMergeAcrossLanes(t *testing.T) {
+func TestMergeMergesGenericCanonicalAcrossLanes(t *testing.T) {
 	t.Parallel()
 
 	testClusters := []semanticcontracts.TestClusterRecord{
@@ -175,8 +178,8 @@ func TestMergeDoesNotMergeAcrossLanes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
-	if len(globalClusters) != 2 {
-		t.Fatalf("expected lane split into 2 failure patterns, got=%d", len(globalClusters))
+	if len(globalClusters) != 1 {
+		t.Fatalf("expected generic lane variants to merge into 1 failure pattern, got=%d", len(globalClusters))
 	}
 }
 

@@ -22,6 +22,9 @@ func (s *Store) replaceMaterializedWeekImpl(ctx context.Context, week storecontr
 	if err != nil {
 		return err
 	}
+	if _, err := semanticcontracts.InferWeekSchemaVersion(globalRows, reviewRows); err != nil {
+		return fmt.Errorf("validate semantic schema version: %w", err)
+	}
 	currentWeek := weekScope(s.week)
 	if currentWeek == "" {
 		return fmt.Errorf("week is required to replace materialized week")

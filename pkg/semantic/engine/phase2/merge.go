@@ -156,8 +156,6 @@ func compileGlobalCluster(members []semanticcontracts.TestClusterRecord) (semant
 
 	sort.Strings(memberPhase1IDs)
 	memberSignatures := sortedKeys(memberSignaturesSet)
-	phase2ClusterID := fingerprint(strings.Join(memberPhase1IDs, ","))
-
 	contributingList := make([]semanticcontracts.ContributingTestRecord, 0, len(contributingTests))
 	for _, row := range contributingTests {
 		contributingList = append(contributingList, row)
@@ -192,8 +190,17 @@ func compileGlobalCluster(members []semanticcontracts.TestClusterRecord) (semant
 		}
 	}
 
+	identitySeed := strings.ToLower(strings.TrimSpace(representative.CanonicalEvidencePhrase))
+	if identitySeed == "" {
+		identitySeed = strings.ToLower(strings.TrimSpace(searchQueryPhrase))
+	}
+	if identitySeed == "" {
+		identitySeed = strings.Join(referenceIdentityKeys(references), ",")
+	}
+	phase2ClusterID := fingerprint(environment + "|phase2|" + identitySeed)
+
 	return semanticcontracts.FailurePatternRecord{
-		SchemaVersion:                semanticcontracts.SchemaVersionV1,
+		SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 		Environment:                  environment,
 		Phase2ClusterID:              phase2ClusterID,
 		CanonicalEvidencePhrase:      strings.TrimSpace(representative.CanonicalEvidencePhrase),
@@ -323,7 +330,7 @@ func buildPhase2AmbiguousProviderReviewItems(testClusters []semanticcontracts.Te
 			firstRef = references[0]
 		}
 		reviewItems = append(reviewItems, semanticcontracts.ReviewItemRecord{
-			SchemaVersion:                        semanticcontracts.SchemaVersionV1,
+			SchemaVersion:                        semanticcontracts.CurrentSchemaVersion,
 			Environment:                          environment,
 			Phase:                                "phase2",
 			Reason:                               "ambiguous_provider_merge",
@@ -344,18 +351,16 @@ func phase2Key(cluster semanticcontracts.TestClusterRecord) string {
 	canonical := strings.ToLower(collapseWS(cluster.CanonicalEvidencePhrase))
 	canonical = rePlaceholderToken.ReplaceAllString(canonical, "")
 	canonical = collapseWS(canonical)
-	laneKey := phase2LaneKey(cluster.Lane)
-
-	if !isGenericCanonical(canonical) {
-		return "lane:" + laneKey + "|phrase:" + canonical
+	if canonical != "" {
+		return "phrase:" + canonical
 	}
-
-	anchor := ""
-	anchor = providerAnchorFromCluster(cluster)
-	if anchor == "" {
-		anchor = "<none>"
+	search := strings.ToLower(collapseWS(cluster.SearchQueryPhrase))
+	search = rePlaceholderToken.ReplaceAllString(search, "")
+	search = collapseWS(search)
+	if search != "" {
+		return "search:" + search
 	}
-	return "lane:" + laneKey + "|phrase:" + canonical + "|provider:" + anchor
+	return "phase1:" + strings.TrimSpace(cluster.Phase1ClusterID)
 }
 
 func phase2LaneKey(lane string) string {
@@ -539,7 +544,7 @@ func normalizeTestCluster(row semanticcontracts.TestClusterRecord) semanticcontr
 	sortReferences(references)
 
 	return semanticcontracts.TestClusterRecord{
-		SchemaVersion:                semanticcontracts.SchemaVersionV1,
+		SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 		Environment:                  defaultKeyPart(strings.TrimSpace(row.Environment), "unknown"),
 		Phase1ClusterID:              strings.TrimSpace(row.Phase1ClusterID),
 		Lane:                         strings.TrimSpace(row.Lane),
@@ -591,7 +596,7 @@ func normalizeReviewItem(row semanticcontracts.ReviewItemRecord) semanticcontrac
 	sortReferences(references)
 
 	return semanticcontracts.ReviewItemRecord{
-		SchemaVersion:                        semanticcontracts.SchemaVersionV1,
+		SchemaVersion:                        semanticcontracts.CurrentSchemaVersion,
 		Environment:                          defaultKeyPart(strings.TrimSpace(row.Environment), "unknown"),
 		ReviewItemID:                         strings.TrimSpace(row.ReviewItemID),
 		Phase:                                strings.TrimSpace(row.Phase),
@@ -625,7 +630,7 @@ func finalizeReviewIDs(rows []semanticcontracts.ReviewItemRecord) []semanticcont
 			"|" + strings.TrimSpace(normalized.Phase) +
 			"|" + strings.TrimSpace(normalized.Reason) +
 			"|" + strings.Join(normalized.SourcePhase1ClusterIDs, ",") +
-			"|" + strings.Join(normalized.MemberSignatureIDs, ",")
+			"|" + strings.Join(referenceIdentityKeys(normalized.References), ",")
 		normalized.ReviewItemID = fingerprint(seed)
 		out = append(out, normalized)
 	}
@@ -657,6 +662,19 @@ func referenceKey(row semanticcontracts.ReferenceRecord) string {
 		return ""
 	}
 	return runURL + "|" + occurredAt + "|" + signatureID
+}
+
+func referenceIdentityKeys(rows []semanticcontracts.ReferenceRecord) []string {
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		key := referenceKey(row)
+		if key == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func fingerprint(value string) string {

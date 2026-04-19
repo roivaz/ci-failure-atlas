@@ -123,7 +123,7 @@ func Normalize(workset []semanticcontracts.Phase1WorksetRecord) []semanticcontra
 	for _, row := range workset {
 		evidence := extractEvidence(row.RawText)
 		out = append(out, semanticcontracts.Phase1NormalizedRecord{
-			SchemaVersion:           semanticcontracts.SchemaVersionV1,
+			SchemaVersion:           semanticcontracts.CurrentSchemaVersion,
 			Environment:             strings.TrimSpace(row.Environment),
 			RowID:                   row.RowID,
 			GroupKey:                row.GroupKey,
@@ -175,13 +175,6 @@ func phase1Key(evidence extractedEvidence) string {
 	base := strings.ToLower(collapseWS(evidence.CanonicalEvidencePhrase))
 	base = rePhase1Placeholder.ReplaceAllString(base, "")
 	base = collapseWS(base)
-	if evidence.GenericPhrase {
-		provider := evidence.ProviderAnchor
-		if strings.TrimSpace(provider) == "" {
-			provider = "<none>"
-		}
-		return base + "|provider:" + provider
-	}
 	return base
 }
 
@@ -254,13 +247,18 @@ func extractEvidence(text string) extractedEvidence {
 	picked = refineDeserializationNoOutputPicked(raw, picked)
 
 	code := ""
+	leafCode := ""
+	leafMessage := ""
 	if match := reErrorCode.FindStringSubmatch(picked); len(match) > 1 {
 		code = strings.TrimSpace(match[1])
+	}
+	if code == "" {
+		code = rootAzureErrorCode(raw)
 	}
 	canonical := cleanCanonical(picked)
 
 	if code != "" && isGenericCode(code) {
-		leafCode, leafMessage := extractLeafAzureDetail(raw, code)
+		leafCode, leafMessage = extractLeafAzureDetail(raw, code)
 		parts := []string{"ERROR CODE: " + code}
 		if leafCode != "" {
 			parts = append(parts, "detail code "+leafCode)
@@ -317,7 +315,10 @@ func extractEvidence(text string) extractedEvidence {
 		"context deadline exceeded":   {},
 		"timeout during createhcpclusterfromparam; context deadline exceeded": {},
 	}[strings.ToLower(canonical)]
-	genericPhrase := (code != "" && isGenericCode(code)) || genericCanonical
+	genericPhrase := genericCanonical
+	if code != "" && isGenericCode(code) {
+		genericPhrase = leafCode == "" && leafMessage == ""
+	}
 
 	return extractedEvidence{
 		CanonicalEvidencePhrase: canonical,
@@ -600,13 +601,11 @@ func extractLeafAzureDetail(text string, rootCode string) (string, string) {
 
 	root := strings.ToLower(strings.TrimSpace(rootCode))
 	fallbackCode := ""
+	genericFallbackCode := ""
 	for i := len(hits) - 1; i >= 0; i-- {
 		code := strings.TrimSpace(hits[i].Code)
 		lowered := strings.ToLower(code)
 		if lowered == "" || lowered == root {
-			continue
-		}
-		if _, generic := genericCodes[lowered]; generic {
 			continue
 		}
 		if lowered == "resourcedeploymentfailure" || lowered == "deploymentfailed" {
@@ -617,6 +616,15 @@ func extractLeafAzureDetail(text string, rootCode string) (string, string) {
 		}
 
 		message := summarizeAzureDetailMessage(extractAzureMessageForCode(decoded, code))
+		if _, generic := genericCodes[lowered]; generic {
+			if message != "" {
+				return code, message
+			}
+			if genericFallbackCode == "" {
+				genericFallbackCode = code
+			}
+			continue
+		}
 		if message != "" {
 			return code, message
 		}
@@ -627,11 +635,32 @@ func extractLeafAzureDetail(text string, rootCode string) (string, string) {
 	if fallbackCode != "" {
 		return fallbackCode, ""
 	}
+	if genericFallbackCode != "" {
+		return genericFallbackCode, ""
+	}
 	rootMessage := summarizeAzureDetailMessage(extractAzureMessageForCode(decoded, rootCode))
 	if rootMessage != "" {
 		return "", rootMessage
 	}
 	return "", ""
+}
+
+func rootAzureErrorCode(text string) string {
+	if match := reErrorCode.FindStringSubmatch(text); len(match) > 1 {
+		code := strings.TrimSpace(match[1])
+		if code != "" {
+			return code
+		}
+	}
+	hits := collectAzureCodeHits(decodeEscapedErrorPayload(text))
+	for _, hit := range hits {
+		code := strings.TrimSpace(hit.Code)
+		if code == "" {
+			continue
+		}
+		return code
+	}
+	return ""
 }
 
 func collectAzureCodeHits(text string) []azureCodeHit {
@@ -750,6 +779,9 @@ func summarizeAzureDetailMessage(message string) string {
 
 	normalized := cleanCanonical(trimmed)
 	normalized = reQuotaRequiredAvailable.ReplaceAllString(normalized, "required <count>, available <count>")
+	if idx := strings.Index(strings.ToLower(normalized), "allocation failed."); idx >= 0 {
+		normalized = strings.TrimSpace(normalized[idx:])
+	}
 	lowered := strings.ToLower(normalized)
 	for _, generic := range []string{
 		"at least one resource deployment operation failed",
@@ -772,7 +804,7 @@ func summarizeAzureDetailMessage(message string) string {
 		normalized = strings.TrimSpace(normalized[:idx+1])
 	}
 
-	if len(strings.Fields(normalized)) < 3 {
+	if len(strings.Fields(normalized)) < 3 && !strings.EqualFold(strings.TrimSpace(normalized), "Allocation failed.") {
 		return ""
 	}
 	return truncateCanonical(normalized, 180)

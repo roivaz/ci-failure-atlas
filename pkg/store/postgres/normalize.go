@@ -358,7 +358,7 @@ func normalizeFailurePatternRecord(row semanticcontracts.FailurePatternRecord) s
 	}
 	contributingTests := normalizeContributingTests(row.ContributingTests)
 	return semanticcontracts.FailurePatternRecord{
-		SchemaVersion:                strings.TrimSpace(row.SchemaVersion),
+		SchemaVersion:                semanticcontracts.NormalizeSchemaVersion(row.SchemaVersion),
 		Environment:                  normalizeSemanticEnvironment(row.Environment),
 		Phase2ClusterID:              strings.TrimSpace(row.Phase2ClusterID),
 		CanonicalEvidencePhrase:      strings.TrimSpace(row.CanonicalEvidencePhrase),
@@ -378,7 +378,7 @@ func normalizeFailurePatternRecord(row semanticcontracts.FailurePatternRecord) s
 
 func normalizeReviewItemRecord(row semanticcontracts.ReviewItemRecord) semanticcontracts.ReviewItemRecord {
 	return semanticcontracts.ReviewItemRecord{
-		SchemaVersion:                        strings.TrimSpace(row.SchemaVersion),
+		SchemaVersion:                        semanticcontracts.NormalizeSchemaVersion(row.SchemaVersion),
 		Environment:                          normalizeSemanticEnvironment(row.Environment),
 		ReviewItemID:                         strings.TrimSpace(row.ReviewItemID),
 		Phase:                                strings.TrimSpace(row.Phase),
@@ -395,7 +395,7 @@ func normalizeReviewItemRecord(row semanticcontracts.ReviewItemRecord) semanticc
 
 func normalizePhase3IssueRecord(row semanticcontracts.Phase3IssueRecord) semanticcontracts.Phase3IssueRecord {
 	return semanticcontracts.Phase3IssueRecord{
-		SchemaVersion: strings.TrimSpace(row.SchemaVersion),
+		SchemaVersion: semanticcontracts.NormalizeSchemaVersion(row.SchemaVersion),
 		IssueID:       strings.TrimSpace(row.IssueID),
 		Title:         strings.TrimSpace(row.Title),
 		CreatedAt:     strings.TrimSpace(row.CreatedAt),
@@ -405,7 +405,7 @@ func normalizePhase3IssueRecord(row semanticcontracts.Phase3IssueRecord) semanti
 
 func normalizePhase3LinkRecord(row semanticcontracts.Phase3LinkRecord) semanticcontracts.Phase3LinkRecord {
 	return semanticcontracts.Phase3LinkRecord{
-		SchemaVersion: strings.TrimSpace(row.SchemaVersion),
+		SchemaVersion: semanticcontracts.NormalizeSchemaVersion(row.SchemaVersion),
 		IssueID:       strings.TrimSpace(row.IssueID),
 		Environment:   normalizeSemanticEnvironment(row.Environment),
 		RunURL:        strings.TrimSpace(row.RunURL),
@@ -416,7 +416,7 @@ func normalizePhase3LinkRecord(row semanticcontracts.Phase3LinkRecord) semanticc
 
 func normalizePhase3EventRecord(row semanticcontracts.Phase3EventRecord) semanticcontracts.Phase3EventRecord {
 	return semanticcontracts.Phase3EventRecord{
-		SchemaVersion: strings.TrimSpace(row.SchemaVersion),
+		SchemaVersion: semanticcontracts.NormalizeSchemaVersion(row.SchemaVersion),
 		EventID:       strings.TrimSpace(row.EventID),
 		Action:        strings.TrimSpace(row.Action),
 		IssueID:       strings.TrimSpace(row.IssueID),

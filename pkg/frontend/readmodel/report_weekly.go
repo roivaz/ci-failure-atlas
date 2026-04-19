@@ -85,11 +85,11 @@ type envReport = WeeklyEnvReport
 
 type WeeklySemanticEnvSummary struct {
 	FailurePatternClusters int
-	TestClusters   int
-	ReviewItems    int
-	TopPhrase      string
-	TopSupport     int
-	TopPostGood    int
+	TestClusters           int
+	ReviewItems            int
+	TopPhrase              string
+	TopSupport             int
+	TopPostGood            int
 }
 
 type semanticEnvSummary = WeeklySemanticEnvSummary
@@ -124,7 +124,7 @@ type WeeklySemanticSnapshot struct {
 	PhraseClusterIDByEnv             map[string]map[string]string
 	PhraseSearchQueryByEnv           map[string]map[string]string
 	PhraseRepresentativeSupportByEnv map[string]map[string]int
-	PhraseSignatureIDs               map[string]map[string]map[string]struct{}
+	PhraseReferenceKeysByEnv         map[string]map[string]map[string]struct{}
 	PhraseFullErrorsByEnv            map[string]map[string][]string
 }
 
@@ -215,6 +215,13 @@ func BuildWeeklyReportData(
 		if loadErr != nil {
 			return WeeklyReportData{}, fmt.Errorf("load previous semantic inputs: %w", loadErr)
 		}
+		if err := semanticcontracts.RequireCompatibleWeekSchemas(
+			currentWeekData.WeekSchemaVersion,
+			previousWeekData.WeekSchemaVersion,
+			"weekly report comparison",
+		); err != nil {
+			return WeeklyReportData{}, err
+		}
 		previousSemantic, err = loadSemanticSnapshot(previousWeekData)
 		if err != nil {
 			return WeeklyReportData{}, fmt.Errorf("load previous semantic week: %w", err)
@@ -229,6 +236,7 @@ func BuildWeeklyReportData(
 		}
 		historyResolver, err = semhistory.BuildFailurePatternHistoryResolver(ctx, semhistory.BuildOptions{
 			CurrentWeek:                        strings.TrimSpace(opts.Week),
+			CurrentSchemaVersion:               currentWeekData.WeekSchemaVersion,
 			FailurePatternHistoryLookbackWeeks: lookbackWeeks,
 		})
 		if err != nil {
@@ -332,7 +340,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		PhraseClusterIDByEnv:             map[string]map[string]string{},
 		PhraseSearchQueryByEnv:           map[string]map[string]string{},
 		PhraseRepresentativeSupportByEnv: map[string]map[string]int{},
-		PhraseSignatureIDs:               map[string]map[string]map[string]struct{}{},
+		PhraseReferenceKeysByEnv:         map[string]map[string]map[string]struct{}{},
 		PhraseFullErrorsByEnv:            map[string]map[string][]string{},
 	}
 
@@ -422,30 +430,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 			out.PhraseSearchQueryByEnv[environment][phrase] = strings.TrimSpace(row.SearchQueryPhrase)
 		}
 
-		if _, ok := out.PhraseSignatureIDs[environment]; !ok {
-			out.PhraseSignatureIDs[environment] = map[string]map[string]struct{}{}
-		}
-		if _, ok := out.PhraseSignatureIDs[environment][phrase]; !ok {
-			out.PhraseSignatureIDs[environment][phrase] = map[string]struct{}{}
-		}
-		signatureIDs := out.PhraseSignatureIDs[environment][phrase]
-		for _, signatureID := range row.MemberSignatureIDs {
-			trimmedSignatureID := strings.TrimSpace(signatureID)
-			if trimmedSignatureID == "" {
-				continue
-			}
-			signatureIDs[trimmedSignatureID] = struct{}{}
-		}
-		if sourceSignatureID := strings.TrimSpace(row.SearchQuerySourceSignatureID); sourceSignatureID != "" {
-			signatureIDs[sourceSignatureID] = struct{}{}
-		}
-		for _, ref := range row.References {
-			signatureID := strings.TrimSpace(ref.SignatureID)
-			if signatureID == "" {
-				continue
-			}
-			signatureIDs[signatureID] = struct{}{}
-		}
+		mergePhraseReferenceKeys(out.PhraseReferenceKeysByEnv, environment, phrase, row.References)
 
 		qualityCodes := QualityIssueCodes(strings.TrimSpace(phrase))
 		qualityLabels := make([]string, 0, len(qualityCodes))
@@ -488,30 +473,7 @@ func loadSemanticSnapshot(weekData semanticquery.WeekData) (semanticSnapshot, er
 		if phrase == "" {
 			phrase = "(unknown evidence)"
 		}
-		if _, ok := out.PhraseSignatureIDs[environment]; !ok {
-			out.PhraseSignatureIDs[environment] = map[string]map[string]struct{}{}
-		}
-		if _, ok := out.PhraseSignatureIDs[environment][phrase]; !ok {
-			out.PhraseSignatureIDs[environment][phrase] = map[string]struct{}{}
-		}
-		signatureIDs := out.PhraseSignatureIDs[environment][phrase]
-		for _, signatureID := range row.MemberSignatureIDs {
-			trimmedSignatureID := strings.TrimSpace(signatureID)
-			if trimmedSignatureID == "" {
-				continue
-			}
-			signatureIDs[trimmedSignatureID] = struct{}{}
-		}
-		if sourceSignatureID := strings.TrimSpace(row.SearchQuerySourceSignatureID); sourceSignatureID != "" {
-			signatureIDs[sourceSignatureID] = struct{}{}
-		}
-		for _, ref := range row.References {
-			signatureID := strings.TrimSpace(ref.SignatureID)
-			if signatureID == "" {
-				continue
-			}
-			signatureIDs[signatureID] = struct{}{}
-		}
+		mergePhraseReferenceKeys(out.PhraseReferenceKeysByEnv, environment, phrase, row.References)
 	}
 
 	for environment, testClusterCount := range weekData.TestClusterCountsByEnv {
@@ -1098,21 +1060,24 @@ func loadSignatureFullErrorSamplesByEnvironment(
 		snapshot.PhraseFullErrorsByEnv = map[string]map[string][]string{}
 	}
 	rawByEnvironmentDate := indexRawFailuresByEnvironmentDate(rawRows)
-	for environment, signatureIDsByPhrase := range snapshot.PhraseSignatureIDs {
-		if len(signatureIDsByPhrase) == 0 {
+	for environment, referenceKeysByPhrase := range snapshot.PhraseReferenceKeysByEnv {
+		if len(referenceKeysByPhrase) == 0 {
 			continue
 		}
-		signatureToPhrases := map[string][]string{}
-		for phrase, signatureIDs := range signatureIDsByPhrase {
-			for signatureID := range signatureIDs {
-				trimmedSignatureID := strings.TrimSpace(signatureID)
-				if trimmedSignatureID == "" {
+		matchKeyToPhrases := map[string]map[string]struct{}{}
+		for phrase, keySet := range referenceKeysByPhrase {
+			for key := range keySet {
+				trimmedKey := strings.TrimSpace(key)
+				if trimmedKey == "" {
 					continue
 				}
-				signatureToPhrases[trimmedSignatureID] = append(signatureToPhrases[trimmedSignatureID], phrase)
+				if _, ok := matchKeyToPhrases[trimmedKey]; !ok {
+					matchKeyToPhrases[trimmedKey] = map[string]struct{}{}
+				}
+				matchKeyToPhrases[trimmedKey][phrase] = struct{}{}
 			}
 		}
-		if len(signatureToPhrases) == 0 {
+		if len(matchKeyToPhrases) == 0 {
 			continue
 		}
 		if _, ok := snapshot.PhraseFullErrorsByEnv[environment]; !ok {
@@ -1124,12 +1089,13 @@ func loadSignatureFullErrorSamplesByEnvironment(
 				continue
 			}
 			for _, row := range rawByEnvironmentDate[weeklyEnvironmentDateKey(environment, date)] {
-				signatureID := strings.TrimSpace(row.SignatureID)
-				if signatureID == "" {
-					continue
+				phraseSet := map[string]struct{}{}
+				for _, key := range failurePatternsRawFailureMatchKeys(row) {
+					for phrase := range matchKeyToPhrases[key] {
+						phraseSet[phrase] = struct{}{}
+					}
 				}
-				phrases := signatureToPhrases[signatureID]
-				if len(phrases) == 0 {
+				if len(phraseSet) == 0 {
 					continue
 				}
 				sample := strings.TrimSpace(row.RawText)
@@ -1139,13 +1105,54 @@ func loadSignatureFullErrorSamplesByEnvironment(
 				if sample == "" {
 					continue
 				}
-				for _, phrase := range phrases {
+				for phrase := range phraseSet {
 					existing := snapshot.PhraseFullErrorsByEnv[environment][phrase]
 					snapshot.PhraseFullErrorsByEnv[environment][phrase] = appendUniqueLimitedSample(existing, sample, limit)
 				}
 			}
 		}
 	}
+}
+
+func mergePhraseReferenceKeys(
+	byEnvironment map[string]map[string]map[string]struct{},
+	environment string,
+	phrase string,
+	references []semanticcontracts.ReferenceRecord,
+) {
+	if byEnvironment == nil {
+		return
+	}
+	normalizedEnvironment := normalizeReportEnvironment(environment)
+	trimmedPhrase := strings.TrimSpace(phrase)
+	if normalizedEnvironment == "" || trimmedPhrase == "" {
+		return
+	}
+	if _, ok := byEnvironment[normalizedEnvironment]; !ok {
+		byEnvironment[normalizedEnvironment] = map[string]map[string]struct{}{}
+	}
+	if _, ok := byEnvironment[normalizedEnvironment][trimmedPhrase]; !ok {
+		byEnvironment[normalizedEnvironment][trimmedPhrase] = map[string]struct{}{}
+	}
+	keySet := byEnvironment[normalizedEnvironment][trimmedPhrase]
+	for _, key := range failurePatternReportReferenceKeys(toFailurePatternReportReferences(references)) {
+		keySet[key] = struct{}{}
+	}
+}
+
+func failurePatternReportReferenceKeys(rows []FailurePatternReportReference) []string {
+	keys := make([]string, 0, len(rows)*2)
+	seen := map[string]struct{}{}
+	for _, row := range rows {
+		for _, key := range failurePatternsReferenceMatchKeys(row) {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func indexRawFailuresByEnvironmentDate(rows []storecontracts.RawFailureRecord) map[string][]storecontracts.RawFailureRecord {

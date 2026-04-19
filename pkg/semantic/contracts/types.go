@@ -1,9 +1,5 @@
 package contracts
 
-// SchemaVersionV1 is the current semantic contract version; it is used by
-// readers/writers for compatibility checks and is emitted as a literal "v1".
-const SchemaVersionV1 = "v1"
-
 type Phase1WorksetRecord struct {
 	// SchemaVersion declares the payload schema; readers use it to decode safely;
 	// writers currently set it to SchemaVersionV1.

@@ -82,11 +82,6 @@ func Compile(
 			continue
 		}
 
-		if provider := providerAnchor(row.RawText); provider != "" &&
-			isGenericEvidenceText(assignment.CanonicalEvidencePhraseCandidate, assignment.SearchQueryPhraseCandidate) {
-			localClusterKey = localClusterKey + "|provider:" + provider
-		}
-
 		assignmentsByRowID[rowID] = assignment
 		accKey := assignmentGroupKey + "|" + localClusterKey
 		acc, exists := accumulators[accKey]
@@ -170,7 +165,7 @@ func Compile(
 		}
 
 		memberSignatures := sortedKeys(acc.MemberSignatures)
-		clusterIDBase := fingerprint(acc.Environment + "|" + acc.Lane + "|" + acc.JobName + "|" + acc.TestName + "|" + strings.Join(memberSignatures, ","))
+		clusterIDBase := fingerprint(acc.Environment + "|" + acc.GroupKey + "|" + acc.LocalClusterKey)
 		clusterID := clusterIDBase
 		clusterIDCounts[clusterIDBase]++
 		if clusterIDCounts[clusterIDBase] > 1 {
@@ -207,7 +202,7 @@ func Compile(
 		}
 
 		cluster := semanticcontracts.TestClusterRecord{
-			SchemaVersion:                semanticcontracts.SchemaVersionV1,
+			SchemaVersion:                semanticcontracts.CurrentSchemaVersion,
 			Environment:                  acc.Environment,
 			Phase1ClusterID:              clusterID,
 			Lane:                         acc.Lane,
@@ -254,9 +249,10 @@ func Compile(
 func buildReviewItem(cluster semanticcontracts.TestClusterRecord, reason string) semanticcontracts.ReviewItemRecord {
 	sourceIDs := []string{cluster.Phase1ClusterID}
 	memberSignatures := append([]string(nil), cluster.MemberSignatureIDs...)
-	reviewID := fingerprint(strings.TrimSpace(cluster.Environment) + "|phase1|" + reason + "|" + strings.Join(sourceIDs, ",") + "|" + strings.Join(memberSignatures, ","))
+	referenceKeys := sortedReferenceKeys(cluster.References)
+	reviewID := fingerprint(strings.TrimSpace(cluster.Environment) + "|phase1|" + reason + "|" + strings.Join(sourceIDs, ",") + "|" + strings.Join(referenceKeys, ","))
 	return semanticcontracts.ReviewItemRecord{
-		SchemaVersion:                        semanticcontracts.SchemaVersionV1,
+		SchemaVersion:                        semanticcontracts.CurrentSchemaVersion,
 		Environment:                          strings.TrimSpace(cluster.Environment),
 		ReviewItemID:                         reviewID,
 		Phase:                                "phase1",
@@ -269,6 +265,33 @@ func buildReviewItem(cluster semanticcontracts.TestClusterRecord, reason string)
 		MemberSignatureIDs:                   memberSignatures,
 		References:                           append([]semanticcontracts.ReferenceRecord(nil), cluster.References...),
 	}
+}
+
+func sortedReferenceKeys(rows []semanticcontracts.ReferenceRecord) []string {
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		key := referenceIdentityKey(row)
+		if key == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func referenceIdentityKey(row semanticcontracts.ReferenceRecord) string {
+	rowID := strings.TrimSpace(row.RowID)
+	if rowID != "" {
+		return "row|" + rowID
+	}
+	runURL := strings.TrimSpace(row.RunURL)
+	occurredAt := strings.TrimSpace(row.OccurredAt)
+	signatureID := strings.TrimSpace(row.SignatureID)
+	if runURL == "" && occurredAt == "" && signatureID == "" {
+		return ""
+	}
+	return "ref|" + runURL + "|" + occurredAt + "|" + signatureID
 }
 
 func sortRowsForReferences(rows []semanticcontracts.Phase1WorksetRecord) {
