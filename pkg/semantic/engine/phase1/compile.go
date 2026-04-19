@@ -797,6 +797,9 @@ func detectNearDuplicateClusters(clusters []semanticcontracts.TestClusterRecord)
 				if tokenSetJaccardOverlap(ci.ndKey, cj.ndKey) < 0.80 {
 					continue
 				}
+				if sharesStructuredErrorPrefix(ci.ndKey, cj.ndKey) {
+					continue
+				}
 				clusterI := clusters[ci.index]
 				clusterJ := clusters[cj.index]
 				pairKey := clusterI.Phase1ClusterID + "|" + clusterJ.Phase1ClusterID
@@ -857,6 +860,23 @@ func detectNearDuplicateClusters(clusters []semanticcontracts.TestClusterRecord)
 		}
 	}
 	return items
+}
+
+var nearDuplicateSuppressPrefixes = []string{
+	"error code:",
+	"error running helm release deployment step",
+	"error running image mirror step",
+	"error running shell step",
+	"error running arm step",
+}
+
+func sharesStructuredErrorPrefix(a, b string) bool {
+	for _, prefix := range nearDuplicateSuppressPrefixes {
+		if strings.HasPrefix(a, prefix) && strings.HasPrefix(b, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func sortRowsForReferences2(refs []semanticcontracts.ReferenceRecord) {

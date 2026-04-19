@@ -920,6 +920,131 @@ func TestExtractGomegaSuccessFailureSkipsLabelLine(t *testing.T) {
 	}
 }
 
+// When Gomega HaveOccurred() fires, the output ends with the word "occurred"
+// as boilerplate.  The engine must extract the inner error message instead.
+func TestExtractEvidenceGomegaOccurredExtracts(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/complete_cluster_create_multiversion.go:75]: Unexpected error:
+    <*errors.errorString | 0xc001051550>: 
+    no graph nodes found for stable-5.2
+    {
+        s: "no graph nodes found for stable-5.2",
+    }
+occurred`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if strings.EqualFold(strings.TrimSpace(got), "occurred") {
+		t.Fatalf("canonical should not be the Gomega boilerplate 'occurred', got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "no graph nodes found") {
+		t.Fatalf("canonical should contain inner error 'no graph nodes found', got=%q", got)
+	}
+}
+
+// When Gomega's struct dump produces "cause: {" as an intermediate line,
+// the engine must extract the inner error rather than structural noise.
+func TestExtractEvidenceGomegaCauseStructExtracts(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/control_plane_automated_z_stream_upgrade.go:137]: Unexpected error:
+    <wait.errInterrupted>: 
+    timed out waiting for the condition
+    {
+        cause: <*errors.errorString | 0xc0009c2890>{
+            s: "timed out waiting for the condition",
+        },
+    }
+occurred`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if strings.EqualFold(strings.TrimSpace(got), "cause: {") {
+		t.Fatalf("canonical should not be 'cause: {', got=%q", got)
+	}
+	if strings.EqualFold(strings.TrimSpace(got), "occurred") {
+		t.Fatalf("canonical should not be 'occurred', got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "timed out waiting") {
+		t.Fatalf("canonical should contain 'timed out waiting', got=%q", got)
+	}
+}
+
+// When Gomega joinError produces "occurred", the inner error about managed
+// resource groups left behind should be extracted instead.
+func TestExtractEvidenceGomegaJoinErrorOccurred(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/util/framework/per_test_framework.go:246]: Unexpected error:
+    <*errors.joinError | 0xc000e4a0f0>: 
+    found 1 managed resource groups left behind HCP clusters in cluster-listing-xk5f98
+    {
+        errs: [
+            <*errors.errorString | 0xc00198c880>{
+                s: "found 1 managed resource groups left behind HCP clusters in cluster-listing-xk5f98",
+            },
+        ],
+    }
+occurred`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if strings.EqualFold(strings.TrimSpace(got), "occurred") {
+		t.Fatalf("canonical should not be 'occurred', got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "managed resource groups left behind") {
+		t.Fatalf("canonical should contain 'managed resource groups left behind', got=%q", got)
+	}
+}
+
+// bestGomegaInnerError must extract the error line between a type annotation
+// and a struct boundary in Gomega output.
+func TestBestGomegaInnerError(t *testing.T) {
+	t.Parallel()
+
+	text := `    <*errors.errorString | 0xc001051550>: 
+    no graph nodes found for stable-5.2
+    {
+        s: "no graph nodes found for stable-5.2",
+    }`
+
+	got := bestGomegaInnerError(text)
+	if !strings.Contains(got, "no graph nodes found") {
+		t.Fatalf("expected inner error, got=%q", got)
+	}
+}
+
+// Near-duplicate suppression: patterns sharing a structured error prefix
+// (e.g. "error code:", "error running helm release deployment step")
+// should not fire likely_undermerged signals.
+func TestSharesStructuredErrorPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{
+			a:    "error code: internalservererror; detail code authorizationfailed; detail message microsoft.network/networksecuritygroups/read",
+			b:    "error code: internalservererror; detail code authorizationfailed; detail message microsoft.network/virtualnetworks/read",
+			want: true,
+		},
+		{
+			a:    "error running helm release deployment step, failed to deploy helm release: resource not ready, name: arobit-forwarder",
+			b:    "error running helm release deployment step, failed to deploy helm release: resource not ready, name: aro-hcp-backend",
+			want: true,
+		},
+		{
+			a:    "timeout during createhcpclusterandwait; context deadline exceeded",
+			b:    "timeout during getadminrestconfigforhcpcluster while waiting for hcpcluster creds",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		if got := sharesStructuredErrorPrefix(tt.a, tt.b); got != tt.want {
+			t.Errorf("sharesStructuredErrorPrefix(%q, %q) = %v, want %v", tt.a[:40], tt.b[:40], got, tt.want)
+		}
+	}
+}
+
 // Logfmt step-error lines: the err= field must be extracted as the canonical
 // so the actionable message is not truncated by the boilerplate prefix.
 func TestExtractEvidenceLogfmtStepErrorExtracts(t *testing.T) {

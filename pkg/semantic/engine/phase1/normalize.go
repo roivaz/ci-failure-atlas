@@ -86,6 +86,21 @@ var (
 	// capture the actionable error message without logfmt boilerplate fields.
 	reLogfmtStepErroredErr = regexp.MustCompile(`(?i)level=error[^"]*msg="step errored\."[^"]*err="([^"]+)"`)
 
+	// Gomega type-annotation line: <*errors.errorString | 0x...>: or <wait.errInterrupted>:
+	// Used by bestGomegaInnerError to locate the actual error message that
+	// follows the type wrapper in HaveOccurred() assertion output.
+	reGomegaTypeAnnotation = regexp.MustCompile(`^\s*<[^>]+>\s*:?\s*$`)
+
+	// Kubernetes machine/node name: 12+ char alphanumeric prefix followed by
+	// 3+ dash-separated segments and a 4-6 char hash suffix. These are
+	// instance-specific and must be scrubbed to merge the same failure class.
+	reCleanK8sNodeName = regexp.MustCompile(`\b[a-z0-9]{12,}(?:-[a-z0-9]+){3,}-[a-z0-9]{4,6}\b`)
+
+	// OCP upgrade-graph channel references (e.g. stable-5.2, candidate-4.20).
+	// The version is instance-specific; normalize so all version-parametrized
+	// variants of the same channel-lookup failure merge.
+	reCleanOCPChannel = regexp.MustCompile(`\b(?:stable|candidate|fast|eus)-[0-9]+\.[0-9]+\b`)
+
 	// Kubernetes klog / structured-log prefix: E<MMDD> <HH:MM:SS>.<us> <goroutine>
 	// The file:line portion is already stripped by reCleanGoFileLine; this
 	// strips the remaining severity+timestamp+goroutine token so the real
@@ -382,6 +397,8 @@ func extractEvidence(text string) extractedEvidence {
 	if isLowInformationCanonical(canonical) {
 		if refined := bestSignalErrorLine(raw); refined != "" {
 			canonical = cleanCanonical(refined)
+		} else if refined := bestGomegaInnerError(raw); refined != "" {
+			canonical = cleanCanonical(refined)
 		}
 	}
 
@@ -477,6 +494,8 @@ func cleanCanonical(value string) string {
 	text = reCleanNodePoolQuoted.ReplaceAllString(text, `nodepool="<nodepool>"`)
 	text = reCleanNodePoolPhrase.ReplaceAllString(text, "node pool <nodepool>")
 	text = reCleanNodePoolBare.ReplaceAllString(text, "nodepool <nodepool>")
+	text = reCleanK8sNodeName.ReplaceAllString(text, "<node>")
+	text = reCleanOCPChannel.ReplaceAllString(text, "<ocp-channel>")
 	text = reCleanDialTCPAddress.ReplaceAllString(text, "dial tcp <ip>:<port>")
 	text = reCleanDialingAddress.ReplaceAllString(text, "dialing <ip>:<port>")
 	text = reCleanLogfmtTimestamp.ReplaceAllString(text, "")
@@ -628,6 +647,43 @@ func extractGomegaSuccessFailureContext(text string) string {
 		}
 	}
 	return candidate
+}
+
+// bestGomegaInnerError extracts the actual error message from Gomega's
+// HaveOccurred() assertion output when other extractors fail. The structure is:
+//
+//	<*errors.errorString | 0x...>:
+//	    actual error message here
+//	    {
+//	        s: "...",
+//	    }
+//	occurred
+//
+// Returns the first non-noise content line after a type-annotation line.
+func bestGomegaInnerError(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !reGomegaTypeAnnotation.MatchString(trimmed) {
+			continue
+		}
+		for j := i + 1; j < len(lines) && j < i+5; j++ {
+			candidate := strings.TrimSpace(lines[j])
+			if candidate == "" || candidate == "..." {
+				continue
+			}
+			if isStructBoundaryLine(candidate) {
+				break
+			}
+			if isStructFieldNoiseLine(candidate) || isWrapperNoiseLine(candidate) {
+				continue
+			}
+			if strings.ContainsAny(candidate, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+				return candidate
+			}
+		}
+	}
+	return ""
 }
 
 func isExpectedBlockStartLine(line string) bool {
@@ -1097,7 +1153,7 @@ func isStructFieldNoiseLine(line string) bool {
 	case "", "{", "}", "},", "[]", "{}", "{},", "null":
 		return true
 	}
-	if strings.HasPrefix(normalized, "msg:") || strings.HasPrefix(normalized, "err:") {
+	if strings.HasPrefix(normalized, "msg:") || strings.HasPrefix(normalized, "err:") || strings.HasPrefix(normalized, "cause:") {
 		return true
 	}
 	if strings.HasPrefix(normalized, "istimeout:") ||

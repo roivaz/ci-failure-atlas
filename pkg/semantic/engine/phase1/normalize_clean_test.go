@@ -176,6 +176,38 @@ func TestCleanCanonicalStripsMakeDirectoryBanner(t *testing.T) {
 	}
 }
 
+func TestCleanCanonicalScrubsK8sNodeName(t *testing.T) {
+	t.Parallel()
+
+	input := `node pool upgrade verification failed: s9w6l8k8x0w1p6q-npupgrade-4-20-v8hsh-fvjvs (version 4.20 not in same minor as expected 4.21.5)`
+	got := cleanCanonical(input)
+	if strings.Contains(got, "s9w6l8k8x0w1p6q") {
+		t.Fatalf("expected K8s node name to be scrubbed, got=%q", got)
+	}
+	if !strings.Contains(got, "<node>") {
+		t.Fatalf("expected <node> placeholder, got=%q", got)
+	}
+}
+
+func TestCleanCanonicalScrubsOCPChannel(t *testing.T) {
+	t.Parallel()
+
+	input := "no graph nodes found for stable-5.2"
+	got := cleanCanonical(input)
+	if strings.Contains(got, "stable-5.2") {
+		t.Fatalf("expected OCP channel to be scrubbed, got=%q", got)
+	}
+	if !strings.Contains(got, "<ocp-channel>") {
+		t.Fatalf("expected <ocp-channel> placeholder, got=%q", got)
+	}
+
+	input2 := "no graph nodes found for candidate-4.20"
+	got2 := cleanCanonical(input2)
+	if strings.Contains(got2, "candidate-4.20") {
+		t.Fatalf("expected OCP channel to be scrubbed, got=%q", got2)
+	}
+}
+
 func TestCleanCanonicalScrubsClusterCreationQuotedName(t *testing.T) {
 	t.Parallel()
 

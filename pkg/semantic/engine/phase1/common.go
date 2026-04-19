@@ -32,6 +32,8 @@ var wrapperOnly = map[string]struct{}{
 	// Gomega assertion wrappers — the real error is the inner value.
 	"...":                                 {},
 	"expected success, but got an error:": {},
+	"occurred":                            {},
+	"cause: {":                            {},
 }
 
 var assertionTailPrefixes = []string{
