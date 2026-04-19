@@ -220,7 +220,8 @@ func Compile(
 			References:                   references,
 		}
 
-		if hasAmbiguousProviderMergeFromRows(acc.Rows, cluster.CanonicalEvidencePhrase, cluster.SearchQueryPhrase) {
+		if hasAmbiguousProviderMergeFromRows(acc.Rows, cluster.CanonicalEvidencePhrase, cluster.SearchQueryPhrase) &&
+			!isKnownTerminalCanonical(cluster.CanonicalEvidencePhrase) {
 			acc.ReasonSet["ambiguous_provider_merge"] = struct{}{}
 		}
 		clusters = append(clusters, cluster)

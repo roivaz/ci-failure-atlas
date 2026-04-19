@@ -96,6 +96,86 @@ func TestCleanCanonicalTruncatesAtWordBoundary(t *testing.T) {
 	}
 }
 
+func TestCleanCanonicalScrubsBareNodePoolName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "update-nodes",
+			input: "timeout '45.000000' minutes exceeded during UpdateNodePoolAndWait for nodepool np-update-nodes",
+			want:  "nodepool <nodepool>",
+		},
+		{
+			name:  "hyphen-name",
+			input: "UpdateNodePoolAndWait for nodepool np-1 timed out",
+			want:  "nodepool <nodepool>",
+		},
+		{
+			name:  "one-node",
+			input: "timeout exceeded during UpdateNodePoolAndWait for nodepool np-one-node",
+			want:  "nodepool <nodepool>",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := cleanCanonical(tc.input)
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("expected %q in cleaned canonical, got=%q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestCleanCanonicalScrubsDialingIPPort(t *testing.T) {
+	t.Parallel()
+
+	input := `proxyconnect tcp: dial tcp 127.0.0.1:8888: connect: connection refused; also dialing 10.128.64.38:15017 failed`
+	got := cleanCanonical(input)
+
+	if strings.Contains(got, "127.0.0.1") || strings.Contains(got, "10.128.64.38") {
+		t.Fatalf("expected IP addresses to be scrubbed, got=%q", got)
+	}
+	if !strings.Contains(got, "dial tcp <ip>:<port>") {
+		t.Fatalf("expected dial tcp placeholder, got=%q", got)
+	}
+	if !strings.Contains(got, "dialing <ip>:<port>") {
+		t.Fatalf("expected dialing placeholder, got=%q", got)
+	}
+}
+
+func TestCleanCanonicalStripsK8sLogPrefix(t *testing.T) {
+	t.Parallel()
+
+	input := `E0407 23:10:13.008148    2565 controller.go:123] "Unhandled Error" err="something went wrong" controller="cluster"`
+	got := cleanCanonical(input)
+
+	if strings.Contains(got, "E0407") || strings.Contains(got, "23:10:13") || strings.Contains(got, "2565") {
+		t.Fatalf("expected klog prefix to be stripped, got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "unhandled error") {
+		t.Fatalf("expected log message content to remain, got=%q", got)
+	}
+}
+
+func TestCleanCanonicalStripsMakeDirectoryBanner(t *testing.T) {
+	t.Parallel()
+
+	input := "make[2]: Entering directory '/go/src/github.com/openshift-kni/numaresources-operator'\nerror: something actually failed"
+	got := cleanCanonical(input)
+
+	if strings.Contains(strings.ToLower(got), "entering directory") {
+		t.Fatalf("expected make directory banner to be stripped, got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "something actually failed") {
+		t.Fatalf("expected actual error to remain, got=%q", got)
+	}
+}
+
 func TestCleanCanonicalScrubsClusterCreationQuotedName(t *testing.T) {
 	t.Parallel()
 

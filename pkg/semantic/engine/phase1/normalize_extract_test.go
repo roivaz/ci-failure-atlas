@@ -785,6 +785,56 @@ func TestCleanCanonicalNormalizesHCPApiHostname(t *testing.T) {
 	}
 }
 
+// isKnownTerminalCanonical must return true for patterns where no engine
+// improvement can provide a more specific phrase, suppressing noisy signals.
+func TestIsKnownTerminalCanonical(t *testing.T) {
+	t.Parallel()
+
+	terminal := []string{
+		"Interrupted by User",
+		"interrupted by user",
+		"INTERRUPTED BY USER",
+		"Command Error: signal: killed",
+		"command error: signal: killed",
+	}
+	for _, phrase := range terminal {
+		if !isKnownTerminalCanonical(phrase) {
+			t.Errorf("expected %q to be recognized as a known terminal canonical", phrase)
+		}
+	}
+
+	nonTerminal := []string{
+		"Command Error: exit status 1",
+		"context deadline exceeded",
+		"failure",
+		"ERROR CODE: DeploymentFailed; provider Microsoft.Network",
+	}
+	for _, phrase := range nonTerminal {
+		if isKnownTerminalCanonical(phrase) {
+			t.Errorf("expected %q NOT to be recognized as a known terminal canonical", phrase)
+		}
+	}
+}
+
+// Gomega "Expected success, but got an error:" followed by a label line
+// (ending with ':') must look ahead to the next non-empty, non-label line to
+// find the real error detail rather than capturing the label itself.
+func TestExtractGomegaSuccessFailureSkipsLabelLine(t *testing.T) {
+	t.Parallel()
+
+	raw := `Expected success, but got an error:
+    IDMS verification failed:
+        No trust bundle available for cluster`
+
+	got := extractGomegaSuccessFailureContext(raw)
+	if strings.HasSuffix(strings.TrimSpace(got), ":") {
+		t.Fatalf("extractGomegaSuccessFailureContext should skip label lines ending with ':', got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "no trust bundle") {
+		t.Fatalf("expected the actual error detail line, got=%q", got)
+	}
+}
+
 // Logfmt step-error lines: the err= field must be extracted as the canonical
 // so the actionable message is not truncated by the boilerplate prefix.
 func TestExtractEvidenceLogfmtStepErrorExtracts(t *testing.T) {

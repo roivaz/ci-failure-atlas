@@ -58,6 +58,8 @@ var (
 
 	// Dial-TCP address: normalize raw IPs left behind after URL masking.
 	reCleanDialTCPAddress = regexp.MustCompile(`\bdial tcp \d{1,3}(?:\.\d{1,3}){3}:\d+\b`)
+	// Istio/envoy "dialing <ip>:<port>" — same IP/port noise, different verb.
+	reCleanDialingAddress = regexp.MustCompile(`\bdialing \d{1,3}(?:\.\d{1,3}){3}:\d+\b`)
 	// Logfmt-style timestamp (e.g. time=2026-04-17T11:04:19.211Z).
 	reCleanLogfmtTimestamp = regexp.MustCompile(`\btime=[0-9]{4}-[0-9]{2}-[0-9]{2}T[A-Z0-9:.]+\s*`)
 	// JSON "time" field with ISO-8601 value (e.g. prow entrypoint logs).
@@ -83,6 +85,24 @@ var (
 	// The pattern matches level=error … msg="Step errored." … err="<value>" to
 	// capture the actionable error message without logfmt boilerplate fields.
 	reLogfmtStepErroredErr = regexp.MustCompile(`(?i)level=error[^"]*msg="step errored\."[^"]*err="([^"]+)"`)
+
+	// Kubernetes klog / structured-log prefix: E<MMDD> <HH:MM:SS>.<us> <goroutine>
+	// The file:line portion is already stripped by reCleanGoFileLine; this
+	// strips the remaining severity+timestamp+goroutine token so the real
+	// message (e.g. "Unhandled Error" err=…) becomes the canonical phrase.
+	reCleanK8sLogPrefix = regexp.MustCompile(`[EWI][0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ +[0-9]+\s*\]?`)
+
+	// Bare nodepool name in the form "nodepool <name>" (single token, no quotes)
+	// that appears in UpdateNodePoolAndWait / timeout messages.  The quoted form
+	// nodepool="<name>" is handled by reCleanNodePoolQuoted above; this pattern
+	// covers the unquoted counterpart so the same failure class merges.
+	reCleanNodePoolBare = regexp.MustCompile(`(?i)\bnodepool [a-z0-9][a-z0-9-]+\b`)
+
+	// "make[N]: Entering/Leaving directory '...'" lines emitted by GNU Make
+	// when shell steps run sub-makes.  These are build preamble noise that
+	// precedes the real error in err= log fields; strip them so the canonical
+	// phrase reflects the actual failure rather than the directory banner.
+	reCleanMakeDirectory = regexp.MustCompile(`(?i)make\[\d+\]: (?:Entering|Leaving) directory\s+'[^']*'\s*\.?\s*`)
 )
 
 var normalizePickPatterns = []*regexp.Regexp{
@@ -456,12 +476,20 @@ func cleanCanonical(value string) string {
 	text = reCleanExternalAuthBare.ReplaceAllString(text, "external auth <external-auth>")
 	text = reCleanNodePoolQuoted.ReplaceAllString(text, `nodepool="<nodepool>"`)
 	text = reCleanNodePoolPhrase.ReplaceAllString(text, "node pool <nodepool>")
+	text = reCleanNodePoolBare.ReplaceAllString(text, "nodepool <nodepool>")
 	text = reCleanDialTCPAddress.ReplaceAllString(text, "dial tcp <ip>:<port>")
+	text = reCleanDialingAddress.ReplaceAllString(text, "dialing <ip>:<port>")
 	text = reCleanLogfmtTimestamp.ReplaceAllString(text, "")
 	text = reCleanJSONTimeField.ReplaceAllString(text, "")
 	text = reCleanHCPApiHost.ReplaceAllString(text, "<hcp-api-host>")
 	text = reCleanOCPVersion.ReplaceAllString(text, "openshift-v<version>")
 	text = reCleanQuotedOpaqueID.ReplaceAllString(text, "'<id>'")
+	// Strip klog severity+timestamp+goroutine prefix AFTER reCleanGoFileLine has
+	// already removed the file:line token, so the real log message surfaces.
+	text = reCleanK8sLogPrefix.ReplaceAllString(text, "")
+	// Strip GNU Make directory-entering banners that appear as build preamble
+	// before the real error in multi-line err= log fields.
+	text = reCleanMakeDirectory.ReplaceAllString(text, "")
 	text = collapseWS(text)
 	if len(text) > 260 {
 		text = truncateCanonical(text, 260)
@@ -575,16 +603,29 @@ func extractEventuallyFailureContext(text string) string {
 //	    ...
 //
 // It extracts the actual error message line, skipping the optional type-wrapper
-// line, so the canonical phrase reflects the real failure rather than the
-// Gomega assertion boilerplate.
+// line and any label lines that end with a colon (e.g. "IDMS verification
+// failed:"), so the canonical phrase reflects the real failure rather than the
+// Gomega assertion boilerplate or a structural label.
 func extractGomegaSuccessFailureContext(text string) string {
-	match := reGomegaSuccessFailure.FindStringSubmatch(text)
-	if len(match) < 2 {
+	matchIdx := reGomegaSuccessFailure.FindStringSubmatchIndex(text)
+	if len(matchIdx) < 4 {
 		return ""
 	}
-	candidate := strings.TrimSpace(match[1])
+	candidate := strings.TrimSpace(text[matchIdx[2]:matchIdx[3]])
 	if candidate == "" || candidate == "..." {
 		return ""
+	}
+	// If the captured line is a label (ends with ':'), look ahead in the
+	// remaining text for the first non-empty, non-label, non-ellipsis line.
+	if strings.HasSuffix(candidate, ":") {
+		afterMatch := text[matchIdx[1]:]
+		for _, line := range strings.Split(afterMatch, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || trimmed == "..." || strings.HasSuffix(trimmed, ":") {
+				continue
+			}
+			return trimmed
+		}
 	}
 	return candidate
 }

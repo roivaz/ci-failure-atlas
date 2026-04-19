@@ -108,13 +108,13 @@ func Classify(rows []semanticcontracts.Phase1NormalizedRecord) []semanticcontrac
 				canonicalPhrase,
 			})
 
-			reasons := map[string]struct{}{}
-			if _, ambiguous := ambiguousLocals[localKey]; ambiguous {
-				reasons["ambiguous_provider_merge"] = struct{}{}
-			}
-			if isWeakCanonical(canonicalPhrase) {
-				reasons["insufficient_inner_error"] = struct{}{}
-			}
+		reasons := map[string]struct{}{}
+		if _, ambiguous := ambiguousLocals[localKey]; ambiguous && !isKnownTerminalCanonical(canonicalPhrase) {
+			reasons["ambiguous_provider_merge"] = struct{}{}
+		}
+		if isWeakCanonical(canonicalPhrase) && !isKnownTerminalCanonical(canonicalPhrase) {
+			reasons["insufficient_inner_error"] = struct{}{}
+		}
 
 			reasonSlice := make([]string, 0, len(reasons))
 			for reason := range reasons {
@@ -215,4 +215,19 @@ func isWeakCanonical(canonical string) bool {
 	default:
 		return false
 	}
+}
+
+// isKnownTerminalCanonical returns true for canonical phrases that represent
+// the best possible extraction given what the test framework reports — no
+// engine improvement can provide a more specific phrase. Review signals
+// (insufficient_inner_error, ambiguous_provider_merge, low_confidence_evidence)
+// are suppressed for these patterns to reduce noise.
+func isKnownTerminalCanonical(canonical string) bool {
+	value := strings.ToLower(collapseWS(canonical))
+	switch value {
+	case "interrupted by user",
+		"command error: signal: killed":
+		return true
+	}
+	return false
 }
