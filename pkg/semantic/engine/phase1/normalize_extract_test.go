@@ -785,6 +785,91 @@ func TestCleanCanonicalNormalizesHCPApiHostname(t *testing.T) {
 	}
 }
 
+func TestSeverityForReviewItem(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		reason  string
+		support int
+		want    string
+	}{
+		{"likely_undermerged", 6, "high"},
+		{"likely_undermerged", 2, "medium"},
+		{"high_sample_variance", 5, "high"},
+		{"high_sample_variance", 2, "medium"},
+		{"ambiguous_provider_merge", 4, "high"},
+		{"ambiguous_provider_merge", 1, "medium"},
+		{"insufficient_inner_error", 5, "medium"},
+		{"insufficient_inner_error", 1, "low"},
+		{"low_confidence_evidence", 5, "medium"},
+		{"low_confidence_evidence", 1, "low"},
+		{"placeholder_dominated_canonical", 1, "medium"},
+		{"short_uninformative_canonical", 1, "medium"},
+		{"single_occurrence", 1, "low"},
+		{"search_query_source_not_found", 1, "low"},
+	}
+	for _, tc := range cases {
+		got := severityForReviewItem(tc.reason, tc.support, "some canonical")
+		if got != tc.want {
+			t.Errorf("severityForReviewItem(%q, %d): got=%q want=%q", tc.reason, tc.support, got, tc.want)
+		}
+	}
+}
+
+func TestIsPlaceholderDominatedCanonical(t *testing.T) {
+	t.Parallel()
+
+	dominated := "<cluster> <resource-group> <url> at failed"
+	if !isPlaceholderDominatedCanonical(dominated) {
+		t.Errorf("expected %q to be placeholder-dominated", dominated)
+	}
+	normal := "failed waiting for deployment in resource group <resource-group>"
+	if isPlaceholderDominatedCanonical(normal) {
+		t.Errorf("expected %q to NOT be placeholder-dominated", normal)
+	}
+}
+
+func TestIsShortUninformativeCanonical(t *testing.T) {
+	t.Parallel()
+
+	short := []string{"failed", "error", "timeout"}
+	for _, s := range short {
+		if !isShortUninformativeCanonical(s) {
+			t.Errorf("expected %q to be short/uninformative", s)
+		}
+	}
+	ok := []string{"ERROR CODE: NotFound", "context deadline exceeded", "OAuth timeout waiting for response"}
+	for _, s := range ok {
+		if isShortUninformativeCanonical(s) {
+			t.Errorf("expected %q to NOT be short/uninformative", s)
+		}
+	}
+}
+
+func TestNearDuplicateKeyStripsPlaceholders(t *testing.T) {
+	t.Parallel()
+
+	a := nearDuplicateKey("failed waiting for deployment in <resource-group>")
+	b := nearDuplicateKey("failed waiting for deployment in <cluster>")
+	if a != b {
+		t.Errorf("expected placeholder-stripped keys to match:\n  a=%q\n  b=%q", a, b)
+	}
+}
+
+func TestTokenSetJaccardOverlap(t *testing.T) {
+	t.Parallel()
+
+	if got := tokenSetJaccardOverlap("a b c d e", "a b c d f"); got < 0.60 || got > 0.90 {
+		t.Errorf("expected moderate overlap, got=%f", got)
+	}
+	if got := tokenSetJaccardOverlap("a b c", "a b c"); got != 1.0 {
+		t.Errorf("expected perfect overlap, got=%f", got)
+	}
+	if got := tokenSetJaccardOverlap("a b c", "x y z"); got != 0.0 {
+		t.Errorf("expected zero overlap, got=%f", got)
+	}
+}
+
 // isKnownTerminalCanonical must return true for patterns where no engine
 // improvement can provide a more specific phrase, suppressing noisy signals.
 func TestIsKnownTerminalCanonical(t *testing.T) {

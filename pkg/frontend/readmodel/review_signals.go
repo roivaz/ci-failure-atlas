@@ -32,6 +32,7 @@ type ReviewSignalRow struct {
 	ReviewItemID                         string                              `json:"review_item_id"`
 	Phase                                string                              `json:"phase"`
 	Reason                               string                              `json:"reason"`
+	Severity                             string                              `json:"severity,omitempty"`
 	ProposedFailurePattern               string                              `json:"proposed_failure_pattern,omitempty"`
 	ProposedSearchQuery                  string                              `json:"proposed_search_query,omitempty"`
 	ProposedSearchQuerySourceRunURL      string                              `json:"proposed_search_query_source_run_url,omitempty"`
@@ -43,14 +44,15 @@ type ReviewSignalRow struct {
 }
 
 type ReviewSignalsWeekSnapshot struct {
-	Weeks           []string          `json:"weeks,omitempty"`
-	Week            string            `json:"week"`
-	PreviousWeek    string            `json:"previous_week,omitempty"`
-	NextWeek        string            `json:"next_week,omitempty"`
-	Timezone        string            `json:"timezone"`
-	TotalSignals    int               `json:"total_signals"`
-	SignalsByReason map[string]int    `json:"signals_by_reason,omitempty"`
-	Rows            []ReviewSignalRow `json:"rows"`
+	Weeks             []string          `json:"weeks,omitempty"`
+	Week              string            `json:"week"`
+	PreviousWeek      string            `json:"previous_week,omitempty"`
+	NextWeek          string            `json:"next_week,omitempty"`
+	Timezone          string            `json:"timezone"`
+	TotalSignals      int               `json:"total_signals"`
+	SignalsByReason   map[string]int    `json:"signals_by_reason,omitempty"`
+	SignalsBySeverity map[string]int    `json:"signals_by_severity,omitempty"`
+	Rows              []ReviewSignalRow `json:"rows"`
 }
 
 func (s *Service) BuildReviewSignalsWeek(ctx context.Context, requestedWeek string) (ReviewSignalsWeekSnapshot, error) {
@@ -75,9 +77,23 @@ func (s *Service) BuildReviewSignalsWeek(ctx context.Context, requestedWeek stri
 		return ReviewSignalsWeekSnapshot{}, err
 	}
 
+	previousWeekCanonicals := loadPreviousWeekCanonicals(ctx, s, window.PreviousWeek)
+
 	sourceClusters := append([]semanticcontracts.FailurePatternRecord(nil), weekData.SourceFailurePatterns...)
 	rows := make([]ReviewSignalRow, 0, len(weekData.ReviewQueue))
 	signalsByReason := map[string]int{}
+
+	if len(previousWeekCanonicals) > 0 {
+		newPatternRows := crossWeekNewPatternSignals(weekData.SourceFailurePatterns, previousWeekCanonicals)
+		for i := range newPatternRows {
+			reason := newPatternRows[i].Reason
+			if reason != "" {
+				signalsByReason[reason]++
+			}
+			rows = append(rows, newPatternRows[i])
+		}
+	}
+
 	for _, item := range weekData.ReviewQueue {
 		reason := strings.TrimSpace(item.Reason)
 		if reason != "" {
@@ -88,6 +104,7 @@ func (s *Service) BuildReviewSignalsWeek(ctx context.Context, requestedWeek stri
 			ReviewItemID:                         strings.TrimSpace(item.ReviewItemID),
 			Phase:                                strings.TrimSpace(item.Phase),
 			Reason:                               reason,
+			Severity:                             strings.TrimSpace(item.Severity),
 			ProposedFailurePattern:               strings.TrimSpace(item.ProposedCanonicalEvidencePhrase),
 			ProposedSearchQuery:                  strings.TrimSpace(item.ProposedSearchQueryPhrase),
 			ProposedSearchQuerySourceRunURL:      strings.TrimSpace(item.ProposedSearchQuerySourceRunURL),
@@ -99,6 +116,11 @@ func (s *Service) BuildReviewSignalsWeek(ctx context.Context, requestedWeek stri
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
+		si := reviewSignalSeverityRank(rows[i].Severity)
+		sj := reviewSignalSeverityRank(rows[j].Severity)
+		if si != sj {
+			return si < sj
+		}
 		if rows[i].Environment != rows[j].Environment {
 			return rows[i].Environment < rows[j].Environment
 		}
@@ -111,15 +133,25 @@ func (s *Service) BuildReviewSignalsWeek(ctx context.Context, requestedWeek stri
 		return rows[i].ReviewItemID < rows[j].ReviewItemID
 	})
 
+	signalsBySeverity := map[string]int{}
+	for _, row := range rows {
+		sev := strings.TrimSpace(row.Severity)
+		if sev == "" {
+			sev = "unset"
+		}
+		signalsBySeverity[sev]++
+	}
+
 	return ReviewSignalsWeekSnapshot{
-		Weeks:           append([]string(nil), window.Weeks...),
-		Week:            week,
-		PreviousWeek:    window.PreviousWeek,
-		NextWeek:        window.NextWeek,
-		Timezone:        "UTC",
-		TotalSignals:    len(rows),
-		SignalsByReason: signalsByReason,
-		Rows:            rows,
+		Weeks:             append([]string(nil), window.Weeks...),
+		Week:              week,
+		PreviousWeek:      window.PreviousWeek,
+		NextWeek:          window.NextWeek,
+		Timezone:          "UTC",
+		TotalSignals:      len(rows),
+		SignalsByReason:   signalsByReason,
+		SignalsBySeverity: signalsBySeverity,
+		Rows:              rows,
 	}, nil
 }
 
@@ -269,4 +301,95 @@ func reviewSignalCopyStrings(values []string) []string {
 		out = append(out, trimmed)
 	}
 	return out
+}
+
+func reviewSignalSeverityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "high":
+		return 0
+	case "medium":
+		return 1
+	case "low":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// loadPreviousWeekCanonicals attempts to load the set of canonical failure
+// phrases from the previous week (keyed by environment+lowered canonical).
+// Returns nil without error if the previous week is unavailable.
+func loadPreviousWeekCanonicals(ctx context.Context, s *Service, previousWeek string) map[string]struct{} {
+	if strings.TrimSpace(previousWeek) == "" || s == nil {
+		return nil
+	}
+	prevStore, err := s.OpenStoreForWeek(previousWeek)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = prevStore.Close() }()
+	prevData, err := semanticquery.LoadWeekData(ctx, prevStore, semanticquery.LoadWeekDataOptions{})
+	if err != nil {
+		return nil
+	}
+	canonicals := make(map[string]struct{}, len(prevData.SourceFailurePatterns))
+	for _, fp := range prevData.SourceFailurePatterns {
+		key := strings.ToLower(strings.TrimSpace(normalizeEnvironment(fp.Environment) +
+			"|" + strings.TrimSpace(fp.CanonicalEvidencePhrase)))
+		if key != "|" {
+			canonicals[key] = struct{}{}
+		}
+	}
+	return canonicals
+}
+
+// crossWeekNewPatternSignals generates review signals for failure patterns
+// that appear in the current week but not in the previous week. These
+// are patterns newly emerged since last week.
+func crossWeekNewPatternSignals(
+	currentPatterns []semanticcontracts.FailurePatternRecord,
+	previousCanonicals map[string]struct{},
+) []ReviewSignalRow {
+	if len(previousCanonicals) == 0 {
+		return nil
+	}
+	rows := make([]ReviewSignalRow, 0)
+	for _, fp := range currentPatterns {
+		env := normalizeEnvironment(fp.Environment)
+		canonical := strings.TrimSpace(fp.CanonicalEvidencePhrase)
+		key := strings.ToLower(env + "|" + canonical)
+		if _, found := previousCanonicals[key]; found {
+			continue
+		}
+		severity := "low"
+		if fp.SupportCount >= 5 {
+			severity = "medium"
+		}
+		refs := make([]ReviewSignalReference, 0)
+		for _, ref := range fp.References {
+			refs = append(refs, ReviewSignalReference{
+				RowID:          strings.TrimSpace(ref.RowID),
+				RunURL:         strings.TrimSpace(ref.RunURL),
+				OccurredAt:     strings.TrimSpace(ref.OccurredAt),
+				SignatureID:    strings.TrimSpace(ref.SignatureID),
+				PRNumber:       ref.PRNumber,
+				PostGoodCommit: ref.PostGoodCommit,
+			})
+		}
+		rows = append(rows, ReviewSignalRow{
+			Environment:                          env,
+			ReviewItemID:                         "crossweek-" + strings.TrimSpace(fp.Phase2ClusterID),
+			Phase:                                "crossweek",
+			Reason:                               "new_this_week",
+			Severity:                             severity,
+			ProposedFailurePattern:               canonical,
+			ProposedSearchQuery:                  strings.TrimSpace(fp.SearchQueryPhrase),
+			ProposedSearchQuerySourceRunURL:      strings.TrimSpace(fp.SearchQuerySourceRunURL),
+			ProposedSearchQuerySourceSignatureID: strings.TrimSpace(fp.SearchQuerySourceSignatureID),
+			SourcePhase1ClusterIDs:               reviewSignalCopyStrings(fp.MemberPhase1ClusterIDs),
+			MemberSignatureIDs:                   reviewSignalCopyStrings(fp.MemberSignatureIDs),
+			References:                           refs,
+		})
+	}
+	return rows
 }

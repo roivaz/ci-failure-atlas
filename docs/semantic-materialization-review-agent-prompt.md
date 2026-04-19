@@ -47,9 +47,14 @@ Required workflow:
    - any matching review signals and their reasons
 6. Use the failure-pattern API output as the primary evidence source.
 7. Use review signals as a secondary accelerator, especially reasons such as:
-   - low_confidence_evidence
+   - likely_undermerged (near-duplicate canonicals across clusters)
+   - high_sample_variance (within-cluster raw-sample diversity)
    - ambiguous_provider_merge
-   - other non-informational semantic review reasons
+   - low_confidence_evidence
+   - placeholder_dominated_canonical
+   - short_uninformative_canonical
+   - new_this_week (cross-week: pattern appeared this week but not last week)
+   - Signals include a severity field (high/medium/low) — start with high-severity signals.
 8. When you need extra validation, corroborate suspicious patterns against concrete CI evidence using Search OpenShift CI: https://search.dptools.openshift.org/
 
 Review heuristics:

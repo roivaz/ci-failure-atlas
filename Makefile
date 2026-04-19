@@ -38,7 +38,6 @@ SITE_REDIRECT_URL ?= https://cihealth.tools.hcpsvc.osadev.cloud/
 
 SOURCE_ENVS ?= dev,int,stg,prod
 SEMANTIC_WEEK ?=
-SEMANTIC_WEEKS ?= 4
 SEMANTIC_ARGS ?=
 CONTROLLER_ENVS ?= $(SOURCE_ENVS)
 CONTROLLER_HISTORY_WEEKS ?= $(HISTORY_WEEKS)
@@ -126,7 +125,6 @@ help:
 	@echo "  SITE_REDIRECT_URL=$(SITE_REDIRECT_URL)"
 	@echo "  HISTORY_WEEKS=$(HISTORY_WEEKS)"
 	@echo "  SEMANTIC_WEEK=$(SEMANTIC_WEEK)"
-	@echo "  SEMANTIC_WEEKS=$(SEMANTIC_WEEKS)"
 	@echo "  CONTROLLER_ENVS=$(CONTROLLER_ENVS)"
 	@echo "  CONTROLLER_HISTORY_WEEKS=$(CONTROLLER_HISTORY_WEEKS)"
 	@echo "  LEGACY_DATA_DIR=$(LEGACY_DATA_DIR)"
@@ -142,7 +140,7 @@ help:
 	@echo ""
 	@echo "Example:"
 	@echo "  make semantic-materialize SEMANTIC_WEEK=2026-03-29"
-	@echo "  make semantic-backfill SEMANTIC_WEEKS=8"
+	@echo "  make semantic-backfill"
 	@echo "  make app APP_WEEK=2026-03-08"
 	@echo "  make db-dump-remote REMOTE_PGUSER=myuser REMOTE_PGPASSWORD=secret REMOTE_PGDATABASE=mydb DB_DUMP_FILE=.work/cfa-prod.sql"
 	@echo "  make db-restore-local DB_DUMP_FILE=.work/cfa-prod.sql"
@@ -206,18 +204,7 @@ semantic-materialize:
 		$(if $(strip $(SEMANTIC_WEEK)),--week "$(SEMANTIC_WEEK)",) $(SEMANTIC_ARGS)
 
 semantic-backfill:
-	@set -euo pipefail; \
-		weeks="$(SEMANTIC_WEEKS)"; \
-		if ! [[ "$$weeks" =~ ^[0-9]+$$ ]] || [[ "$$weeks" -le 0 ]]; then \
-			echo "SEMANTIC_WEEKS must be a positive integer (got: $$weeks)"; \
-			exit 1; \
-		fi; \
-		base_week="$$(date -u -d "$$(date -u +%F) -$$(date -u +%w) days" +%F)"; \
-		for ((offset = weeks - 1; offset >= 0; offset--)); do \
-			week="$$(date -u -d "$$base_week - $$((7 * offset)) days" +%F)"; \
-			echo "materializing $$week"; \
-			$(CFA) semantic materialize --week "$$week" $(SEMANTIC_ARGS); \
-		done
+	$(CFA) semantic materialize --all $(SEMANTIC_ARGS)
 
 app:
 	$(CFA) app \

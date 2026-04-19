@@ -293,6 +293,10 @@ type ReviewItemRecord struct {
 	// Reason is a machine-readable review trigger code; used for review actions and
 	// reporting; derived from heuristic/rule outcomes.
 	Reason string `json:"reason"`
+	// Severity is a triage priority hint: "high", "medium", or "low"; used to
+	// sort the review queue so the most impactful signals surface first; derived
+	// from occurrence volume, reason type, and evidence specificity.
+	Severity string `json:"severity,omitempty"`
 	// ProposedCanonicalEvidencePhrase is the suggested canonical phrase; used by
 	// reviewers to accept/tune grouping; derived from source cluster output.
 	ProposedCanonicalEvidencePhrase string `json:"proposed_canonical_evidence_phrase"`

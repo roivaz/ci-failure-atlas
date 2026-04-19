@@ -329,11 +329,20 @@ func buildPhase2AmbiguousProviderReviewItems(testClusters []semanticcontracts.Te
 		if len(references) > 0 {
 			firstRef = references[0]
 		}
+		totalSupport := 0
+		for _, member := range members {
+			totalSupport += member.SupportCount
+		}
+		severity := "medium"
+		if totalSupport >= 5 {
+			severity = "high"
+		}
 		reviewItems = append(reviewItems, semanticcontracts.ReviewItemRecord{
 			SchemaVersion:                        semanticcontracts.CurrentSchemaVersion,
 			Environment:                          environment,
 			Phase:                                "phase2",
 			Reason:                               "ambiguous_provider_merge",
+			Severity:                             severity,
 			ProposedCanonicalEvidencePhrase:      truncate(canonical, 240),
 			ProposedSearchQueryPhrase:            phase2ReviewSearchPhrase(members, canonical),
 			ProposedSearchQuerySourceRunURL:      strings.TrimSpace(firstRef.RunURL),
@@ -601,6 +610,7 @@ func normalizeReviewItem(row semanticcontracts.ReviewItemRecord) semanticcontrac
 		ReviewItemID:                         strings.TrimSpace(row.ReviewItemID),
 		Phase:                                strings.TrimSpace(row.Phase),
 		Reason:                               strings.TrimSpace(row.Reason),
+		Severity:                             strings.TrimSpace(row.Severity),
 		ProposedCanonicalEvidencePhrase:      strings.TrimSpace(row.ProposedCanonicalEvidencePhrase),
 		ProposedSearchQueryPhrase:            strings.TrimSpace(row.ProposedSearchQueryPhrase),
 		ProposedSearchQuerySourceRunURL:      strings.TrimSpace(row.ProposedSearchQuerySourceRunURL),

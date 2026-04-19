@@ -220,10 +220,33 @@ func Compile(
 			References:                   references,
 		}
 
+		if isKnownTerminalCanonical(cluster.CanonicalEvidencePhrase) {
+			delete(acc.ReasonSet, "low_confidence_evidence")
+			delete(acc.ReasonSet, "insufficient_inner_error")
+		}
+
 		if hasAmbiguousProviderMergeFromRows(acc.Rows, cluster.CanonicalEvidencePhrase, cluster.SearchQueryPhrase) &&
 			!isKnownTerminalCanonical(cluster.CanonicalEvidencePhrase) {
 			acc.ReasonSet["ambiguous_provider_merge"] = struct{}{}
 		}
+
+		if !isKnownTerminalCanonical(cluster.CanonicalEvidencePhrase) {
+			if isPlaceholderDominatedCanonical(cluster.CanonicalEvidencePhrase) {
+				acc.ReasonSet["placeholder_dominated_canonical"] = struct{}{}
+			}
+			if isShortUninformativeCanonical(cluster.CanonicalEvidencePhrase) {
+				acc.ReasonSet["short_uninformative_canonical"] = struct{}{}
+			}
+		}
+
+		if cluster.SupportCount == 1 {
+			acc.ReasonSet["single_occurrence"] = struct{}{}
+		}
+
+		if detectHighSampleVarianceForCluster(acc.Rows) {
+			acc.ReasonSet["high_sample_variance"] = struct{}{}
+		}
+
 		clusters = append(clusters, cluster)
 
 		for _, reason := range sortedKeys(acc.ReasonSet) {
@@ -234,7 +257,16 @@ func Compile(
 	sort.Slice(clusters, func(i, j int) bool {
 		return testClusterSortLess(clusters[i], clusters[j])
 	})
+
+	reviewItems = append(reviewItems, detectNearDuplicateClusters(clusters)...)
+	reviewItems = deduplicateLowConfidenceByCanonical(reviewItems)
+
 	sort.Slice(reviewItems, func(i, j int) bool {
+		si := severityRank(reviewItems[i].Severity)
+		sj := severityRank(reviewItems[j].Severity)
+		if si != sj {
+			return si < sj
+		}
 		if reviewItems[i].Phase != reviewItems[j].Phase {
 			return reviewItems[i].Phase < reviewItems[j].Phase
 		}
@@ -245,6 +277,61 @@ func Compile(
 	})
 
 	return clusters, reviewItems, nil
+}
+
+func severityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "high":
+		return 0
+	case "medium":
+		return 1
+	case "low":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// severityForReviewItem computes a triage severity based on the reason,
+// occurrence volume, and specificity of the evidence phrase.
+func severityForReviewItem(reason string, supportCount int, canonical string) string {
+	switch reason {
+	case "likely_undermerged":
+		if supportCount >= 5 {
+			return "high"
+		}
+		return "medium"
+	case "high_sample_variance":
+		if supportCount >= 5 {
+			return "high"
+		}
+		return "medium"
+	case "ambiguous_provider_merge":
+		if supportCount >= 3 {
+			return "high"
+		}
+		return "medium"
+	case "insufficient_inner_error":
+		if supportCount >= 3 {
+			return "medium"
+		}
+		return "low"
+	case "low_confidence_evidence":
+		if supportCount >= 3 {
+			return "medium"
+		}
+		return "low"
+	case "placeholder_dominated_canonical":
+		return "medium"
+	case "short_uninformative_canonical":
+		return "medium"
+	case "single_occurrence":
+		return "low"
+	case "search_query_source_not_found", "placeholder_in_search_query":
+		return "low"
+	default:
+		return "low"
+	}
 }
 
 func buildReviewItem(cluster semanticcontracts.TestClusterRecord, reason string) semanticcontracts.ReviewItemRecord {
@@ -258,6 +345,7 @@ func buildReviewItem(cluster semanticcontracts.TestClusterRecord, reason string)
 		ReviewItemID:                         reviewID,
 		Phase:                                "phase1",
 		Reason:                               reason,
+		Severity:                             severityForReviewItem(reason, cluster.SupportCount, cluster.CanonicalEvidencePhrase),
 		ProposedCanonicalEvidencePhrase:      cluster.CanonicalEvidencePhrase,
 		ProposedSearchQueryPhrase:            cluster.SearchQueryPhrase,
 		ProposedSearchQuerySourceRunURL:      cluster.SearchQuerySourceRunURL,
@@ -594,6 +682,242 @@ func hasAmbiguousProviderMergeFromRows(rows []semanticcontracts.Phase1WorksetRec
 		return false
 	}
 	return isGenericEvidenceText(canonical, search)
+}
+
+// isPlaceholderDominatedCanonical returns true if more than half of the tokens
+// in the canonical phrase are placeholder tokens like <uuid>, <cluster>, etc.
+func isPlaceholderDominatedCanonical(canonical string) bool {
+	tokens := strings.Fields(collapseWS(canonical))
+	if len(tokens) < 2 {
+		return false
+	}
+	placeholderCount := 0
+	for _, token := range tokens {
+		if rePlaceholderToken.MatchString(token) {
+			placeholderCount++
+		}
+	}
+	return placeholderCount*2 > len(tokens)
+}
+
+// isShortUninformativeCanonical catches short canonical phrases (<15 chars)
+// that aren't known specific phrases like recognized error codes.
+func isShortUninformativeCanonical(canonical string) bool {
+	value := strings.TrimSpace(canonical)
+	if len(value) >= 15 || value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	switch lower {
+	case "failure", "error", "failed", "timeout":
+		return true
+	}
+	if strings.HasPrefix(lower, "error code:") {
+		return false
+	}
+	if strings.Contains(lower, "error") || strings.Contains(lower, "failed") {
+		return true
+	}
+	return false
+}
+
+// nearDuplicateKey strips placeholders and returns a lowered, collapsed key
+// used for near-duplicate comparison between clusters.
+func nearDuplicateKey(canonical string) string {
+	key := strings.ToLower(collapseWS(canonical))
+	key = rePlaceholderToken.ReplaceAllString(key, " ")
+	return collapseWS(key)
+}
+
+// tokenSetJaccardOverlap computes the Jaccard index between two token sets.
+// Returns 0.0 if both are empty, 1.0 if identical.
+func tokenSetJaccardOverlap(a, b string) float64 {
+	tokensA := strings.Fields(a)
+	tokensB := strings.Fields(b)
+	setA := map[string]struct{}{}
+	for _, t := range tokensA {
+		setA[t] = struct{}{}
+	}
+	setB := map[string]struct{}{}
+	for _, t := range tokensB {
+		setB[t] = struct{}{}
+	}
+	if len(setA) == 0 && len(setB) == 0 {
+		return 0
+	}
+	intersection := 0
+	for t := range setA {
+		if _, ok := setB[t]; ok {
+			intersection++
+		}
+	}
+	union := len(setA)
+	for t := range setB {
+		if _, ok := setA[t]; !ok {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// detectNearDuplicateClusters finds pairs of compiled clusters within the same
+// environment whose placeholder-stripped canonicals overlap by >=80%. Emits
+// a "likely_undermerged" review item linking both clusters.
+func detectNearDuplicateClusters(clusters []semanticcontracts.TestClusterRecord) []semanticcontracts.ReviewItemRecord {
+	type envCluster struct {
+		index int
+		ndKey string
+	}
+	byEnv := map[string][]envCluster{}
+	for i, cluster := range clusters {
+		env := strings.TrimSpace(cluster.Environment)
+		if env == "" {
+			env = "unknown"
+		}
+		ndKey := nearDuplicateKey(cluster.CanonicalEvidencePhrase)
+		if ndKey == "" || len(strings.Fields(ndKey)) < 2 {
+			continue
+		}
+		byEnv[env] = append(byEnv[env], envCluster{index: i, ndKey: ndKey})
+	}
+
+	seen := map[string]struct{}{}
+	items := make([]semanticcontracts.ReviewItemRecord, 0)
+	for _, envClusters := range byEnv {
+		for i := 0; i < len(envClusters); i++ {
+			for j := i + 1; j < len(envClusters); j++ {
+				ci := envClusters[i]
+				cj := envClusters[j]
+				if ci.ndKey == cj.ndKey {
+					continue
+				}
+				if tokenSetJaccardOverlap(ci.ndKey, cj.ndKey) < 0.80 {
+					continue
+				}
+				clusterI := clusters[ci.index]
+				clusterJ := clusters[cj.index]
+				pairKey := clusterI.Phase1ClusterID + "|" + clusterJ.Phase1ClusterID
+				if clusterJ.Phase1ClusterID < clusterI.Phase1ClusterID {
+					pairKey = clusterJ.Phase1ClusterID + "|" + clusterI.Phase1ClusterID
+				}
+				if _, exists := seen[pairKey]; exists {
+					continue
+				}
+				seen[pairKey] = struct{}{}
+				combinedSupport := clusterI.SupportCount + clusterJ.SupportCount
+				sourceIDs := []string{clusterI.Phase1ClusterID, clusterJ.Phase1ClusterID}
+				sort.Strings(sourceIDs)
+				sigSet := map[string]struct{}{}
+				for _, s := range clusterI.MemberSignatureIDs {
+					sigSet[s] = struct{}{}
+				}
+				for _, s := range clusterJ.MemberSignatureIDs {
+					sigSet[s] = struct{}{}
+				}
+				refsByKey := map[string]semanticcontracts.ReferenceRecord{}
+				for _, ref := range clusterI.References {
+					key := referenceIdentityKey(ref)
+					if key != "" {
+						refsByKey[key] = ref
+					}
+				}
+				for _, ref := range clusterJ.References {
+					key := referenceIdentityKey(ref)
+					if key != "" {
+						refsByKey[key] = ref
+					}
+				}
+				refs := make([]semanticcontracts.ReferenceRecord, 0, len(refsByKey))
+				for _, ref := range refsByKey {
+					refs = append(refs, ref)
+				}
+				sortRowsForReferences2(refs)
+				env := strings.TrimSpace(clusterI.Environment)
+				refKeys := sortedReferenceKeys(refs)
+				reviewID := fingerprint(env + "|phase1|likely_undermerged|" + strings.Join(sourceIDs, ",") + "|" + strings.Join(refKeys, ","))
+				items = append(items, semanticcontracts.ReviewItemRecord{
+					SchemaVersion:                        semanticcontracts.CurrentSchemaVersion,
+					Environment:                          env,
+					ReviewItemID:                         reviewID,
+					Phase:                                "phase1",
+					Reason:                               "likely_undermerged",
+					Severity:                             severityForReviewItem("likely_undermerged", combinedSupport, clusterI.CanonicalEvidencePhrase),
+					ProposedCanonicalEvidencePhrase:      clusterI.CanonicalEvidencePhrase + " / " + clusterJ.CanonicalEvidencePhrase,
+					ProposedSearchQueryPhrase:            clusterI.SearchQueryPhrase,
+					ProposedSearchQuerySourceRunURL:      clusterI.SearchQuerySourceRunURL,
+					ProposedSearchQuerySourceSignatureID: clusterI.SearchQuerySourceSignatureID,
+					SourcePhase1ClusterIDs:               sourceIDs,
+					MemberSignatureIDs:                   sortedKeys(sigSet),
+					References:                           refs,
+				})
+			}
+		}
+	}
+	return items
+}
+
+func sortRowsForReferences2(refs []semanticcontracts.ReferenceRecord) {
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].OccurredAt != refs[j].OccurredAt {
+			return refs[i].OccurredAt < refs[j].OccurredAt
+		}
+		if refs[i].RunURL != refs[j].RunURL {
+			return refs[i].RunURL < refs[j].RunURL
+		}
+		if refs[i].SignatureID != refs[j].SignatureID {
+			return refs[i].SignatureID < refs[j].SignatureID
+		}
+		return refs[i].RowID < refs[j].RowID
+	})
+}
+
+// detectHighSampleVarianceForCluster checks whether the raw samples in a
+// compiled cluster contain significantly different error signals, suggesting
+// the cluster has overmerged distinct failure modes.
+func detectHighSampleVarianceForCluster(rows []semanticcontracts.Phase1WorksetRecord) bool {
+	if len(rows) < 3 {
+		return false
+	}
+	errorCodes := map[string]struct{}{}
+	for _, row := range rows {
+		raw := strings.TrimSpace(row.RawText)
+		if raw == "" {
+			continue
+		}
+		code := rootAzureErrorCode(raw)
+		if code != "" {
+			errorCodes[strings.ToLower(code)] = struct{}{}
+		}
+	}
+	return len(errorCodes) >= 3
+}
+
+// deduplicateLowConfidenceByCanonical collapses multiple low_confidence_evidence
+// review items that share the same environment+canonical into a single item so
+// the review queue isn't flooded with N copies of the same weak signal.
+func deduplicateLowConfidenceByCanonical(items []semanticcontracts.ReviewItemRecord) []semanticcontracts.ReviewItemRecord {
+	dedupeKey := func(item semanticcontracts.ReviewItemRecord) string {
+		return strings.ToLower(strings.TrimSpace(item.Environment)) + "|" +
+			strings.ToLower(collapseWS(item.ProposedCanonicalEvidencePhrase))
+	}
+	out := make([]semanticcontracts.ReviewItemRecord, 0, len(items))
+	seenLowConf := map[string]struct{}{}
+	for _, item := range items {
+		if strings.TrimSpace(item.Reason) != "low_confidence_evidence" {
+			out = append(out, item)
+			continue
+		}
+		key := dedupeKey(item)
+		if _, exists := seenLowConf[key]; exists {
+			continue
+		}
+		seenLowConf[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func isGenericEvidenceText(canonical string, search string) bool {
