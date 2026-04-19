@@ -55,6 +55,20 @@ var (
 	reCommandErrorLine            = regexp.MustCompile(`(?im)^Command Error:\s*[^\n]+$`)
 	reQuotaRequiredAvailable      = regexp.MustCompile(`(?i)\brequired\s+['"]?\d+['"]?\s*,\s*available\s+['"]?\d+['"]?\b`)
 	reWrapperStepErroredContainer = regexp.MustCompile(`(?i)step errored`)
+
+	// Dial-TCP address: normalize raw IPs left behind after URL masking.
+	reCleanDialTCPAddress = regexp.MustCompile(`\bdial tcp \d{1,3}(?:\.\d{1,3}){3}:\d+\b`)
+	// Logfmt-style timestamp (e.g. time=2026-04-17T11:04:19.211Z).
+	reCleanLogfmtTimestamp = regexp.MustCompile(`\btime=[0-9]{4}-[0-9]{2}-[0-9]{2}T[A-Z0-9:.]+\s*`)
+	// JSON "time" field with ISO-8601 value (e.g. prow entrypoint logs).
+	reCleanJSONTimeField = regexp.MustCompile(`"time"\s*:\s*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]*",?\s*`)
+	// Prow entrypoint single-line JSON: extract just the msg value.
+	reProwEntrypointMsg = regexp.MustCompile(`"component"\s*:\s*"entrypoint"[^}]{0,400}"msg"\s*:\s*"([^"]+)"`)
+	// All CreateHCPCluster*FromParam / *AndWait helper variants.
+	reCreateHCPClusterTimeout = regexp.MustCompile(`(?i)createhcpcluster\w*(?:fromparam|andwait)`)
+	// Gomega "Expected success, but got an error:" followed by optional type
+	// wrapper line, then the real error message.
+	reGomegaSuccessFailure = regexp.MustCompile(`(?i)Expected success, but got an error:\s*\n(?:[ \t]*<[^>\n]*>[ \t]*:?[ \t]*\n)?[ \t]*([^\n.]+)`)
 )
 
 var normalizePickPatterns = []*regexp.Regexp{
@@ -68,6 +82,10 @@ var normalizePickPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)failed to get service aro-hcp-exporter/aro-hcp-exporter: services "aro-hcp-exporter" not found`),
 	regexp.MustCompile(`(?i)failed to search for managed resource groups:[^\n]+`),
 	regexp.MustCompile(`(?i)failed to create SRE breakglass session:[^\n]+`),
+	// ERROR CODE must come before the generic response-status line so that a
+	// richer error code (e.g. NotFound with a detail message) is preferred
+	// over the bare HTTP status text.
+	regexp.MustCompile(`(?i)ERROR CODE:\s*[A-Za-z0-9_]+`),
 	regexp.MustCompile(`(?i)response 404:[^\n]{0,240}`),
 	regexp.MustCompile(`(?i)timeout '\d+\.\d+' minutes exceeded during CreateNodePoolFromParam[^\n]*`),
 	regexp.MustCompile(`(?i)failed waiting for nodepool[^\n]+(?:updating|to finish creating)[^\n]*`),
@@ -79,7 +97,6 @@ var normalizePickPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)failed to run ARM step:[^\n]+`),
 	regexp.MustCompile(`(?i)Cluster provisioning failed`),
 	regexp.MustCompile(`(?i)Interrupted by User`),
-	regexp.MustCompile(`(?i)ERROR CODE:\s*[A-Za-z0-9_]+`),
 }
 
 var safeSearchPatterns = []*regexp.Regexp{
@@ -206,6 +223,15 @@ func extractEvidence(text string) extractedEvidence {
 		picked = bestSignalErrorLine(raw)
 	}
 
+	// Prow entrypoint JSON lines are single-line structured logs whose only
+	// varying field across occurrences is "time".  Extract just the "msg"
+	// value so all instances of the same timeout canonicalize identically.
+	if picked == "" {
+		if match := reProwEntrypointMsg.FindStringSubmatch(raw); len(match) > 1 {
+			picked = strings.TrimSpace(match[1])
+		}
+	}
+
 	if picked == "" {
 		picked = bestHTTPResponseStatusLine(raw)
 	}
@@ -245,6 +271,12 @@ func extractEvidence(text string) extractedEvidence {
 		}
 	}
 	picked = refineDeserializationNoOutputPicked(raw, picked)
+	// Only attempt command-error refinement when the deserialization-no-output
+	// path was not responsible for choosing the current picked value; that path
+	// deliberately elevates the Command Error line as the best signal.
+	if !containsDeserializationNoOutputSignal(raw) && !containsDeserializationNoOutputSignal(picked) {
+		picked = refineCommandErrorExitStatusOnly(raw, picked)
+	}
 
 	code := ""
 	leafCode := ""
@@ -272,8 +304,8 @@ func extractEvidence(text string) extractedEvidence {
 		canonical = strings.Join(parts, "; ")
 	}
 
-	if strings.Contains(lowered, "context deadline exceeded") && strings.Contains(lowered, "createhcpclusterfromparam") {
-		canonical = "timeout during CreateHCPClusterFromParam; context deadline exceeded"
+	if strings.Contains(lowered, "context deadline exceeded") && reCreateHCPClusterTimeout.MatchString(lowered) {
+		canonical = "timeout during CreateHCPClusterAndWait; context deadline exceeded"
 	}
 	if strings.Contains(lowered, "getadminrestconfigforhcpcluster") && strings.Contains(lowered, "timeout") {
 		canonical = "timeout during GetAdminRESTConfigForHCPCluster while waiting for hcpcluster creds"
@@ -313,7 +345,7 @@ func extractEvidence(text string) extractedEvidence {
 		"interrupted by user":         {},
 		"cluster provisioning failed": {},
 		"context deadline exceeded":   {},
-		"timeout during createhcpclusterfromparam; context deadline exceeded": {},
+		"timeout during createhcpclusterandwait; context deadline exceeded": {},
 	}[strings.ToLower(canonical)]
 	genericPhrase := genericCanonical
 	if code != "" && isGenericCode(code) {
@@ -390,6 +422,9 @@ func cleanCanonical(value string) string {
 	text = reCleanExternalAuthBare.ReplaceAllString(text, "external auth <external-auth>")
 	text = reCleanNodePoolQuoted.ReplaceAllString(text, `nodepool="<nodepool>"`)
 	text = reCleanNodePoolPhrase.ReplaceAllString(text, "node pool <nodepool>")
+	text = reCleanDialTCPAddress.ReplaceAllString(text, "dial tcp <ip>:<port>")
+	text = reCleanLogfmtTimestamp.ReplaceAllString(text, "")
+	text = reCleanJSONTimeField.ReplaceAllString(text, "")
 	text = collapseWS(text)
 	if len(text) > 260 {
 		text = truncateCanonical(text, 260)
@@ -415,6 +450,9 @@ func extractAssertionContext(text string) string {
 	}
 	if eventuallyContext := extractEventuallyFailureContext(text); eventuallyContext != "" {
 		return eventuallyContext
+	}
+	if successContext := extractGomegaSuccessFailureContext(text); successContext != "" {
+		return successContext
 	}
 
 	lines := strings.Split(text, "\n")
@@ -490,6 +528,28 @@ func extractEventuallyFailureContext(text string) string {
 		}
 	}
 	return ""
+}
+
+// extractGomegaSuccessFailureContext handles the Gomega pattern:
+//
+//	Expected success, but got an error:
+//	    <*errors.errorString | 0x...>:
+//	    <actual error message>
+//	    ...
+//
+// It extracts the actual error message line, skipping the optional type-wrapper
+// line, so the canonical phrase reflects the real failure rather than the
+// Gomega assertion boilerplate.
+func extractGomegaSuccessFailureContext(text string) string {
+	match := reGomegaSuccessFailure.FindStringSubmatch(text)
+	if len(match) < 2 {
+		return ""
+	}
+	candidate := strings.TrimSpace(match[1])
+	if candidate == "" || candidate == "..." {
+		return ""
+	}
+	return candidate
 }
 
 func isExpectedBlockStartLine(line string) bool {
@@ -787,6 +847,7 @@ func summarizeAzureDetailMessage(message string) string {
 		"at least one resource deployment operation failed",
 		"the resource write operation failed to complete successfully",
 		"operation failed due to an internal server error",
+		"internal server error",
 	} {
 		if strings.Contains(lowered, generic) {
 			return ""
@@ -833,6 +894,22 @@ func refineDeserializationNoOutputPicked(raw string, picked string) string {
 	}
 	if commandLine := lastCommandErrorLine(raw); commandLine != "" {
 		return commandLine
+	}
+	return picked
+}
+
+// refineCommandErrorExitStatusOnly replaces a bare "Command Error: exit status
+// N" pick with a more informative signal line from the surrounding text when
+// one is available.  A bare exit-status string carries no actionable detail.
+func refineCommandErrorExitStatusOnly(raw string, picked string) string {
+	normalized := strings.ToLower(collapseWS(strings.TrimSpace(picked)))
+	if normalized != "command error: exit status 1" &&
+		normalized != "command error: exit status 2" &&
+		normalized != "command error: exit status 3" {
+		return picked
+	}
+	if refined := bestSignalErrorLine(raw); refined != "" {
+		return refined
 	}
 	return picked
 }

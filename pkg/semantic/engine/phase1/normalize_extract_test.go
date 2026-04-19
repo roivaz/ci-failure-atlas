@@ -469,3 +469,196 @@ route host was never found: Get "https://agnhost-e2e-serving-app-9f7x5.apps.aro.
 		t.Fatalf("expected canonical phrase to normalize lookup host/server details, got=%q", gotA)
 	}
 }
+
+// --- Regression tests for semantic quality improvements ---
+
+// Finding 1: prow entrypoint JSON lines that differ only by "time" field must
+// produce the same canonical phrase.
+func TestExtractEvidenceProwEntrypointTimestampsMerge(t *testing.T) {
+	t.Parallel()
+
+	rawA := `{"component":"entrypoint","file":"sigs.k8s.io/prow/pkg/entrypoint/run.go:169","func":"sigs.k8s.io/prow/pkg/entrypoint.Options.ExecuteProcess","level":"error","msg":"Process did not finish before 2h0m0s timeout","severity":"error","time":"2026-04-12T09:52:11Z"}`
+	rawB := `{"component":"entrypoint","file":"sigs.k8s.io/prow/pkg/entrypoint/run.go:169","func":"sigs.k8s.io/prow/pkg/entrypoint.Options.ExecuteProcess","level":"error","msg":"Process did not finish before 2h0m0s timeout","severity":"error","time":"2026-04-16T22:04:25Z"}`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if gotA != gotB {
+		t.Fatalf("prow entrypoint lines with different timestamps must canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+	if !strings.Contains(gotA, "Process did not finish before 2h0m0s timeout") {
+		t.Fatalf("expected prow entrypoint msg in canonical phrase, got=%q", gotA)
+	}
+}
+
+// Finding 2: route-host errors that differ only by the raw IP in "dial tcp
+// <IP>:443" must produce the same canonical phrase.
+func TestExtractEvidenceDialTCPAddressNormalized(t *testing.T) {
+	t.Parallel()
+
+	rawA := `fail [github.com/Azure/ARO-HCP/test/e2e/complete_cluster_create_multiversion.go:183]: Unexpected error:
+    <*fmt.wrapError | 0xc000c8e620>: 
+    route host was never found: Get "https://agnhost-e2e-serving-app-k8g25.apps.aro.u2q3n3k0t9h9m8l.pb5a.hcp.osadev.cloud": dial tcp 134.33.16.231:443: connect: connection timed out`
+	rawB := `fail [github.com/Azure/ARO-HCP/test/e2e/cluster_version_backlevel.go:194]: Unexpected error:
+    <*fmt.wrapError | 0xc001096040>: 
+    route host was never found: Get "https://agnhost-e2e-serving-app-mbnnt.apps.aro.h7i5w5u7j5b3g2u.fova.hcp.osadev.cloud": dial tcp 20.40.25.244:443: connect: connection timed out`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if gotA != gotB {
+		t.Fatalf("route-host dial-tcp errors with different IPs must canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+	if strings.Contains(gotA, "134.33") || strings.Contains(gotA, "20.40") {
+		t.Fatalf("canonical phrase must not contain raw IP addresses, got=%q", gotA)
+	}
+}
+
+// Finding 3: Gomega "expected N nodes, found M" assertion — the pattern must
+// not be "..." (the Gomega truncation marker).
+func TestExtractEvidenceGomegaEllipsisNotExtracted(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/nodepool_update_nodes.go:262]: Expected success, but got an error:
+    <*errors.errorString | 0xc000981550>: 
+    expected 4 nodes, found 5
+    ...
+fail [github.com/Azure/ARO-HCP/test/e2e/nodepool_update_nodes.go:262]: Expected success, but got an error:
+    <*errors.errorString | 0xc000981550>: 
+    expected 4 nodes, found 5
+    ...`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if got == "..." {
+		t.Fatalf("canonical phrase must not be the Gomega ellipsis marker")
+	}
+	if !strings.Contains(got, "expected 4 nodes, found 5") {
+		t.Fatalf("expected the inner assertion error in canonical phrase, got=%q", got)
+	}
+}
+
+// Finding 4: all CreateHCPCluster* timeout variants (FromParam, AndWait,
+// 20251223FromParam, 20251223AndWait) must share a single canonical phrase.
+func TestExtractEvidenceCreateHCPClusterTimeoutVariantsUnify(t *testing.T) {
+	t.Parallel()
+
+	want := "timeout during CreateHCPClusterAndWait; context deadline exceeded"
+
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{
+			"FromParam",
+			`failed to create HCP cluster hcp-cluster, caused by: timeout '45.000000' minutes exceeded during CreateHCPClusterFromParam for cluster hcp-cluster in resource group rg-abc, error: failed waiting for cluster="hcp-cluster" in resourcegroup="rg-abc" to finish creating, caused by: timeout '45.000000' minutes exceeded during CreateHCPClusterFromParam for cluster hcp-cluster in resource group rg-abc, error: context deadline exceeded`,
+		},
+		{
+			"20251223FromParam",
+			`failed to create HCP cluster idms-e2e-hcp-cluster, caused by: timeout '45.000000' minutes exceeded during CreateHCPCluster20251223FromParam for cluster idms-e2e-hcp-cluster in resource group idms-v9cd6x, error: failed waiting for cluster="idms-e2e-hcp-cluster" in resourcegroup="idms-v9cd6x" to finish creating, caused by: timeout '45.000000' minutes exceeded during CreateHCPCluster20251223FromParam for cluster idms-e2e-hcp-cluster in resource group idms-v9cd6x, error: context deadline exceeded`,
+		},
+		{
+			"20251223AndWait",
+			`failed waiting for cluster="cilium-cluster" in resourcegroup="e2e-cilium-hvlzkd" to finish creating, caused by: timeout '45.000000' minutes exceeded during CreateHCPCluster20251223AndWait for cluster cilium-cluster in resource group e2e-cilium-hvlzkd, error: context deadline exceeded`,
+		},
+		{
+			"AndWait",
+			`failed waiting for cluster="cluster-ver-4-19" in resourcegroup="rg-cluster-back-version-g5hsfc" to finish creating, caused by: timeout '45.000000' minutes exceeded during CreateHCPClusterAndWait for cluster cluster-ver-4-19 in resource group rg-cluster-back-version-g5hsfc, error: context deadline exceeded`,
+		},
+	}
+
+	for _, tc := range cases {
+		got := extractEvidence(tc.raw).CanonicalEvidencePhrase
+		if got != want {
+			t.Errorf("case %q: got=%q want=%q", tc.name, got, want)
+		}
+	}
+}
+
+// Finding 5: "Expected success, but got an error:" wrapper must yield the
+// inner error, not the Gomega boilerplate phrase.
+func TestExtractEvidenceGomegaSuccessFailureExtractsInnerError(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/cluster_create_private_kv.go:180]: Timed out after 600.005s.
+router-default deployment logs should be fetchable
+Expected success, but got an error:
+    <*errors.errorString | 0xc001178270>: 
+    deployment router-default -n openshift-ingress has no running pods
+    ...`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if strings.EqualFold(got, "Expected success, but got an error:") {
+		t.Fatalf("canonical phrase must not be the Gomega wrapper line, got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "router-default") || !strings.Contains(strings.ToLower(got), "no running pods") {
+		t.Fatalf("expected inner deployment error in canonical phrase, got=%q", got)
+	}
+}
+
+// Finding 6: when both a "RESPONSE 404" status line and an "ERROR CODE:" line
+// are present, the ERROR CODE must win.
+func TestExtractEvidenceErrorCodePreferredOverResponse404(t *testing.T) {
+	t.Parallel()
+
+	raw := `PUT https://management.azure.com/subscriptions/XXXX/resourceGroups/rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id/federatedIdentityCredentials/fic
+--------------------------------------------------------------------------------
+RESPONSE 404: 404 Not Found
+ERROR CODE: NotFound
+--------------------------------------------------------------------------------
+{
+  "error": {
+    "code": "NotFound",
+    "message": "MS Graph resource not found during Federated Identity Credential creation."
+  }
+}`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	if strings.EqualFold(strings.TrimSpace(got), "RESPONSE 404: 404 Not Found") {
+		t.Fatalf("ERROR CODE must be preferred over RESPONSE status line, got=%q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "notfound") {
+		t.Fatalf("expected NotFound error code in canonical phrase, got=%q", got)
+	}
+}
+
+// Finding 8: "Internal server error." detail message is generic noise and must
+// not appear in the canonical phrase; patterns with and without it should have
+// the same canonical text.
+func TestExtractEvidenceInternalServerErrorDetailSuppressed(t *testing.T) {
+	t.Parallel()
+
+	rawWithDetail := `POST https://management.azure.com/subscriptions/XXXX/resourceGroups/rg/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/cluster/requestAdminCredential
+RESPONSE 500: 500 Internal Server Error
+ERROR CODE: InternalServerError
+{
+  "error": {
+    "code": "InternalServerError",
+    "message": "Internal server error."
+  }
+}`
+	rawWithout := `GET https://rp.example/subscriptions/XXXX/providers/Microsoft.RedHatOpenShift/locations/westus3/hcpOperationStatuses/abc123
+RESPONSE 200: 200 OK
+ERROR CODE: InternalServerError`
+
+	gotWith := extractEvidence(rawWithDetail).CanonicalEvidencePhrase
+	gotWithout := extractEvidence(rawWithout).CanonicalEvidencePhrase
+	if gotWith != gotWithout {
+		t.Fatalf("InternalServerError with and without generic detail must canonicalize identically:\n  with=%q\n  without=%q", gotWith, gotWithout)
+	}
+}
+
+// Finding 11: logfmt-style timestamps (time=<ISO8601>) must be stripped so
+// that the same step error on different runs produces the same canonical phrase.
+func TestExtractEvidenceLogfmtTimestampStripped(t *testing.T) {
+	t.Parallel()
+
+	rawA := `time=2026-04-17T11:04:19.211Z level=ERROR msg="Step errored." serviceGroup=Microsoft.Azure.ARO.HCP.Management.Infra resourceGroup=management step=delete-non-swift-user-nodepools err="failed to prepare kubeconfig: failed to ensure cluster admin role: /me request is only valid with delegated authentication flow."`
+	rawB := `time=2026-04-18T09:00:00.000Z level=ERROR msg="Step errored." serviceGroup=Microsoft.Azure.ARO.HCP.Management.Infra resourceGroup=management step=delete-non-swift-user-nodepools err="failed to prepare kubeconfig: failed to ensure cluster admin role: /me request is only valid with delegated authentication flow."`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if gotA != gotB {
+		t.Fatalf("logfmt lines with different timestamps must canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+	if strings.Contains(gotA, "2026-04-17") || strings.Contains(gotA, "2026-04-18") {
+		t.Fatalf("canonical phrase must not contain raw timestamps, got=%q", gotA)
+	}
+}

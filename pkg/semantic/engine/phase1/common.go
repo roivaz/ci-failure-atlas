@@ -18,6 +18,9 @@ var genericCodes = map[string]struct{}{
 	"conflict":               {},
 	"badrequest":             {},
 	"multipleerrorsoccurred": {},
+	// Codes where the detail message carries meaningful context.
+	"notfound":              {},
+	"invalidrequestcontent": {},
 }
 
 var wrapperOnly = map[string]struct{}{
@@ -26,6 +29,9 @@ var wrapperOnly = map[string]struct{}{
 	"err:":             {},
 	"caused by:":       {},
 	"step errored":     {},
+	// Gomega assertion wrappers — the real error is the inner value.
+	"...":                                 {},
+	"expected success, but got an error:": {},
 }
 
 var assertionTailPrefixes = []string{

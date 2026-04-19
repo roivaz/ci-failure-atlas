@@ -40,7 +40,7 @@ var genericPhase2CanonicalPhrases = map[string]struct{}{
 	"interrupted by user":         {},
 	"cluster provisioning failed": {},
 	"context deadline exceeded":   {},
-	"timeout during createhcpclusterfromparam; context deadline exceeded": {},
+	"timeout during createhcpclusterandwait; context deadline exceeded": {},
 }
 
 type globalBucket struct {
