@@ -1,6 +1,9 @@
 package options
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 type EnvironmentDefaults struct {
 	SippyRelease            string
@@ -10,29 +13,35 @@ type EnvironmentDefaults struct {
 }
 
 type RuntimeDefaults struct {
-	SippyBaseURL         string
-	ProwArtifactsBaseURL string
-	SippyOrg             string
-	SippyRepo            string
-	GitHubRepoOwner      string
-	GitHubRepoName       string
-	HistoryHorizonWeeks  int
-	DefaultEnvironments  []string
-	DefaultJUnitPaths    []string
-	Environments         map[string]EnvironmentDefaults
+	SippyBaseURL            string
+	ProwBaseURL             string
+	ProwArtifactsBaseURL    string
+	SippyOrg                string
+	SippyRepo               string
+	GitHubRepoOwner         string
+	GitHubRepoName          string
+	HistoryHorizonWeeks     int
+	ProwRecentWindow        time.Duration
+	ProwArtifactRetryWindow time.Duration
+	DefaultEnvironments     []string
+	DefaultJUnitPaths       []string
+	Environments            map[string]EnvironmentDefaults
 }
 
 var supportedEnvironmentOrder = []string{"dev", "int", "stg", "prod"}
 
 var defaultRuntimeDefaults = RuntimeDefaults{
-	SippyBaseURL:         "https://sippy.dptools.openshift.org",
-	ProwArtifactsBaseURL: "https://storage.googleapis.com",
-	SippyOrg:             "Azure",
-	SippyRepo:            "ARO-HCP",
-	GitHubRepoOwner:      "Azure",
-	GitHubRepoName:       "ARO-HCP",
-	HistoryHorizonWeeks:  4,
-	DefaultEnvironments:  []string{"dev"},
+	SippyBaseURL:            "https://sippy.dptools.openshift.org",
+	ProwBaseURL:             "https://prow.ci.openshift.org",
+	ProwArtifactsBaseURL:    "https://storage.googleapis.com",
+	SippyOrg:                "Azure",
+	SippyRepo:               "ARO-HCP",
+	GitHubRepoOwner:         "Azure",
+	GitHubRepoName:          "ARO-HCP",
+	HistoryHorizonWeeks:     4,
+	ProwRecentWindow:        10 * time.Hour,
+	ProwArtifactRetryWindow: 15 * time.Minute,
+	DefaultEnvironments:     []string{"dev"},
 	DefaultJUnitPaths: []string{
 		"prowjob_junit.xml",
 	},
@@ -96,6 +105,11 @@ func SippyJobNameForEnvironment(environment string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(defaults.SippyJobName), strings.TrimSpace(defaults.SippyJobName) != ""
+}
+
+// Prow discovery and Sippy queries share the same canonical job-name mapping.
+func ProwJobNameForEnvironment(environment string) (string, bool) {
+	return SippyJobNameForEnvironment(environment)
 }
 
 func SupportsPRLookupForEnvironment(environment string) bool {

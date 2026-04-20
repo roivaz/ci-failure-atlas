@@ -21,6 +21,7 @@ func DefaultOptions() *RawOptions {
 		PostgresOptions: postgresoptions.DefaultCLIOptions(),
 
 		SourceSippyRunsControllerThreads:       1,
+		SourceProwRunsControllerThreads:        1,
 		SourceSippyTestsDailyControllerThreads: 1,
 		SourceGitHubPullRequestsThreads:        1,
 		SourceProwFailuresControllerThreads:    1,
@@ -46,6 +47,7 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 	}
 
 	cmd.Flags().IntVar(&opts.SourceSippyRunsControllerThreads, "controllers.source.sippy.runs.threads", opts.SourceSippyRunsControllerThreads, "Number of threads for controller source.sippy.runs.")
+	cmd.Flags().IntVar(&opts.SourceProwRunsControllerThreads, "controllers.source.prow.runs.threads", opts.SourceProwRunsControllerThreads, "Number of threads for controller source.prow.runs.")
 	cmd.Flags().IntVar(&opts.SourceSippyTestsDailyControllerThreads, "controllers.source.sippy.tests-daily.threads", opts.SourceSippyTestsDailyControllerThreads, "Number of threads for controller source.sippy.tests-daily.")
 	cmd.Flags().IntVar(&opts.SourceGitHubPullRequestsThreads, "controllers.source.github.pull-requests.threads", opts.SourceGitHubPullRequestsThreads, "Number of threads for controller source.github.pull-requests.")
 	cmd.Flags().IntVar(&opts.SourceProwFailuresControllerThreads, "controllers.source.prow.failures.threads", opts.SourceProwFailuresControllerThreads, "Number of threads for controller source.prow.failures.")
@@ -60,6 +62,7 @@ type RawOptions struct {
 	PostgresOptions *postgresoptions.RawOptions
 
 	SourceSippyRunsControllerThreads       int
+	SourceProwRunsControllerThreads        int
 	SourceSippyTestsDailyControllerThreads int
 	SourceGitHubPullRequestsThreads        int
 	SourceProwFailuresControllerThreads    int
@@ -74,6 +77,7 @@ type validatedOptions struct {
 	PostgresValidated *postgresoptions.ValidatedOptions
 
 	SourceSippyRunsControllerThreads       int
+	SourceProwRunsControllerThreads        int
 	SourceSippyTestsDailyControllerThreads int
 	SourceGitHubPullRequestsThreads        int
 	SourceProwFailuresControllerThreads    int
@@ -93,6 +97,7 @@ type completedOptions struct {
 	Store contracts.Store
 
 	SourceSippyRunsControllerThreads       int
+	SourceProwRunsControllerThreads        int
 	SourceSippyTestsDailyControllerThreads int
 	SourceGitHubPullRequestsThreads        int
 	SourceProwFailuresControllerThreads    int
@@ -129,6 +134,9 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 	if o.SourceSippyRunsControllerThreads <= 0 {
 		o.SourceSippyRunsControllerThreads = 1
 	}
+	if o.SourceProwRunsControllerThreads <= 0 {
+		o.SourceProwRunsControllerThreads = 1
+	}
 	if o.SourceSippyTestsDailyControllerThreads <= 0 {
 		o.SourceSippyTestsDailyControllerThreads = 1
 	}
@@ -154,6 +162,7 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 			SourceValidated:                        sourceValidated,
 			PostgresValidated:                      postgresValidated,
 			SourceSippyRunsControllerThreads:       o.SourceSippyRunsControllerThreads,
+			SourceProwRunsControllerThreads:        o.SourceProwRunsControllerThreads,
 			SourceSippyTestsDailyControllerThreads: o.SourceSippyTestsDailyControllerThreads,
 			SourceGitHubPullRequestsThreads:        o.SourceGitHubPullRequestsThreads,
 			SourceProwFailuresControllerThreads:    o.SourceProwFailuresControllerThreads,
@@ -190,6 +199,7 @@ func (o *ValidatedOptions) Complete(ctx context.Context) (*Options, error) {
 			Postgres:                               postgresCompleted,
 			Store:                                  store,
 			SourceSippyRunsControllerThreads:       o.SourceSippyRunsControllerThreads,
+			SourceProwRunsControllerThreads:        o.SourceProwRunsControllerThreads,
 			SourceSippyTestsDailyControllerThreads: o.SourceSippyTestsDailyControllerThreads,
 			SourceGitHubPullRequestsThreads:        o.SourceGitHubPullRequestsThreads,
 			SourceProwFailuresControllerThreads:    o.SourceProwFailuresControllerThreads,
@@ -226,6 +236,10 @@ func (opts *Options) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	sourceProwRunsController, err := controllers.NewSourceProwRuns(logger, deps)
+	if err != nil {
+		return err
+	}
 	sourceSippyTestsDailyController, err := controllers.NewSourceSippyTestsDaily(logger, deps)
 	if err != nil {
 		return err
@@ -258,6 +272,10 @@ func (opts *Options) Run(ctx context.Context) error {
 		{
 			controller: sourceSippyRunsController,
 			threads:    opts.SourceSippyRunsControllerThreads,
+		},
+		{
+			controller: sourceProwRunsController,
+			threads:    opts.SourceProwRunsControllerThreads,
 		},
 		{
 			controller: sourceSippyTestsDailyController,

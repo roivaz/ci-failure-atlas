@@ -11,6 +11,7 @@ import (
 
 const (
 	SourceSippyRunsControllerName          = "source.sippy.runs"
+	SourceProwRunsControllerName           = "source.prow.runs"
 	SourceSippyTestsDailyControllerName    = "source.sippy.tests-daily"
 	SourceGitHubPullRequestsControllerName = "source.github.pull-requests"
 	SourceProwFailuresControllerName       = "source.prow.failures"
@@ -28,6 +29,8 @@ func NewByName(name string, logger logr.Logger, deps Dependencies) (Controller, 
 	switch name {
 	case SourceSippyRunsControllerName:
 		return NewSourceSippyRuns(logger, deps)
+	case SourceProwRunsControllerName:
+		return NewSourceProwRuns(logger, deps)
 	case SourceSippyTestsDailyControllerName:
 		return NewSourceSippyTestsDaily(logger, deps)
 	case SourceGitHubPullRequestsControllerName:

@@ -69,7 +69,7 @@ func NewHTTPClient(options ClientOptions) *HTTPClient {
 }
 
 func (c *HTTPClient) ListFailures(ctx context.Context, environment string, runURL string) ([]Failure, error) {
-	prefix, err := artifactPrefixFromRunURL(runURL)
+	prefix, err := ArtifactPrefixFromRunURL(runURL)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +216,36 @@ func isRetryableStatusCode(statusCode int) bool {
 		statusCode >= http.StatusInternalServerError
 }
 
-func artifactPrefixFromRunURL(runURL string) (string, error) {
+func CanonicalRunURL(deckBaseURL string, runURL string) (string, error) {
+	prefix, err := ArtifactPrefixFromRunURL(runURL)
+	if err != nil {
+		return "", err
+	}
+
+	trimmedBaseURL := strings.TrimSpace(deckBaseURL)
+	if trimmedBaseURL == "" {
+		return "", fmt.Errorf("deck base URL is required")
+	}
+
+	parsedBaseURL, err := url.Parse(trimmedBaseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse deck base URL: %w", err)
+	}
+	parsedBaseURL.RawQuery = ""
+	parsedBaseURL.Fragment = ""
+	basePath := strings.TrimRight(parsedBaseURL.Path, "/")
+	if strings.HasSuffix(strings.ToLower(basePath), ".js") {
+		if slash := strings.LastIndex(basePath, "/"); slash >= 0 {
+			basePath = basePath[:slash]
+		} else {
+			basePath = ""
+		}
+	}
+	parsedBaseURL.Path = basePath + "/view/gs/" + strings.Trim(prefix, "/")
+	return parsedBaseURL.String(), nil
+}
+
+func ArtifactPrefixFromRunURL(runURL string) (string, error) {
 	trimmed := strings.TrimSpace(runURL)
 	if trimmed == "" {
 		return "", fmt.Errorf("run URL is required")
@@ -257,6 +286,9 @@ func prefixFromHTTPPath(rawPath string) (string, bool) {
 	p := strings.TrimSpace(rawPath)
 	if strings.HasPrefix(p, "/view/gs/") {
 		return strings.TrimPrefix(strings.Trim(p, "/"), "view/gs/"), true
+	}
+	if strings.HasPrefix(p, "/view/gcs/") {
+		return strings.TrimPrefix(strings.Trim(p, "/"), "view/gcs/"), true
 	}
 	if strings.HasPrefix(p, "/gcs/") {
 		return strings.TrimPrefix(strings.Trim(p, "/"), "gcs/"), true

@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 
 	sourceoptions "ci-failure-atlas/pkg/source/options"
+	"ci-failure-atlas/pkg/source/prowartifacts"
 	sippysource "ci-failure-atlas/pkg/source/sippy"
 	"ci-failure-atlas/pkg/store/contracts"
 
@@ -227,7 +228,7 @@ func (c *sourceSippyRunsController) syncEnvironment(ctx context.Context, environ
 		if err != nil {
 			return fmt.Errorf("get existing run record for environment=%q run_url=%q: %w", environment, run.RunURL, err)
 		}
-		record := mapToRunRecord(environment, run, existing, found)
+		record := mapToRunRecord(c.deps.Source.ProwBaseURL, environment, run, existing, found)
 		if record.RunURL == "" {
 			continue
 		}
@@ -306,7 +307,7 @@ func (c *sourceSippyRunsController) syncSingleRunByKey(ctx context.Context, key 
 	}
 
 	runs := filterRunsByJobName(allRuns, jobName)
-	targetRun, found := findRunByURL(runs, runURL)
+	targetRun, found := findRunByURL(c.deps.Source.ProwBaseURL, runs, runURL)
 	if !found {
 		return fmt.Errorf("run not found in lookback window for key %q (job=%q)", key, jobName)
 	}
@@ -316,7 +317,7 @@ func (c *sourceSippyRunsController) syncSingleRunByKey(ctx context.Context, key 
 		return fmt.Errorf("get existing run metadata for key %q: %w", key, err)
 	}
 
-	record := mapToRunRecord(environment, targetRun, existing, foundExisting)
+	record := mapToRunRecord(c.deps.Source.ProwBaseURL, environment, targetRun, existing, foundExisting)
 	if err := c.store.UpsertRuns(ctx, []contracts.RunRecord{record}); err != nil {
 		return fmt.Errorf("upsert run %q: %w", runURL, err)
 	}
@@ -392,12 +393,13 @@ func filterRunsByJobName(runs []sippysource.JobRun, jobName string) []sippysourc
 	return filtered
 }
 
-func mapToRunRecord(environment string, run sippysource.JobRun, existing contracts.RunRecord, existingFound bool) contracts.RunRecord {
+func mapToRunRecord(prowBaseURL string, environment string, run sippysource.JobRun, existing contracts.RunRecord, existingFound bool) contracts.RunRecord {
 	normalizedPRSHA := strings.TrimSpace(run.PRSHA)
 	periodicMergedCodeEnvironment := !sourceoptions.SupportsPRLookupForEnvironment(environment)
+	runURL := canonicalProwRunURLOrRaw(prowBaseURL, run.RunURL)
 	record := contracts.RunRecord{
 		Environment: normalizeEnvironment(environment),
-		RunURL:      strings.TrimSpace(run.RunURL),
+		RunURL:      runURL,
 		JobName:     strings.TrimSpace(run.JobName),
 		PRNumber:    run.PRNumber,
 		PRSHA:       normalizedPRSHA,
@@ -424,20 +426,33 @@ func mapToRunRecord(environment string, run sippysource.JobRun, existing contrac
 	if !run.StartedAt.IsZero() {
 		record.OccurredAt = run.StartedAt.UTC().Format(time.RFC3339Nano)
 	}
-	return record
+	return mergeRunRecordFromSippy(existing, existingFound, record)
 }
 
-func findRunByURL(runs []sippysource.JobRun, runURL string) (sippysource.JobRun, bool) {
+func findRunByURL(prowBaseURL string, runs []sippysource.JobRun, runURL string) (sippysource.JobRun, bool) {
 	target := strings.TrimSpace(runURL)
 	if target == "" {
 		return sippysource.JobRun{}, false
 	}
 	for _, run := range runs {
-		if strings.TrimSpace(run.RunURL) == target {
+		canonical := canonicalProwRunURLOrRaw(prowBaseURL, run.RunURL)
+		if canonical == target || strings.TrimSpace(run.RunURL) == target {
 			return run, true
 		}
 	}
 	return sippysource.JobRun{}, false
+}
+
+func canonicalProwRunURLOrRaw(prowBaseURL string, runURL string) string {
+	trimmedRunURL := strings.TrimSpace(runURL)
+	if trimmedRunURL == "" {
+		return ""
+	}
+	canonical, err := prowartifacts.CanonicalRunURL(prowBaseURL, trimmedRunURL)
+	if err != nil {
+		return trimmedRunURL
+	}
+	return canonical
 }
 
 func dedupeRunRecords(rows []contracts.RunRecord) []contracts.RunRecord {

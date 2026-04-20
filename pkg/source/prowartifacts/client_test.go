@@ -191,6 +191,11 @@ func TestArtifactPrefixFromRunURL(t *testing.T) {
 			want:   "test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
 		},
 		{
+			name:   "legacy deck URL",
+			runURL: "https://prow.ci.openshift.org/view/gcs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+			want:   "test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+		},
+		{
 			name:   "gs URL",
 			runURL: "gs://test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
 			want:   "test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
@@ -201,12 +206,62 @@ func TestArtifactPrefixFromRunURL(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := artifactPrefixFromRunURL(tt.runURL)
+			got, err := ArtifactPrefixFromRunURL(tt.runURL)
 			if err != nil {
-				t.Fatalf("artifactPrefixFromRunURL(%q): %v", tt.runURL, err)
+				t.Fatalf("ArtifactPrefixFromRunURL(%q): %v", tt.runURL, err)
 			}
 			if got != tt.want {
-				t.Fatalf("artifactPrefixFromRunURL(%q) mismatch: got=%q want=%q", tt.runURL, got, tt.want)
+				t.Fatalf("ArtifactPrefixFromRunURL(%q) mismatch: got=%q want=%q", tt.runURL, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalRunURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		deckBaseURL string
+		runURL      string
+		want        string
+	}{
+		{
+			name:        "already canonical",
+			deckBaseURL: "https://prow.ci.openshift.org",
+			runURL:      "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+			want:        "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+		},
+		{
+			name:        "gcsweb to deck",
+			deckBaseURL: "https://prow.ci.openshift.org",
+			runURL:      "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+			want:        "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+		},
+		{
+			name:        "gs to deck",
+			deckBaseURL: "https://prow.ci.openshift.org",
+			runURL:      "gs://test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+			want:        "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+		},
+		{
+			name:        "prowjobs base path",
+			deckBaseURL: "https://prow.ci.openshift.org/prowjobs.js",
+			runURL:      "gs://test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+			want:        "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4062/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := CanonicalRunURL(tt.deckBaseURL, tt.runURL)
+			if err != nil {
+				t.Fatalf("CanonicalRunURL(%q, %q): %v", tt.deckBaseURL, tt.runURL, err)
+			}
+			if got != tt.want {
+				t.Fatalf("CanonicalRunURL(%q, %q) mismatch: got=%q want=%q", tt.deckBaseURL, tt.runURL, got, tt.want)
 			}
 		})
 	}

@@ -34,6 +34,7 @@ type sourceProwFailuresController struct {
 	reconcileInterval   time.Duration
 	queue               workqueue.TypedRateLimitingInterface[string]
 	activeWindow        time.Duration
+	artifactRetryWindow time.Duration
 	envSet              map[string]struct{}
 	listFailuresTimeout time.Duration
 
@@ -91,6 +92,7 @@ func newSourceProwFailuresController(logger logr.Logger, deps Dependencies, clie
 		),
 		reconcileInterval:   sourceProwFailuresReconcileInterval,
 		activeWindow:        activeReconcileWindow(deps.Source),
+		artifactRetryWindow: deps.Source.ProwArtifactRetryWindow,
 		envSet:              envSet,
 		listFailuresTimeout: sourceProwFailuresListFailuresTimeout,
 		store:               deps.Store,
@@ -247,6 +249,14 @@ func (c *sourceProwFailuresController) processKey(ctx context.Context, key strin
 
 	records := buildArtifactFailureRecords(environment, runURL, failures)
 	if len(records) == 0 {
+		shouldWriteMarker, err := shouldWriteMissingArtifactMarker(ctx, c.store, c.artifactRetryWindow, environment, runURL, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("resolve missing-artifact retry state for key %q: %w", key, err)
+		}
+		if !shouldWriteMarker {
+			c.logger.V(1).Info("No junit failures extracted for run yet; waiting for retry window before writing missing-artifact marker.", "key", key, "retry_window", c.artifactRetryWindow)
+			return nil
+		}
 		marker := buildArtifactMissingMarkerRecord(environment, runURL)
 		if err := c.store.UpsertArtifactFailures(ctx, []contracts.ArtifactFailureRecord{marker}); err != nil {
 			return fmt.Errorf("upsert terminal missing-artifact marker for key %q: %w", key, err)
@@ -261,6 +271,49 @@ func (c *sourceProwFailuresController) processKey(ctx context.Context, key strin
 
 	c.logger.Info("Synced prow failures for run.", "key", key, "rows", len(records))
 	return nil
+}
+
+func shouldWriteMissingArtifactMarker(ctx context.Context, store contracts.CheckpointStore, retryWindow time.Duration, environment, runURL string, now time.Time) (bool, error) {
+	if retryWindow <= 0 {
+		return true, nil
+	}
+
+	checkpointName := artifactRetryCheckpointName(environment, runURL)
+	checkpoint, found, err := store.GetCheckpoint(ctx, checkpointName)
+	if err != nil {
+		return false, fmt.Errorf("get artifact retry checkpoint: %w", err)
+	}
+	if !found {
+		if err := upsertArtifactRetryCheckpoint(ctx, store, checkpointName, now, now); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	firstSeenAt, ok := parseTimestamp(checkpoint.Value)
+	if !ok {
+		if err := upsertArtifactRetryCheckpoint(ctx, store, checkpointName, now, now); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if now.Sub(firstSeenAt.UTC()) < retryWindow {
+		if err := upsertArtifactRetryCheckpoint(ctx, store, checkpointName, firstSeenAt.UTC(), now); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func upsertArtifactRetryCheckpoint(ctx context.Context, store contracts.CheckpointStore, checkpointName string, firstSeenAt time.Time, updatedAt time.Time) error {
+	return store.UpsertCheckpoints(ctx, []contracts.CheckpointRecord{
+		{
+			Name:      checkpointName,
+			Value:     firstSeenAt.UTC().Format(time.RFC3339Nano),
+			UpdatedAt: updatedAt.UTC().Format(time.RFC3339Nano),
+		},
+	})
 }
 
 func splitEnvironmentRunKey(key string) (string, string, error) {
@@ -364,6 +417,12 @@ func buildArtifactMissingMarkerRecord(environment string, runURL string) contrac
 		SignatureID:   sha256Hex(artifactMissingMarkerSeed),
 		FailureText:   "",
 	}
+}
+
+func artifactRetryCheckpointName(environment string, runURL string) string {
+	normalizedEnvironment := normalizeEnvironment(environment)
+	normalizedRunURL := strings.TrimSpace(runURL)
+	return SourceProwFailuresControllerName + ".retry." + normalizedEnvironment + "." + sha256Hex(normalizedEnvironment+"|"+normalizedRunURL)
 }
 
 func signatureIDForFailureText(failureText string) string {

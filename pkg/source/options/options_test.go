@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestDefaultOptionsSetsEnvironmentReleases(t *testing.T) {
@@ -22,6 +23,15 @@ func TestDefaultOptionsSetsEnvironmentReleases(t *testing.T) {
 	if raw.SippyReleaseProd != "aro-production" {
 		t.Fatalf("unexpected prod release default: got=%q want=%q", raw.SippyReleaseProd, "aro-production")
 	}
+	if raw.ProwBaseURL != "https://prow.ci.openshift.org" {
+		t.Fatalf("unexpected prow base default: got=%q want=%q", raw.ProwBaseURL, "https://prow.ci.openshift.org")
+	}
+	if raw.ProwRecentWindow <= 0 {
+		t.Fatalf("expected positive prow recent window, got=%s", raw.ProwRecentWindow)
+	}
+	if raw.ProwArtifactRetryWindow <= 0 {
+		t.Fatalf("expected positive prow artifact retry window, got=%s", raw.ProwArtifactRetryWindow)
+	}
 }
 
 func TestValidateAndCompleteEnvironments(t *testing.T) {
@@ -32,6 +42,8 @@ func TestValidateAndCompleteEnvironments(t *testing.T) {
 	raw.SippyReleaseInt = "Int"
 	raw.SippyReleaseStg = "Stg"
 	raw.HistoryHorizonWeeks = 6
+	raw.ProwRecentWindow = 96 * time.Hour
+	raw.ProwArtifactRetryWindow = 20 * time.Minute
 
 	validated, err := raw.Validate()
 	if err != nil {
@@ -49,6 +61,12 @@ func TestValidateAndCompleteEnvironments(t *testing.T) {
 	}
 	if completed.HistoryHorizonWeeks != 6 {
 		t.Fatalf("history horizon mismatch: got=%d want=%d", completed.HistoryHorizonWeeks, 6)
+	}
+	if completed.ProwRecentWindow != 96*time.Hour {
+		t.Fatalf("prow recent window mismatch: got=%s want=%s", completed.ProwRecentWindow, 96*time.Hour)
+	}
+	if completed.ProwArtifactRetryWindow != 20*time.Minute {
+		t.Fatalf("prow artifact retry window mismatch: got=%s want=%s", completed.ProwArtifactRetryWindow, 20*time.Minute)
 	}
 }
 
@@ -94,5 +112,27 @@ func TestValidateRejectsInvalidHistoryHorizonWeeks(t *testing.T) {
 
 	if _, err := raw.Validate(); err == nil {
 		t.Fatalf("expected validate to reject invalid history horizon")
+	}
+}
+
+func TestValidateRejectsInvalidProwRecentWindow(t *testing.T) {
+	t.Parallel()
+
+	raw := DefaultOptions()
+	raw.ProwRecentWindow = 0
+
+	if _, err := raw.Validate(); err == nil {
+		t.Fatalf("expected validate to reject invalid prow recent window")
+	}
+}
+
+func TestValidateRejectsNegativeArtifactRetryWindow(t *testing.T) {
+	t.Parallel()
+
+	raw := DefaultOptions()
+	raw.ProwArtifactRetryWindow = -time.Minute
+
+	if _, err := raw.Validate(); err == nil {
+		t.Fatalf("expected validate to reject negative artifact retry window")
 	}
 }
