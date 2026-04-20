@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	sourceSippyRunsReconcileInterval = 30 * time.Minute
+	sourceSippyRunsReconcileInterval = 10 * time.Minute
 	sourceSippyRunsDefaultPageSize   = 1000
 	sourceSippyRunsReplayWindow      = 3 * time.Hour
 )
