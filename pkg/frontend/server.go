@@ -27,7 +27,8 @@ type HandlerOptions struct {
 }
 
 type handler struct {
-	service *frontservice.Service
+	service      *frontservice.Service
+	postgresPool *pgxpool.Pool
 }
 
 type reportPageMode string
@@ -47,11 +48,14 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 		return nil, err
 	}
 	h := &handler{
-		service: service,
+		service:      service,
+		postgresPool: opts.PostgresPool,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.handleRoot)
+	mux.HandleFunc("/healthz", h.handleHealthz)
+	mux.HandleFunc("/readyz", h.handleReadyz)
 	mux.HandleFunc("/api/run-log/day", h.handleAPIRunsDay)
 	mux.HandleFunc("/api/failure-patterns/window", h.handleAPIFailurePatterns)
 	mux.HandleFunc("/api/review/signals/week", h.handleAPIReviewSignalsWeek)
@@ -81,6 +85,34 @@ func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, href, http.StatusFound)
+}
+
+func (h *handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+func (h *handler) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.postgresPool == nil {
+		http.Error(w, "postgres pool not configured", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := h.postgresPool.Ping(ctx); err != nil {
+		http.Error(w, fmt.Sprintf("postgres not ready: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte("ok\n"))
 }
 
 func (h *handler) handleFailurePatternsPage(w http.ResponseWriter, r *http.Request) {

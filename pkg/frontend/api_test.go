@@ -67,6 +67,54 @@ func TestHandleReviewRoutesRemoved(t *testing.T) {
 	}
 }
 
+func TestHandleHealthEndpoints(t *testing.T) {
+	t.Parallel()
+
+	fixture := newHandlerFixture(t)
+	handler, err := NewHandler(HandlerOptions{
+		PostgresPool: fixture.pool,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if got, want := recorder.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected /healthz status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if got, want := recorder.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected /readyz status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+}
+
+func TestHandleReadyzReturnsServiceUnavailableWhenPostgresClosed(t *testing.T) {
+	t.Parallel()
+
+	fixture := newHandlerFixture(t)
+	handler, err := NewHandler(HandlerOptions{
+		PostgresPool: fixture.pool,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	fixture.pool.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if got, want := recorder.Code, http.StatusServiceUnavailable; got != want {
+		t.Fatalf("unexpected /readyz status code after pool close: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+}
+
 func TestHandleAPIFailurePatternsReturnsJSON(t *testing.T) {
 	t.Parallel()
 
