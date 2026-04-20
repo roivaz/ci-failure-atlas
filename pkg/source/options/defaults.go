@@ -112,6 +112,17 @@ func ProwJobNameForEnvironment(environment string) (string, bool) {
 	return SippyJobNameForEnvironment(environment)
 }
 
+func ProwJobHistoryPathForEnvironment(environment string) (string, bool) {
+	jobName, ok := ProwJobNameForEnvironment(environment)
+	if !ok {
+		return "", false
+	}
+	if SupportsPRLookupForEnvironment(environment) {
+		return "pr-logs/directory/" + strings.TrimSpace(jobName), true
+	}
+	return "logs/" + strings.TrimSpace(jobName), true
+}
+
 func SupportsPRLookupForEnvironment(environment string) bool {
 	defaults, ok := EnvironmentDefaultsFor(environment)
 	if !ok {
