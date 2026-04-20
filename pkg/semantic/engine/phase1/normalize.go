@@ -260,12 +260,17 @@ func extractEvidence(text string) extractedEvidence {
 		}
 	}
 
+	logfmtErr := extractLogfmtStepError(raw)
 	picked := ""
 	for _, pattern := range normalizePickPatterns {
 		if match := pattern.FindString(raw); match != "" {
 			picked = match
 			break
 		}
+	}
+
+	if logfmtErr != "" && (picked == "" || isStructuredStepWrapperPick(picked)) {
+		picked = logfmtErr
 	}
 
 	// Prow entrypoint JSON lines are single-line structured logs whose only
@@ -283,8 +288,8 @@ func extractEvidence(text string) extractedEvidence {
 	// before bestSignalErrorLine can claim the full (potentially long) line and
 	// truncate it before the closing quote, preventing extraction of err=.
 	if picked == "" {
-		if match := reLogfmtStepErroredErr.FindStringSubmatch(raw); len(match) > 1 {
-			picked = strings.TrimSpace(match[1])
+		if logfmtErr != "" {
+			picked = logfmtErr
 		}
 	}
 
@@ -331,12 +336,7 @@ func extractEvidence(text string) extractedEvidence {
 		}
 	}
 	picked = refineDeserializationNoOutputPicked(raw, picked)
-	// Only attempt command-error refinement when the deserialization-no-output
-	// path was not responsible for choosing the current picked value; that path
-	// deliberately elevates the Command Error line as the best signal.
-	if !containsDeserializationNoOutputSignal(raw) && !containsDeserializationNoOutputSignal(picked) {
-		picked = refineCommandErrorExitStatusOnly(raw, picked)
-	}
+	picked = refineCommandErrorExitStatusOnly(raw, picked)
 
 	code := ""
 	leafCode := ""
@@ -752,6 +752,38 @@ func chooseSearchPhrase(text string, candidates []string) string {
 	return safeSearchFromText(text)
 }
 
+func extractLogfmtStepError(raw string) string {
+	const errField = ` err="`
+	start := strings.Index(raw, errField)
+	if start < 0 {
+		match := reLogfmtStepErroredErr.FindStringSubmatch(raw)
+		if len(match) <= 1 {
+			return ""
+		}
+		value := strings.TrimSpace(match[1])
+		if value == "" {
+			return ""
+		}
+		if refined := bestInnerStepErrorLine(value); refined != "" {
+			return refined
+		}
+		return value
+	}
+	start += len(errField)
+	end := strings.LastIndex(raw, `"`)
+	if end < start {
+		end = len(raw)
+	}
+	value := strings.TrimSpace(raw[start:end])
+	if value == "" {
+		return ""
+	}
+	if refined := bestInnerStepErrorLine(value); refined != "" {
+		return refined
+	}
+	return value
+}
+
 func safeSearchFromText(text string) string {
 	assertionContext := extractAssertionContext(text)
 	if assertionContext != "" && strings.Contains(text, assertionContext) {
@@ -1026,7 +1058,10 @@ func refineDeserializationNoOutputPicked(raw string, picked string) string {
 	if !containsDeserializationNoOutputSignal(raw) && !containsDeserializationNoOutputSignal(picked) {
 		return picked
 	}
-	if commandLine := lastCommandErrorLine(raw); commandLine != "" {
+	if deserializationLine := lastDeserializationNoOutputLine(raw); deserializationLine != "" {
+		return deserializationLine
+	}
+	if commandLine := lastCommandErrorLine(raw); commandLine != "" && !isBareCommandErrorExitStatus(commandLine) {
 		return commandLine
 	}
 	return picked
@@ -1056,6 +1091,17 @@ func containsDeserializationErrorToken(value string) bool {
 	return reDeserializationToken.MatchString(strings.TrimSpace(value))
 }
 
+func lastDeserializationNoOutputLine(value string) string {
+	matches := reDeserializationNoOutput.FindAllString(value, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(matches[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
 func lastCommandErrorLine(value string) string {
 	matches := reCommandErrorLine.FindAllString(value, -1)
 	for i := len(matches) - 1; i >= 0; i-- {
@@ -1069,6 +1115,16 @@ func lastCommandErrorLine(value string) string {
 		return line
 	}
 	return ""
+}
+
+func isBareCommandErrorExitStatus(value string) bool {
+	normalized := strings.ToLower(collapseWS(strings.TrimSpace(value)))
+	switch normalized {
+	case "command error: exit status 1", "command error: exit status 2", "command error: exit status 3":
+		return true
+	default:
+		return false
+	}
 }
 
 func bestSignalErrorLine(text string) string {
@@ -1103,10 +1159,10 @@ func bestSignalErrorLine(text string) string {
 	}
 
 	if len(preStruct) > 0 {
-		return truncateText(preStruct[len(preStruct)-1], 260)
+		return preStruct[len(preStruct)-1]
 	}
 	if len(postStruct) > 0 {
-		return truncateText(postStruct[len(postStruct)-1], 260)
+		return postStruct[len(postStruct)-1]
 	}
 	return ""
 }
@@ -1116,10 +1172,33 @@ func bestHTTPResponseStatusLine(text string) string {
 	for _, line := range lines {
 		token := collapseWS(line)
 		if reHTTPResponseStatusLine.MatchString(token) {
-			return truncateText(token, 260)
+			return token
 		}
 	}
 	return ""
+}
+
+func bestInnerStepErrorLine(text string) string {
+	lines := splitNonEmptyLines(text)
+	best := ""
+	for _, line := range lines {
+		token := collapseWS(line)
+		lowered := strings.ToLower(token)
+		if token == "" || isAssertionTail(token) || isStructFieldNoiseLine(token) || isStatusBannerLine(token) {
+			continue
+		}
+		if isStructuredStepWrapperPick(token) || isStepSetupNoiseLine(lowered) {
+			continue
+		}
+		if strings.HasPrefix(lowered, "error:") {
+			best = token
+			continue
+		}
+		if rePickErrorSignal.MatchString(token) {
+			best = token
+		}
+	}
+	return best
 }
 
 func isStructBoundaryLine(line string) bool {
@@ -1178,6 +1257,25 @@ func isStatusBannerLine(line string) bool {
 		strings.HasPrefix(normalized, "response contained no body")
 }
 
+func isStructuredStepWrapperPick(value string) bool {
+	normalized := strings.ToLower(collapseWS(value))
+	return strings.HasPrefix(normalized, "error running image mirror step, failed to execute shell command:") ||
+		strings.HasPrefix(normalized, "error running helm release deployment step, failed to deploy helm release:") ||
+		strings.HasPrefix(normalized, "error running shell step, failed to execute shell command:") ||
+		strings.HasPrefix(normalized, "failed to run arm step:")
+}
+
+func isStepSetupNoiseLine(lowered string) bool {
+	return strings.HasPrefix(lowered, "checking use_oc_login_registries:") ||
+		strings.HasPrefix(lowered, "setting up registry authentication") ||
+		strings.HasPrefix(lowered, "info: using registry public hostname") ||
+		strings.HasPrefix(lowered, "saved credentials for registry") ||
+		strings.HasPrefix(lowered, "logging into target acr") ||
+		strings.HasPrefix(lowered, "login succeeded") ||
+		strings.HasPrefix(lowered, "mirroring image ") ||
+		strings.HasPrefix(lowered, "the image will still be available under")
+}
+
 func isLowInformationCanonical(value string) bool {
 	canonical := strings.TrimSpace(value)
 	normalized := strings.ToLower(collapseWS(canonical))
@@ -1209,7 +1307,7 @@ func bestContextDeadlineDetail(text string) string {
 			continue
 		}
 		if reRateLimiterDeadline.MatchString(token) {
-			return truncateText(token, 260)
+			return token
 		}
 		if reClusterOperatorsUnavailable.MatchString(token) {
 			best = token
@@ -1220,10 +1318,10 @@ func bestContextDeadlineDetail(text string) string {
 		}
 	}
 	if best != "" {
-		return truncateText(best, 260)
+		return best
 	}
 	if route := reRouteHostNeverFound.FindString(text); route != "" {
-		return truncateText(route, 260)
+		return route
 	}
 	return ""
 }

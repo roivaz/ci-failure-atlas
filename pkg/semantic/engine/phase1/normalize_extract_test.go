@@ -147,7 +147,7 @@ func TestExtractEvidenceUsesHTTP502StatusLineWhenOnlySignal(t *testing.T) {
 	}
 }
 
-func TestExtractEvidencePrefersCommandErrorWhenDeserializationNoOutputPresent(t *testing.T) {
+func TestExtractEvidencePrefersDeserializationWhenCommandErrorIsBareExitStatus(t *testing.T) {
 	t.Parallel()
 
 	raw := `goroutine 1383 gp=0xc00161cfc0 m=nil [sync.WaitGroup.Wait, 3 minutes]:
@@ -157,11 +157,11 @@ Deserializaion Error: no output from command
 crypto/tls.(*Conn).readFromUntil(0xc000806e08, {0x81cbfc0, 0xc000d38128}, 0xc0003829d0?)`
 
 	evidence := extractEvidence(raw)
-	if evidence.CanonicalEvidencePhrase != "Command Error: exit status 2" {
-		t.Fatalf("expected canonical phrase to use command error line, got=%q", evidence.CanonicalEvidencePhrase)
+	if evidence.CanonicalEvidencePhrase != "Deserializaion Error: no output from command" {
+		t.Fatalf("expected canonical phrase to use deserialization no-output line, got=%q", evidence.CanonicalEvidencePhrase)
 	}
-	if evidence.SearchQueryPhrase != "Command Error: exit status 2" {
-		t.Fatalf("expected search phrase to use command error line, got=%q", evidence.SearchQueryPhrase)
+	if evidence.SearchQueryPhrase != "Deserializaion Error: no output from command" {
+		t.Fatalf("expected search phrase to use deserialization no-output line, got=%q", evidence.SearchQueryPhrase)
 	}
 }
 
@@ -785,6 +785,22 @@ func TestCleanCanonicalNormalizesHCPApiHostname(t *testing.T) {
 	}
 }
 
+func TestExtractEvidenceNormalizesLongHCPApiHostnameBeforeTruncation(t *testing.T) {
+	t.Parallel()
+
+	rawA := `VerifyAllAPIServicesAvailable failed: failed to list all APIServices: Get "https://api.a5t3f6u4j8a4a5h.4ufg.eastus2.aroapp-hcp.io:443/apis/apiregistration.k8s.io/v1/apiservices": tls: failed to verify certificate: x509: certificate is valid for api.a5t3f6u4j8a4a5h.4ufg.eastus2.aroapp-hcp.io, reserved.aroapp-hcp.io, not api.a5t3f6u4j8a4a5h.o0jt.eastus2.aroapp-hcp.io`
+	rawB := `VerifyAllAPIServicesAvailable failed: failed to list all APIServices: Get "https://api.ea-cluster.kv02.uksouth.aroapp-hcp.io:443/apis/apiregistration.k8s.io/v1/apiservices": tls: failed to verify certificate: x509: certificate is valid for api.ea-cluster.kv02.uksouth.aroapp-hcp.io, reserved.aroapp-hcp.io, not api.ea-cluster.50y5.uksouth.aroapp-hcp.io`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if !strings.Contains(gotA, "<hcp-api-host>") {
+		t.Fatalf("expected canonical phrase to normalize HCP API hostnames, got=%q", gotA)
+	}
+	if gotA != gotB {
+		t.Fatalf("long hostname variants should canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+}
+
 func TestSeverityForReviewItem(t *testing.T) {
 	t.Parallel()
 
@@ -1059,5 +1075,29 @@ time=2026-04-17T11:04:19.211Z level=ERROR msg="Step errored." serviceGroup=Micro
 	}
 	if !strings.Contains(strings.ToLower(got), "failed to prepare kubeconfig") {
 		t.Fatalf("canonical phrase should contain the actionable err= value, got=%q", got)
+	}
+}
+
+func TestExtractEvidenceLogfmtImageMirrorPrefersInnerTransferFailure(t *testing.T) {
+	t.Parallel()
+
+	raw := `time=2026-04-20T03:12:18.644Z level=ERROR msg="Step errored." serviceGroup=Microsoft.Azure.ARO.HCP.RP.Frontend resourceGroup=global step=mirror-image err="error running Image Mirror Step, failed to execute shell command: Checking USE_OC_LOGIN_REGISTRIES: registry.build05.ci.openshift.org registry.build05.ci.openshift.org registry.build05.ci.openshift.org registry.build05.ci.openshift.org registry.build05.ci.openshift.org
+Setting up registry authentication for CI source registry.
+info: Using registry public hostname registry.build05.ci.openshift.org
+Saved credentials for registry.build05.ci.openshift.org into /tmp/tmp.w3CTaww54H/containers/auth.json
+Logging into target ACR arohcpsvcdev.
+Login Succeeded
+Mirroring image registry.build05.ci.openshift.org/ci-op-98gxy5d6/pipeline@sha256:94b3bb4a4fb4e0fc3d4dc38328ba5f9dde008d11c9255e631310d86a3a96523f to arohcpsvcdev.azurecr.io/ci-op-98gxy5d6/pipeline:94b3bb4a4fb4e0fc3d4dc38328ba5f9dde008d11c9255e631310d86a3a96523f.
+The image will still be available under it's original digest sha256:94b3bb4a4fb4e0fc3d4dc38328ba5f9dde008d11c9255e631310d86a3a96523f in the target registry.
+Error: Put "https://arohcpsvcdev.azurecr.io/v2/ci-op-98gxy5d6/pipeline/blobs/uploads/2ec77b7f-548b-4f97-9b7f-430a6c8db396?_nouploadcache=false&_state=...": read tcp 172.24.116.8:38578->172.64.66.1:443: read: connection reset by peer
+ exit status 1"`
+
+	got := extractEvidence(raw).CanonicalEvidencePhrase
+	lowered := strings.ToLower(got)
+	if strings.Contains(lowered, "checking use_oc_login_registries") {
+		t.Fatalf("expected canonical phrase to skip image-mirror setup preamble, got=%q", got)
+	}
+	if !strings.Contains(lowered, "connection reset by peer") {
+		t.Fatalf("expected canonical phrase to keep the inner transfer failure, got=%q", got)
 	}
 }
