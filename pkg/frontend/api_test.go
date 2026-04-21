@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	frontservice "ci-failure-atlas/pkg/frontend/readmodel"
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
@@ -707,8 +708,8 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if !strings.Contains(body, `class="job-link" href="https://prow.example.com/view/job-history-1"`) {
 		t.Fatalf("expected job name to be the run link, got %q", body)
 	}
-	if !strings.Contains(body, `class="bad-pr-flag"`) {
-		t.Fatalf("expected bad-pr flag in PR column, got %q", body)
+	if !strings.Contains(body, `class="signal-icon signal-regression"`) {
+		t.Fatalf("expected regression signal icon in PR column, got %q", body)
 	}
 	if !strings.Contains(body, "#123 (open)") {
 		t.Fatalf("expected open PR state label in body, got %q", body)
@@ -758,7 +759,8 @@ func TestHandleRunsPageDefaultsWhenDateIsOmitted(t *testing.T) {
 		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	if !strings.Contains(body, "Single Day: Mar 22") {
+	expectedLabel := "Single Day: " + time.Now().UTC().Format("Jan 2")
+	if !strings.Contains(body, expectedLabel) {
 		t.Fatalf("expected default run-log day label in body, got %q", body)
 	}
 	if !strings.Contains(body, `class="report-route-link active" href="/run-log">Run Log</a>`) {

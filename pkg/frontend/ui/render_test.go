@@ -171,8 +171,8 @@ func TestRenderTableShowsBadPRIndicator(t *testing.T) {
 		},
 	}, TableOptions{})
 
-	if !strings.Contains(html, "<span class=\"bad-pr-flag\"") {
-		t.Fatalf("expected bad-pr flag icon in rendered table")
+	if !strings.Contains(html, "<span class=\"signal-icon signal-regression\"") {
+		t.Fatalf("expected regression signal icon in rendered table")
 	}
 	if !strings.Contains(html, "Likely regression") {
 		t.Fatalf("expected tooltip to describe regression classification, got %q", html)
@@ -200,8 +200,45 @@ func TestRenderTableDoesNotShowRegressionIndicatorWhenPatternHasPriorHistory(t *
 		},
 	}, TableOptions{})
 
-	if strings.Contains(rendered, "<span class=\"bad-pr-flag\"") {
+	if strings.Contains(rendered, "<span class=\"signal-icon signal-regression\"") {
 		t.Fatalf("expected no regression indicator for pattern with prior history")
+	}
+}
+
+func TestRenderTableShowsNewPatternStarIcon(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]FailurePatternRow{
+		{
+			Environment:        "dev",
+			FailurePattern:     "unique brand new failure pattern never seen before",
+			Occurrences:        2,
+			OccurrenceShare:    10,
+			AfterLastPushCount: 1,
+			PriorWeeksPresent:  0,
+			AffectedRuns: []RunReference{
+				{
+					RunURL:     "https://prow.example/run/1",
+					PRNumber:   4313,
+					OccurredAt: "2026-03-07T10:00:00Z",
+				},
+				{
+					RunURL:     "https://prow.example/run/2",
+					PRNumber:   4314,
+					OccurredAt: "2026-03-07T11:00:00Z",
+				},
+			},
+		},
+	}, TableOptions{})
+
+	if !strings.Contains(rendered, `<span class="signal-icon signal-new"`) {
+		t.Fatalf("expected new-pattern star icon for pattern with no prior history, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "New failure pattern") {
+		t.Fatalf("expected New failure pattern tooltip, got %q", rendered)
+	}
+	if strings.Contains(rendered, `<span class="signal-icon signal-regression"`) {
+		t.Fatalf("did not expect regression icon for pattern with post-good>0")
 	}
 }
 

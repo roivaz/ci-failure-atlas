@@ -8,6 +8,7 @@ import (
 	"time"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
 	storecontracts "ci-failure-atlas/pkg/store/contracts"
 )
@@ -69,6 +70,7 @@ type JobHistoryFailureRow struct {
 	FailureText        string                       `json:"failure_text,omitempty"`
 	NonArtifactBacked  bool                         `json:"non_artifact_backed,omitempty"`
 	SemanticAttachment JobHistorySemanticAttachment `json:"failure_pattern_match"`
+	PriorWeeksPresent  int                          `json:"-"`
 	BadPRScore         int                          `json:"-"`
 	BadPRReasons       []string                     `json:"-"`
 }
@@ -100,6 +102,7 @@ type jobHistoryReferenceCluster struct {
 	SearchQueryPhrase       string
 	Lane                    string
 	SupportCount            int
+	PriorWeeksPresent       int
 	BadPRScore              int
 	BadPRReasons            []string
 }
@@ -108,18 +111,15 @@ func (s *Service) BuildRunLogDay(ctx context.Context, query RunLogDayQuery) (Run
 	if s == nil {
 		return RunLogDayData{}, fmt.Errorf("service is required")
 	}
-	dateLabel, _, err := normalizeDateLabel(query.Date)
-	if err != nil {
-		return RunLogDayData{}, fmt.Errorf("invalid date: %w", err)
-	}
-
-	window, err := s.resolvePresentationWindow(ctx, presentationWindowRequest{
-		Date: dateLabel,
-		Week: query.Week,
-	})
+	scope, err := resolveRunLogDayScope(query)
 	if err != nil {
 		return RunLogDayData{}, err
 	}
+	scope.ResolvedWeek, err = s.resolveRunLogAnchorWeek(ctx, scope.DateValue, query.Week)
+	if err != nil {
+		return RunLogDayData{}, err
+	}
+	window := scope.window()
 
 	store, err := s.OpenStoreForWeek(window.AnchorWeek)
 	if err != nil {
@@ -144,7 +144,11 @@ func (s *Service) BuildRunLogDay(ctx context.Context, query RunLogDayQuery) (Run
 		return RunLogDayData{}, fmt.Errorf("load run history day facts: %w", err)
 	}
 
-	clusterByReference := buildJobHistoryReferenceIndex(weekData.FailurePatterns)
+	historyResolver, err := s.BuildHistoryResolver(ctx, scope.ResolvedWeek)
+	if err != nil {
+		return RunLogDayData{}, fmt.Errorf("build history resolver for run log: %w", err)
+	}
+	clusterByReference := buildJobHistoryReferenceIndex(weekData.FailurePatterns, historyResolver)
 
 	generatedAt := query.GeneratedAt
 	if generatedAt.IsZero() {
@@ -186,15 +190,51 @@ func resolveRunLogDayScope(query RunLogDayQuery) (runLogDayScope, error) {
 	if err != nil {
 		return runLogDayScope{}, fmt.Errorf("invalid date: %w", err)
 	}
-	resolvedWeek, err := resolveFailurePatternsWeekLabel(dateValue, dateValue, query.Week)
-	if err != nil {
-		return runLogDayScope{}, err
-	}
 	return runLogDayScope{
-		Date:         dateLabel,
-		DateValue:    dateValue,
-		ResolvedWeek: resolvedWeek,
+		Date:      dateLabel,
+		DateValue: dateValue,
 	}, nil
+}
+
+func (s *Service) resolveRunLogAnchorWeek(ctx context.Context, dateValue time.Time, override string) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return s.ensureWeekExists(ctx, override)
+	}
+
+	weeks, err := s.DiscoverSemanticWeeks(ctx)
+	if err != nil {
+		return "", err
+	}
+	ordered := normalizedWeeks(weeks)
+	if len(ordered) == 0 {
+		return "", ErrNoSemanticWeeks
+	}
+
+	targetWeek := weekStartForDate(dateValue).Format("2006-01-02")
+	if contains(ordered, targetWeek) {
+		return targetWeek, nil
+	}
+
+	index := sort.SearchStrings(ordered, targetWeek)
+	if index > 0 {
+		return ordered[index-1], nil
+	}
+	return ordered[0], nil
+}
+
+func (s runLogDayScope) window() presentationWindow {
+	startTime := time.Date(s.DateValue.Year(), s.DateValue.Month(), s.DateValue.Day(), 0, 0, 0, 0, time.UTC)
+	endTime := startTime.AddDate(0, 0, 1)
+	return presentationWindow{
+		StartDate:          s.Date,
+		EndDate:            s.Date,
+		StartTime:          startTime,
+		EndTime:            endTime,
+		DateLabels:         []string{s.Date},
+		SemanticWeeks:      []string{s.ResolvedWeek},
+		AnchorWeek:         s.ResolvedWeek,
+		SignalHorizonWeeks: []string{s.ResolvedWeek},
+	}
 }
 
 func buildJobHistoryRunRows(
@@ -271,6 +311,7 @@ func buildJobHistoryFailureRows(
 			FailureText:        jobHistoryFailureText(row),
 			NonArtifactBacked:  row.NonArtifactBacked,
 			SemanticAttachment: attachment,
+			PriorWeeksPresent:  cluster.PriorWeeksPresent,
 			BadPRScore:         cluster.BadPRScore,
 			BadPRReasons:       append([]string(nil), cluster.BadPRReasons...),
 		})
@@ -361,7 +402,10 @@ func buildRunLogDaySummary(runs []JobHistoryRunRow) RunLogDaySummary {
 	return summary
 }
 
-func buildJobHistoryReferenceIndex(clusters []semanticcontracts.FailurePatternRecord) map[string]jobHistoryReferenceCluster {
+func buildJobHistoryReferenceIndex(
+	clusters []semanticcontracts.FailurePatternRecord,
+	historyResolver semhistory.FailurePatternHistoryResolver,
+) map[string]jobHistoryReferenceCluster {
 	index := map[string]jobHistoryReferenceCluster{}
 	phraseEnvironments := jobHistoryPhraseEnvironments(clusters)
 	for _, cluster := range clusters {
@@ -373,11 +417,21 @@ func buildJobHistoryReferenceIndex(clusters []semanticcontracts.FailurePatternRe
 			phraseEnvironments[normalizePhrase(cluster.CanonicalEvidencePhrase)],
 			environment,
 		)
+		var priorWeeksPresent int
+		if historyResolver != nil {
+			presence := historyResolver.PresenceFor(semhistory.FailurePatternKey{
+				Environment: environment,
+				Phrase:      strings.TrimSpace(cluster.CanonicalEvidencePhrase),
+				SearchQuery: strings.TrimSpace(cluster.SearchQueryPhrase),
+			})
+			priorWeeksPresent = presence.PriorWeeksPresent
+		}
 		badPRScore, badPRReasons := BadPRScoreAndReasons(FailurePatternRow{
 			Environment:        environment,
 			AfterLastPushCount: cluster.PostGoodCommitCount,
 			AlsoIn:             otherEnvironments,
 			AffectedRuns:       jobHistoryRunReferences(cluster.References),
+			PriorWeeksPresent:  priorWeeksPresent,
 		})
 		candidate := jobHistoryReferenceCluster{
 			ClusterID:               strings.TrimSpace(cluster.Phase2ClusterID),
@@ -385,6 +439,7 @@ func buildJobHistoryReferenceIndex(clusters []semanticcontracts.FailurePatternRe
 			SearchQueryPhrase:       strings.TrimSpace(cluster.SearchQueryPhrase),
 			Lane:                    strings.TrimSpace(primaryContributingTest(cluster.ContributingTests).Lane),
 			SupportCount:            cluster.SupportCount,
+			PriorWeeksPresent:       priorWeeksPresent,
 			BadPRScore:              badPRScore,
 			BadPRReasons:            append([]string(nil), badPRReasons...),
 		}

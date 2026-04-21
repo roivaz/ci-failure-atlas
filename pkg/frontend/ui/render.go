@@ -323,7 +323,10 @@ func StylesCSS() string {
 		"    .category-flake { color: #92400e; }",
 		"    .category-noise { color: #6b7280; }",
 		"    .category-indeterminate { color: #374151; }",
-		"    .bad-pr-flag { display: inline-flex; align-items: center; justify-content: center; margin-right: 6px; color: #dc2626; font-weight: 700; }",
+		"    .signal-icon { display: inline-flex; align-items: center; justify-content: center; margin-right: 4px; font-weight: 700; }",
+		"    .signal-regression { color: #dc2626; }",
+		"    .signal-flake { color: #b45309; }",
+		"    .signal-new { color: #7c3aed; }",
 		"    .failure-patterns-header-help { display: inline-flex; align-items: center; justify-content: center; margin-left: 5px; width: 14px; height: 14px; border-radius: 999px; border: 1px solid #93c5fd; color: #1d4ed8; background: #eff6ff; font-size: 10px; font-weight: 700; cursor: help; vertical-align: middle; }",
 		"    .trend-svg { display: block; }",
 		"    details { margin: 2px 0; }",
@@ -1228,6 +1231,20 @@ func FormatCounts(values []int) string {
 	return strings.Join(parts, ",")
 }
 
+func signalIconHTML(category FailureCategory, priorWeeksPresent int) string {
+	var icons strings.Builder
+	switch category {
+	case frontreadmodel.CategoryRegression:
+		icons.WriteString("<span class=\"signal-icon signal-regression\" title=\"Likely regression\">⚠</span>")
+	case frontreadmodel.CategoryFlake:
+		icons.WriteString("<span class=\"signal-icon signal-flake\" title=\"Intermittent flake\">↻</span>")
+	}
+	if category != frontreadmodel.CategoryRegression && priorWeeksPresent == 0 {
+		icons.WriteString("<span class=\"signal-icon signal-new\" title=\"New failure pattern — no prior history\">★</span>")
+	}
+	return icons.String()
+}
+
 func normalizedOptions(options TableOptions) TableOptions {
 	opts := options
 	if strings.TrimSpace(opts.GitHubRepoOwner) == "" {
@@ -1335,7 +1352,7 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 	if category == frontreadmodel.CategoryRegression {
 		tooltip := "Likely regression — " + strings.Join(categoryReasons, "; ")
 		summaryText = fmt.Sprintf(
-			"<span class=\"bad-pr-flag\" title=\"%s\" aria-label=\"%s\">⚠</span>%s",
+			"<span class=\"signal-icon signal-regression\" title=\"%s\" aria-label=\"%s\">⚠</span>%s",
 			html.EscapeString(tooltip),
 			html.EscapeString(tooltip),
 			summaryText,
@@ -1350,6 +1367,7 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 		jobsAffected,
 		maxInt(opts.ImpactTotalJobs, 0),
 	)
+	signalIconsHTML := signalIconHTML(category, row.PriorWeeksPresent)
 	categoryCellTitle := fmt.Sprintf("Signal: %s", catLabel)
 	if len(categoryReasons) > 0 {
 		categoryCellTitle = fmt.Sprintf("%s — %s", categoryCellTitle, strings.Join(categoryReasons, "; "))
@@ -1400,13 +1418,13 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 	if successDetails := successDetailsFromSearchQuery(row.SearchQuery); successDetails != "" {
 		signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(successDetails)))
 	}
-	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">Signal: %s</div>", html.EscapeString(catLabel)))
+	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">Signal: %s%s</div>", signalIconsHTML, html.EscapeString(catLabel)))
 	signatureDetails.WriteString("</details></td>")
 	b.WriteString(signatureDetails.String())
 	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(laneValue)))
 	b.WriteString(fmt.Sprintf("<td>%d</td>", jobsAffected))
 	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"impact-score %s\">%s</span></td>", html.EscapeString(impactTitle), impactScoreClass(impactPercent), html.EscapeString(impactLabel)))
-	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"category-label %s\">%s</span></td>", html.EscapeString(categoryCellTitle), catClass, html.EscapeString(catLabel)))
+	b.WriteString(fmt.Sprintf("<td title=\"%s\">%s<span class=\"category-label %s\">%s</span></td>", html.EscapeString(categoryCellTitle), signalIconsHTML, catClass, html.EscapeString(catLabel)))
 	if opts.ShowCount {
 		b.WriteString(fmt.Sprintf("<td>%d</td>", row.Occurrences))
 	}
@@ -1712,7 +1730,8 @@ func renderLinkedChildrenDetails(children []FailurePatternRow, opts TableOptions
 			jobsAffected,
 		))
 		b.WriteString("</summary>")
-		b.WriteString(fmt.Sprintf("<div class=\"muted\">Signal: %s</div>", html.EscapeString(childCatLabel)))
+		childSignalIcons := signalIconHTML(childCategory, child.PriorWeeksPresent)
+		b.WriteString(fmt.Sprintf("<div class=\"muted\">Signal: %s%s</div>", childSignalIcons, html.EscapeString(childCatLabel)))
 		if opts.ShowLinkedChildQuality || opts.ShowLinkedChildReview {
 			b.WriteString("<div class=\"linked-failure-pattern-item-flags\">")
 			if opts.ShowLinkedChildQuality {

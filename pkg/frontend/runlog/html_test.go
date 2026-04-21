@@ -40,7 +40,7 @@ func TestDayRunHistoryFailureDetailsHTMLRendersArtifactBackedFailures(t *testing
 	}
 }
 
-func TestDayRunHistoryPRHTMLShowsBadPRFlagForLikelyBadPR(t *testing.T) {
+func TestDayRunHistoryPRHTMLShowsRegressionIconForLikelyBadPR(t *testing.T) {
 	t.Parallel()
 
 	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
@@ -58,8 +58,11 @@ func TestDayRunHistoryPRHTMLShowsBadPRFlagForLikelyBadPR(t *testing.T) {
 		BadPRScore:   3,
 		BadPRReasons: []string{"post-good=0", "only seen in DEV", "only seen in one PR"},
 	})
-	if !strings.Contains(rendered, `class="bad-pr-flag"`) {
-		t.Fatalf("expected bad-pr flag in PR cell, got %q", rendered)
+	if !strings.Contains(rendered, `class="signal-icon signal-regression"`) {
+		t.Fatalf("expected regression signal icon in PR cell, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Likely regression") {
+		t.Fatalf("expected Likely regression tooltip, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "#123 (open)") {
 		t.Fatalf("expected open PR label in PR cell, got %q", rendered)
@@ -82,8 +85,8 @@ func TestDayRunHistoryPRHTMLDoesNotUseRunLocalBadPRApproximation(t *testing.T) {
 			ClusteredRows: 1,
 		},
 	})
-	if strings.Contains(rendered, `class="bad-pr-flag"`) {
-		t.Fatalf("did not expect bad-pr flag without weekly signature score, got %q", rendered)
+	if strings.Contains(rendered, `class="signal-icon signal-regression"`) {
+		t.Fatalf("did not expect regression icon without weekly signature score, got %q", rendered)
 	}
 }
 
@@ -126,7 +129,7 @@ func TestDayRunHistoryPRHTMLUsesClosedStateWhenNotMerged(t *testing.T) {
 	}
 }
 
-func TestDayRunHistoryPRHTMLDoesNotShowBadPRFlagForPassedRun(t *testing.T) {
+func TestDayRunHistoryPRHTMLDoesNotShowSignalIconForPassedRun(t *testing.T) {
 	t.Parallel()
 
 	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
@@ -143,12 +146,12 @@ func TestDayRunHistoryPRHTMLDoesNotShowBadPRFlagForPassedRun(t *testing.T) {
 		BadPRScore:   3,
 		BadPRReasons: []string{"post-good=0", "only seen in DEV", "only seen in one PR"},
 	})
-	if strings.Contains(rendered, `class="bad-pr-flag"`) {
-		t.Fatalf("did not expect bad-pr flag for passed run, got %q", rendered)
+	if strings.Contains(rendered, `class="signal-icon`) {
+		t.Fatalf("did not expect signal icon for passed run, got %q", rendered)
 	}
 }
 
-func TestDayRunHistoryPRHTMLDoesNotShowBadPRFlagForUnmatchedFailure(t *testing.T) {
+func TestDayRunHistoryPRHTMLDoesNotShowSignalIconForUnmatchedFailure(t *testing.T) {
 	t.Parallel()
 
 	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
@@ -166,7 +169,39 @@ func TestDayRunHistoryPRHTMLDoesNotShowBadPRFlagForUnmatchedFailure(t *testing.T
 		BadPRScore:   3,
 		BadPRReasons: []string{"post-good=0", "only seen in DEV", "only seen in one PR"},
 	})
-	if strings.Contains(rendered, `class="bad-pr-flag"`) {
-		t.Fatalf("did not expect bad-pr flag for unmatched-only failure, got %q", rendered)
+	if strings.Contains(rendered, `class="signal-icon`) {
+		t.Fatalf("did not expect signal icon for unmatched-only failure, got %q", rendered)
+	}
+}
+
+func TestDayRunHistoryPRHTMLShowsNewPatternIcon(t *testing.T) {
+	t.Parallel()
+
+	rendered := runLogDayPRHTML(frontservice.JobHistoryRunRow{
+		Run: storecontracts.RunRecord{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/run-6",
+			PRNumber:    999,
+			PRState:     "open",
+			Failed:      true,
+		},
+		SemanticRollups: frontservice.JobHistorySemanticRollups{
+			ClusteredRows: 1,
+		},
+		FailureRows: []frontservice.JobHistoryFailureRow{
+			{
+				SemanticAttachment: frontservice.JobHistorySemanticAttachment{
+					Status:    "clustered",
+					ClusterID: "fp-1",
+				},
+				PriorWeeksPresent: 0,
+			},
+		},
+	})
+	if !strings.Contains(rendered, `class="signal-icon signal-new"`) {
+		t.Fatalf("expected new-pattern star icon in PR cell, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "New failure pattern") {
+		t.Fatalf("expected New failure pattern tooltip, got %q", rendered)
 	}
 }

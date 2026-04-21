@@ -59,7 +59,10 @@ func RenderHTML(
 	b.WriteString("    .job-submeta, .phrase-submeta, .detail-meta { color: #6b7280; font-size: 11px; margin-top: 4px; }\n")
 	b.WriteString("    .run-flags, .failure-flags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }\n")
 	b.WriteString("    .mini-badge { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 2px 7px; font-size: 10px; font-weight: 700; background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }\n")
-	b.WriteString("    .bad-pr-flag { display: inline-flex; align-items: center; justify-content: center; margin-right: 6px; color: #dc2626; font-weight: 700; }\n")
+	b.WriteString("    .signal-icon { display: inline-flex; align-items: center; justify-content: center; margin-right: 4px; font-weight: 700; }\n")
+	b.WriteString("    .signal-regression { color: #dc2626; }\n")
+	b.WriteString("    .signal-flake { color: #b45309; }\n")
+	b.WriteString("    .signal-new { color: #7c3aed; }\n")
 	b.WriteString("    .detail-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }\n")
 	b.WriteString("    .detail-item { border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; padding: 8px 10px; }\n")
 	b.WriteString("    .detail-title { font-weight: 700; }\n")
@@ -247,8 +250,8 @@ func runLogDayPRHTML(row frontservice.JobHistoryRunRow) string {
 	if href := runLogDayGitHubPRURL(run.PRNumber); href != "" {
 		content = fmt.Sprintf("<a href=\"%s\">%s</a>", html.EscapeString(href), content)
 	}
-	if badPRFlag := runLogDayBadPRFlagHTML(row); badPRFlag != "" {
-		return badPRFlag + content
+	if icons := runLogDaySignalIconsHTML(row); icons != "" {
+		return icons + content
 	}
 	return content
 }
@@ -269,31 +272,42 @@ func runLogDayPRStateLabel(run storecontracts.RunRecord) string {
 	}
 }
 
-func runLogDayBadPRFlagHTML(row frontservice.JobHistoryRunRow) string {
-	if !runLogDayShouldShowBadPRFlag(row) {
+func runLogDaySignalIconsHTML(row frontservice.JobHistoryRunRow) string {
+	if !row.Run.Failed || row.SemanticRollups.ClusteredRows == 0 {
 		return ""
 	}
-	score, reasons := runLogDayBadPRScoreAndReasons(row)
-	if score <= 0 {
-		return ""
+	hasRegression, regressionReasons := runLogDayBestRegression(row)
+	hasNew := runLogDayHasNewPattern(row)
+
+	var icons strings.Builder
+	if hasRegression {
+		tooltip := "Likely regression — " + strings.Join(regressionReasons, "; ")
+		icons.WriteString(fmt.Sprintf(
+			"<span class=\"signal-icon signal-regression\" title=\"%s\" aria-label=\"%s\">⚠</span>",
+			html.EscapeString(tooltip),
+			html.EscapeString(tooltip),
+		))
 	}
-	tooltip := "Likely regression — " + strings.Join(reasons, "; ")
-	return fmt.Sprintf(
-		"<span class=\"bad-pr-flag\" title=\"%s\" aria-label=\"%s\">⚠</span>",
-		html.EscapeString(tooltip),
-		html.EscapeString(tooltip),
-	)
+	if hasNew && !hasRegression {
+		icons.WriteString("<span class=\"signal-icon signal-new\" title=\"New failure pattern — no prior history\" aria-label=\"New failure pattern\">★</span>")
+	}
+	return icons.String()
 }
 
-func runLogDayShouldShowBadPRFlag(row frontservice.JobHistoryRunRow) bool {
-	return row.Run.Failed && row.SemanticRollups.ClusteredRows > 0
-}
-
-func runLogDayBadPRScoreAndReasons(row frontservice.JobHistoryRunRow) (int, []string) {
+func runLogDayBestRegression(row frontservice.JobHistoryRunRow) (bool, []string) {
 	if row.BadPRScore <= 0 {
-		return 0, nil
+		return false, nil
 	}
-	return row.BadPRScore, append([]string(nil), row.BadPRReasons...)
+	return true, append([]string(nil), row.BadPRReasons...)
+}
+
+func runLogDayHasNewPattern(row frontservice.JobHistoryRunRow) bool {
+	for _, f := range row.FailureRows {
+		if strings.TrimSpace(f.SemanticAttachment.Status) == "clustered" && f.PriorWeeksPresent == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func runLogDayPrimaryPhrase(row frontservice.JobHistoryRunRow) string {

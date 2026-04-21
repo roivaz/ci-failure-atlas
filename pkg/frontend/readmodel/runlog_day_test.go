@@ -98,6 +98,78 @@ func TestBuildRunLogDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 	}
 }
 
+func TestBuildRunLogDayUsesLatestAvailableSemanticWeekForNewerDates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t, "")
+	store := fixture.openWeekStore(t, "2026-03-16")
+
+	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/newer",
+			JobName:     "periodic-ci-newer",
+			Failed:      true,
+			OccurredAt:  "2026-04-21T08:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, []storecontracts.RawFailureRecord{
+		{
+			Environment:    "dev",
+			RowID:          "row-newer",
+			RunURL:         "https://prow.example.com/view/newer",
+			TestName:       "newer failure",
+			TestSuite:      "suite-newer",
+			SignatureID:    "sig-newer",
+			OccurredAt:     "2026-04-21T08:00:00Z",
+			RawText:        "newer failure text",
+			NormalizedText: "newer failure text",
+		},
+	}); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	data, err := fixture.service.BuildRunLogDay(ctx, RunLogDayQuery{
+		Date:         "2026-04-21",
+		Environments: []string{"dev"},
+	})
+	if err != nil {
+		t.Fatalf("build job history day: %v", err)
+	}
+
+	if got, want := data.Meta.Date, "2026-04-21"; got != want {
+		t.Fatalf("unexpected date: got=%q want=%q", got, want)
+	}
+	if got, want := data.Meta.AnchorWeek, "2026-03-16"; got != want {
+		t.Fatalf("unexpected fallback anchor week: got=%q want=%q", got, want)
+	}
+
+	environment := jobHistoryEnvironmentByName(t, data, "dev")
+	if got, want := environment.Summary.TotalRuns, 1; got != want {
+		t.Fatalf("unexpected total runs: got=%d want=%d", got, want)
+	}
+	if got, want := environment.Summary.RunsWithRawFailures, 1; got != want {
+		t.Fatalf("unexpected runs with raw failures: got=%d want=%d", got, want)
+	}
+	if got, want := environment.Summary.RunsWithSemanticAttachment, 0; got != want {
+		t.Fatalf("unexpected runs with semantic attachment: got=%d want=%d", got, want)
+	}
+	if got, want := environment.Summary.RunsUnmatchedSignatures, 1; got != want {
+		t.Fatalf("unexpected runs with unmatched signatures: got=%d want=%d", got, want)
+	}
+
+	run := jobHistoryRunByURL(t, environment, "https://prow.example.com/view/newer")
+	if got, want := run.SemanticRollups.AttachmentSummary, "unmatched_only"; got != want {
+		t.Fatalf("unexpected attachment summary: got=%q want=%q", got, want)
+	}
+}
+
 func TestBuildRunLogDayHandlesMultipleSignaturesOnOneRun(t *testing.T) {
 	t.Parallel()
 

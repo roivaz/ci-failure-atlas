@@ -494,15 +494,19 @@ func (h *handler) resolveRunLogPageQuery(
 	if strings.TrimSpace(query.Date) != "" {
 		return query, nil
 	}
-	window, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
-		Week:        query.Week,
-		DefaultMode: frontservice.WindowDefaultLatestWeek,
-	})
-	if err != nil {
-		return frontservice.RunLogDayQuery{}, err
+
+	if strings.TrimSpace(query.Week) != "" {
+		window, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+			Week: query.Week,
+		})
+		if err != nil {
+			return frontservice.RunLogDayQuery{}, err
+		}
+		query.Date = runLogDefaultDate(window.EndDate)
+		return query, nil
 	}
-	query.Week = ""
-	query.Date = runLogDefaultDate(window.EndDate)
+
+	query.Date = time.Now().UTC().Format("2006-01-02")
 	return query, nil
 }
 
@@ -1021,9 +1025,8 @@ func (h *handler) shiftedRunLogHref(
 		return ""
 	}
 	targetDate := dateValue.AddDate(0, 0, days).Format("2006-01-02")
-	if _, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
-		Date: targetDate,
-	}); err != nil {
+	today := time.Now().UTC().Format("2006-01-02")
+	if targetDate > today {
 		return ""
 	}
 	return runLogDayHref("/run-log", targetDate, "", environments)
