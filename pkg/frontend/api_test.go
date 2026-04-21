@@ -314,7 +314,7 @@ func TestHandleFailurePatternsPageWindowRendersHTML(t *testing.T) {
 	if strings.Contains(body, `type="hidden" name="week"`) {
 		t.Fatalf("did not expect hidden week input in body, got %q", body)
 	}
-	if !strings.Contains(body, "Reset to full week") {
+	if !strings.Contains(body, "Reset") {
 		t.Fatalf("expected reset link in body, got %q", body)
 	}
 }
@@ -371,7 +371,7 @@ func TestHandleFailurePatternsPageDefaultsToFullWeekWindow(t *testing.T) {
 	if !strings.Contains(body, `name="end_date" value="2026-03-21"`) {
 		t.Fatalf("expected default end_date in body, got %q", body)
 	}
-	if !strings.Contains(body, "Apply window") {
+	if !strings.Contains(body, "Apply") {
 		t.Fatalf("expected apply button in body, got %q", body)
 	}
 }
@@ -574,8 +574,8 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if !strings.Contains(body, "View JSON API") {
 		t.Fatalf("expected JSON API link in body, got %q", body)
 	}
-	if !strings.Contains(body, "Date (UTC)") {
-		t.Fatalf("expected UTC date label in body, got %q", body)
+	if !strings.Contains(body, "2026-03-16 UTC") {
+		t.Fatalf("expected UTC date label in chrome, got %q", body)
 	}
 	if strings.Contains(body, "Generated (UTC)") {
 		t.Fatalf("did not expect UTC generated label in body, got %q", body)
@@ -625,8 +625,8 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if !strings.Contains(body, "#123 (open)") {
 		t.Fatalf("expected open PR state label in body, got %q", body)
 	}
-	if !strings.Contains(body, "/failure-patterns?") || !strings.Contains(body, "start_date=2026-03-16") || !strings.Contains(body, "end_date=2026-03-16") {
-		t.Fatalf("expected same-day failure-pattern link in body, got %q", body)
+	if !strings.Contains(body, "/failure-patterns?") || !strings.Contains(body, "start_date=2026-03-15") || !strings.Contains(body, "end_date=2026-03-21") {
+		t.Fatalf("expected anchor-week failure-pattern link in body, got %q", body)
 	}
 }
 

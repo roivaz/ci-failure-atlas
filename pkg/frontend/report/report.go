@@ -296,12 +296,6 @@ func buildHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body data-chart-mode=\"count\">\n")
 	b.WriteString(frontui.ReportChromeHTML(chrome))
-	b.WriteString("  <h1>CI Report</h1>\n")
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
-		startDate.Format("2006-01-02"),
-		endDate.Format("2006-01-02"),
-		reportInclusiveDays(startDate, endDate),
-	))
 
 	previousByEnvironment := map[string]envReport{}
 	for _, report := range previousReports {
@@ -859,13 +853,6 @@ func reportWindowedPercent(value int, total int) float64 {
 		return 0
 	}
 	return (float64(value) * 100.0) / float64(total)
-}
-
-func reportInclusiveDays(startDate time.Time, endDate time.Time) int {
-	if startDate.IsZero() || endDate.IsZero() || endDate.Before(startDate) {
-		return 0
-	}
-	return int(endDate.Sub(startDate)/(24*time.Hour)) + 1
 }
 
 func weeklyFailurePatternRowImpactPercent(item frontservice.FailurePatternRow, overallJobs int) float64 {

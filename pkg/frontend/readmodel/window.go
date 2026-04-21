@@ -11,9 +11,10 @@ import (
 type presentationWindowDefaultMode string
 
 const (
-	presentationWindowDefaultNone       presentationWindowDefaultMode = ""
-	presentationWindowDefaultLatestWeek presentationWindowDefaultMode = "latest_week"
-	presentationWindowDefaultRolling    presentationWindowDefaultMode = "rolling"
+	presentationWindowDefaultNone         presentationWindowDefaultMode = ""
+	presentationWindowDefaultLatestWeek   presentationWindowDefaultMode = "latest_week"
+	presentationWindowDefaultRolling      presentationWindowDefaultMode = "rolling"
+	presentationWindowDefaultLatestSprint presentationWindowDefaultMode = "latest_sprint"
 )
 
 type presentationWindowRequest struct {
@@ -39,9 +40,10 @@ type presentationWindow struct {
 type WindowDefaultMode = presentationWindowDefaultMode
 
 const (
-	WindowDefaultNone       WindowDefaultMode = presentationWindowDefaultNone
-	WindowDefaultLatestWeek WindowDefaultMode = presentationWindowDefaultLatestWeek
-	WindowDefaultRolling    WindowDefaultMode = presentationWindowDefaultRolling
+	WindowDefaultNone         WindowDefaultMode = presentationWindowDefaultNone
+	WindowDefaultLatestWeek   WindowDefaultMode = presentationWindowDefaultLatestWeek
+	WindowDefaultRolling      WindowDefaultMode = presentationWindowDefaultRolling
+	WindowDefaultLatestSprint WindowDefaultMode = presentationWindowDefaultLatestSprint
 )
 
 type WindowRequest struct {
@@ -135,6 +137,14 @@ func (s *Service) resolvePresentationWindow(
 			startValue := endValue.AddDate(0, 0, -(rollingDays - 1))
 			startDate = startValue.Format("2006-01-02")
 			endDate = endValue.Format("2006-01-02")
+		case presentationWindowDefaultLatestSprint:
+			now := request.Now
+			if now.IsZero() {
+				now = time.Now().UTC()
+			}
+			sprintStart, sprintEnd := SprintWindowForDate(now)
+			startDate = sprintStart.Format("2006-01-02")
+			endDate = sprintEnd.Format("2006-01-02")
 		default:
 			return presentationWindow{}, fmt.Errorf("start_date and end_date are required")
 		}
@@ -154,7 +164,6 @@ func (s *Service) resolvePresentationWindow(
 
 	startTime := time.Date(startValue.Year(), startValue.Month(), startValue.Day(), 0, 0, 0, 0, time.UTC)
 	endInclusive := time.Date(endValue.Year(), endValue.Month(), endValue.Day(), 0, 0, 0, 0, time.UTC)
-	endTime := endInclusive.AddDate(0, 0, 1).UTC()
 	semanticWeeks := intersectingSemanticWeeks(startTime, endInclusive)
 	if len(semanticWeeks) == 0 {
 		return presentationWindow{}, fmt.Errorf("no semantic weeks intersect window %s..%s", startLabel, endLabel)
@@ -164,12 +173,15 @@ func (s *Service) resolvePresentationWindow(
 	if err != nil {
 		return presentationWindow{}, err
 	}
-	for _, semanticWeek := range semanticWeeks {
-		index := sort.SearchStrings(availableWeeks, semanticWeek)
-		if index >= len(availableWeeks) || availableWeeks[index] != semanticWeek {
-			return presentationWindow{}, s.explainUnavailableWeek(ctx, semanticWeek)
-		}
+	loadableWeeks := filterAvailableWeeks(semanticWeeks, availableWeeks)
+	if len(loadableWeeks) == 0 {
+		return presentationWindow{}, s.explainUnavailableWeek(ctx, semanticWeeks[0])
 	}
+	if gap := interiorGap(loadableWeeks); gap != "" {
+		return presentationWindow{}, s.explainUnavailableWeek(ctx, gap)
+	}
+
+	endTime := endInclusive.AddDate(0, 0, 1).UTC()
 
 	return presentationWindow{
 		StartDate:     startLabel,
@@ -177,8 +189,8 @@ func (s *Service) resolvePresentationWindow(
 		StartTime:     startTime,
 		EndTime:       endTime,
 		DateLabels:    metricDateLabelsFromWindow(startTime, endTime),
-		SemanticWeeks: semanticWeeks,
-		AnchorWeek:    semanticWeeks[len(semanticWeeks)-1],
+		SemanticWeeks: loadableWeeks,
+		AnchorWeek:    loadableWeeks[len(loadableWeeks)-1],
 	}, nil
 }
 
@@ -204,6 +216,37 @@ func weekStartForDate(value time.Time) time.Time {
 	}
 	date := time.Date(value.UTC().Year(), value.UTC().Month(), value.UTC().Day(), 0, 0, 0, 0, time.UTC)
 	return date.AddDate(0, 0, -int(date.Weekday())).UTC()
+}
+
+func filterAvailableWeeks(requested []string, available []string) []string {
+	out := make([]string, 0, len(requested))
+	for _, week := range requested {
+		index := sort.SearchStrings(available, week)
+		if index < len(available) && available[index] == week {
+			out = append(out, week)
+		}
+	}
+	return out
+}
+
+// interiorGap returns the first missing week label between the first and last
+// entries of a sorted, non-empty week list. Returns "" if there are no gaps.
+func interiorGap(weeks []string) string {
+	if len(weeks) < 2 {
+		return ""
+	}
+	first, err := time.Parse("2006-01-02", weeks[0])
+	if err != nil {
+		return ""
+	}
+	expected := first.UTC()
+	for i := 1; i < len(weeks); i++ {
+		expected = expected.AddDate(0, 0, 7)
+		if weeks[i] != expected.Format("2006-01-02") {
+			return expected.Format("2006-01-02")
+		}
+	}
+	return ""
 }
 
 func semanticWeekDateRange(week string) (string, string) {

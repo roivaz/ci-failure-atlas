@@ -2,7 +2,6 @@ package readmodel
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
@@ -265,7 +264,7 @@ func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 	}
 }
 
-func TestBuildFailurePatternsRejectsMixedSchemaAcrossWeeks(t *testing.T) {
+func TestBuildFailurePatternsDropsLegacySchemaEdgeWeek(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -280,16 +279,16 @@ func TestBuildFailurePatternsRejectsMixedSchemaAcrossWeeks(t *testing.T) {
 		t.Fatalf("seed next materialized week: %v", err)
 	}
 
-	_, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
+	data, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
 		StartDate:    "2026-03-16",
 		EndDate:      "2026-03-22",
 		Environments: []string{"dev"},
 	})
-	if err == nil {
-		t.Fatalf("expected mixed-schema window build to fail")
+	if err != nil {
+		t.Fatalf("expected legacy edge week to be gracefully dropped: %v", err)
 	}
-	if !strings.Contains(err.Error(), "semantic week 2026-03-15 uses legacy semantic schema v1") {
-		t.Fatalf("expected mixed-schema error, got=%v", err)
+	if got, want := data.Meta.AnchorWeek, "2026-03-22"; got != want {
+		t.Fatalf("unexpected anchor week after dropping legacy edge: got=%q want=%q", got, want)
 	}
 }
 

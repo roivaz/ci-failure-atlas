@@ -54,43 +54,14 @@ func RenderHTML(
 	b.WriteString("    .section { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin: 14px 0; }\n")
 	b.WriteString("    .section-note { color: #4b5563; font-size: 12px; margin-top: -4px; margin-bottom: 8px; }\n")
 	b.WriteString("    .muted { color: #6b7280; }\n")
-	b.WriteString("    .window-controls { border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; padding: 12px; margin: 14px 0 18px; }\n")
-	b.WriteString("    .window-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }\n")
-	b.WriteString("    .window-field { display: flex; flex-direction: column; gap: 4px; min-width: 180px; }\n")
-	b.WriteString("    .window-field label { font-size: 12px; font-weight: 600; color: #374151; }\n")
-	b.WriteString("    .window-field input { border: 1px solid #d1d5db; border-radius: 6px; padding: 8px 10px; font-size: 14px; background: #ffffff; color: #111827; }\n")
-	b.WriteString("    .window-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }\n")
-	b.WriteString("    .window-apply, .window-reset { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 600; text-decoration: none; }\n")
-	b.WriteString("    .window-apply { border: 1px solid #111827; background: #111827; color: #ffffff; cursor: pointer; }\n")
-	b.WriteString("    .window-reset { border: 1px solid #d1d5db; background: #ffffff; color: #1f2937; }\n")
-	b.WriteString("    .window-apply:hover { background: #1f2937; }\n")
-	b.WriteString("    .window-reset:hover { background: #f3f4f6; }\n")
-	b.WriteString("    .window-help { margin-top: 8px; font-size: 12px; color: #6b7280; }\n")
 	b.WriteString(frontui.ReportChromeCSS())
 	b.WriteString(frontui.StylesCSS())
 	b.WriteString(frontui.ThemeCSS())
-	b.WriteString("    :root[data-theme=\"dark\"] .window-controls { background: #111827; border-color: #334155; }\n")
-	b.WriteString("    :root[data-theme=\"dark\"] .window-field label, :root[data-theme=\"dark\"] .window-help { color: #94a3b8; }\n")
-	b.WriteString("    :root[data-theme=\"dark\"] .window-field input { background: #0f172a; border-color: #334155; color: #e2e8f0; }\n")
-	b.WriteString("    :root[data-theme=\"dark\"] .window-apply { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }\n")
-	b.WriteString("    :root[data-theme=\"dark\"] .window-apply:hover { background: #1d4ed8; }\n")
-	b.WriteString("    :root[data-theme=\"dark\"] .window-reset { background: #1f2937; border-color: #334155; color: #e2e8f0; }\n")
-	b.WriteString("    :root[data-theme=\"dark\"] .window-reset:hover { background: #0f172a; }\n")
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(frontui.ReportChromeHTML(options.Chrome))
-	b.WriteString("  <h1>CI Failure Patterns</h1>\n")
-	if hasWindow {
-		b.WriteString(fmt.Sprintf(
-			"  <p class=\"meta\">Window (UTC): <strong>%s</strong> to <strong>%s</strong> (%d days)</p>\n",
-			html.EscapeString(startDate.Format("2006-01-02")),
-			html.EscapeString(endDate.Format("2006-01-02")),
-			failurePatternsInclusiveDays(startDate, endDate),
-		))
-	}
 	b.WriteString("  <p class=\"meta\">Runs affected, run impact, and seen-in are recomputed across the selected window. <span class=\"failure-patterns-header-help\" title=\"Flake signal and trend stay anchored to the most recent weekly data for each failure pattern, keeping the signal stable across longer date ranges.\">?</span></p>\n")
-	b.WriteString(failurePatternsControlsHTML(options.Query))
 	b.WriteString("  <div class=\"cards\">\n")
 	b.WriteString(failurePatternsCardHTML("Environments", fmt.Sprintf("%d", len(data.Environments))))
 	b.WriteString(failurePatternsCardHTML("Failure patterns", fmt.Sprintf("%d", totalRows)))
@@ -244,32 +215,6 @@ func failurePatternsInclusiveDays(startDate time.Time, endDate time.Time) int {
 	return int(endDay.Sub(startDay)/(24*time.Hour)) + 1
 }
 
-func failurePatternsControlsHTML(query frontservice.FailurePatternsQuery) string {
-	resetHref := "/failure-patterns"
-	var b strings.Builder
-	b.WriteString("  <section class=\"window-controls\">\n")
-	b.WriteString("    <form class=\"window-form\" method=\"get\" action=\"/failure-patterns\">\n")
-	b.WriteString("      <div class=\"window-field\">\n")
-	b.WriteString("        <label for=\"failure-patterns-start-date\">Start date</label>\n")
-	b.WriteString(fmt.Sprintf("        <input id=\"failure-patterns-start-date\" type=\"date\" name=\"start_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.StartDate))))
-	b.WriteString("      </div>\n")
-	b.WriteString("      <div class=\"window-field\">\n")
-	b.WriteString("        <label for=\"failure-patterns-end-date\">End date</label>\n")
-	b.WriteString(fmt.Sprintf("        <input id=\"failure-patterns-end-date\" type=\"date\" name=\"end_date\" value=\"%s\" required />\n", html.EscapeString(strings.TrimSpace(query.EndDate))))
-	b.WriteString("      </div>\n")
-	b.WriteString("      <div class=\"window-field\">\n")
-	b.WriteString("        <label for=\"failure-patterns-env-filter\">Environment filter</label>\n")
-	b.WriteString(fmt.Sprintf("        <input id=\"failure-patterns-env-filter\" type=\"text\" name=\"env\" value=\"%s\" placeholder=\"dev,int\" />\n", html.EscapeString(strings.Join(normalizedQueryEnvironments(query.Environments), ","))))
-	b.WriteString("      </div>\n")
-	b.WriteString("      <div class=\"window-actions\">\n")
-	b.WriteString("        <button class=\"window-apply\" type=\"submit\">Apply window</button>\n")
-	b.WriteString(fmt.Sprintf("        <a class=\"window-reset\" href=\"%s\">Reset to full week</a>\n", html.EscapeString(resetHref)))
-	b.WriteString("      </div>\n")
-	b.WriteString("    </form>\n")
-	b.WriteString("    <p class=\"window-help\">Choose any inclusive UTC date range. Leave the environment filter blank to show all environments.</p>\n")
-	b.WriteString("  </section>\n")
-	return b.String()
-}
 
 func normalizedQueryEnvironments(values []string) []string {
 	if len(values) == 0 {

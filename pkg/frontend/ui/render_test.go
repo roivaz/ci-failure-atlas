@@ -438,7 +438,7 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 	t.Parallel()
 
 	rendered := ReportChromeHTML(ReportChromeOptions{
-		CurrentWeek:         "2026-03-08",
+		WindowLabel:         "2026-03-08 to 2026-03-14 UTC",
 		CurrentView:         ReportViewReport,
 		PreviousWeek:        "2026-03-01",
 		PreviousHref:        "../2026-03-01/weekly-metrics.html",
@@ -449,17 +449,19 @@ func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
 		FailurePatternsHref: "failure-patterns-report.html",
 		RunLogHref:          "run-log.html",
 		ArchiveHref:         "../archive/",
+		WindowStartDate:     "2026-03-08",
+		WindowEndDate:       "2026-03-14",
 	})
 	for _, snippet := range []string{
 		"class=\"report-chrome\"",
 		"href=\"../2026-03-01/weekly-metrics.html\"",
-		"Week 2026-03-08 (UTC)",
+		"2026-03-08 to 2026-03-14 UTC",
 		"href=\"rolling.html\"",
 		"class=\"report-view-link active\" href=\"weekly-metrics.html\"",
 		"href=\"failure-patterns-report.html\"",
 		"href=\"run-log.html\"",
 		">Last 7 Days</a>",
-		">Weekly Report</a>",
+		">Report</a>",
 		">Failure Patterns</a>",
 		">Run Log</a>",
 		"href=\"../archive/\"",

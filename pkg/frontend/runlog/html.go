@@ -96,13 +96,11 @@ func RenderHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(frontui.ReportChromeHTML(options.Chrome))
-	b.WriteString("  <h1>CI Runs</h1>\n")
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Date (UTC): <strong>%s</strong></p>\n",
-		html.EscapeString(strings.TrimSpace(data.Meta.Date)),
-	))
-	b.WriteString(fmt.Sprintf("  <p class=\"meta\">Environments: <strong>%s</strong></p>\n",
-		html.EscapeString(runLogDayEnvironmentList(data.Meta.Environments)),
-	))
+	if envList := runLogDayEnvironmentList(data.Meta.Environments); envList != "none" {
+		b.WriteString(fmt.Sprintf("  <p class=\"meta\">Environments: <strong>%s</strong></p>\n",
+			html.EscapeString(envList),
+		))
+	}
 	b.WriteString("  <p class=\"meta\">Semantic matches and bad-PR signals use the latest contributing stored semantic snapshot for the matched signature so the score stays stable even on a single-day slice. <span class=\"failure-patterns-header-help\" title=\"The page shows one UTC day of runs, but semantic attachments and bad-PR scoring come from the latest contributing stored semantic snapshot for each matched signature rather than being recomputed from the day in isolation.\">?</span></p>\n")
 	b.WriteString(runLogDayActionsHTML(options))
 	b.WriteString("  <div class=\"cards\">\n")
