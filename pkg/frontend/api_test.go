@@ -296,11 +296,14 @@ func TestHandleFailurePatternsPageWindowRendersHTML(t *testing.T) {
 	if strings.Contains(body, "Resolved semantic week (UTC)") {
 		t.Fatalf("did not expect resolved week note in body, got %q", body)
 	}
-	if !strings.Contains(body, "Runs affected, run impact, and seen-in are recomputed across the selected window") {
-		t.Fatalf("expected failure-pattern guidance in body, got %q", body)
+	if strings.Contains(body, "Runs affected, run impact, and seen-in are recomputed across the selected window") {
+		t.Fatalf("did not expect failure-pattern guidance in body, got %q", body)
 	}
 	if !strings.Contains(body, "OAuth timeout") {
 		t.Fatalf("expected failure-pattern row phrase in body, got %q", body)
+	}
+	if !strings.Contains(body, "Single Day: Mar 16") {
+		t.Fatalf("expected single-day time selector label in body, got %q", body)
 	}
 	if !strings.Contains(body, `name="start_date" value="2026-03-16"`) {
 		t.Fatalf("expected start_date control in body, got %q", body)
@@ -308,14 +311,29 @@ func TestHandleFailurePatternsPageWindowRendersHTML(t *testing.T) {
 	if !strings.Contains(body, `name="end_date" value="2026-03-16"`) {
 		t.Fatalf("expected end_date control in body, got %q", body)
 	}
-	if !strings.Contains(body, `name="env" value="dev"`) {
+	if !strings.Contains(body, `name="env"`) || !strings.Contains(body, `option value="dev" selected="selected">DEV</option>`) {
 		t.Fatalf("expected env control in body, got %q", body)
 	}
 	if strings.Contains(body, `type="hidden" name="week"`) {
 		t.Fatalf("did not expect hidden week input in body, got %q", body)
 	}
+	if !strings.Contains(body, "View JSON API") {
+		t.Fatalf("expected JSON API link in body, got %q", body)
+	}
 	if !strings.Contains(body, "Reset") {
 		t.Fatalf("expected reset link in body, got %q", body)
+	}
+	if strings.Contains(body, `class="cards"`) {
+		t.Fatalf("did not expect failure-pattern summary cards in body, got %q", body)
+	}
+	for _, snippet := range []string{
+		`class="report-route-link" href="/">Overview</a>`,
+		`class="report-route-link active" href="/failure-patterns">Failure Patterns</a>`,
+		`class="report-route-link" href="/run-log">Run Log</a>`,
+	} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("expected default route navigation link %q in body, got %q", snippet, body)
+		}
 	}
 }
 
@@ -370,6 +388,9 @@ func TestHandleFailurePatternsPageDefaultsToFullWeekWindow(t *testing.T) {
 	}
 	if !strings.Contains(body, `name="end_date" value="2026-03-22"`) {
 		t.Fatalf("expected default end_date in body, got %q", body)
+	}
+	if !strings.Contains(body, "Weekly: Mar 16 - Mar 22") {
+		t.Fatalf("expected weekly time selector label in body, got %q", body)
 	}
 	if !strings.Contains(body, "Apply") {
 		t.Fatalf("expected apply button in body, got %q", body)
@@ -565,17 +586,17 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 		t.Fatalf("unexpected content type: %q", got)
 	}
 	body := recorder.Body.String()
-	if !strings.Contains(body, "CI Runs") {
+	if !strings.Contains(body, "CIHealth Run Log") {
 		t.Fatalf("expected runs title in body, got %q", body)
 	}
-	if !strings.Contains(body, "Open failure patterns for this day") {
+	if !strings.Contains(body, "Open Failure patterns for this day") {
 		t.Fatalf("expected failure-pattern CTA in body, got %q", body)
 	}
 	if !strings.Contains(body, "View JSON API") {
 		t.Fatalf("expected JSON API link in body, got %q", body)
 	}
-	if !strings.Contains(body, "2026-03-16 UTC") {
-		t.Fatalf("expected UTC date label in chrome, got %q", body)
+	if !strings.Contains(body, "Single Day: Mar 16") {
+		t.Fatalf("expected single-day time selector label in chrome, got %q", body)
 	}
 	if strings.Contains(body, "Generated (UTC)") {
 		t.Fatalf("did not expect UTC generated label in body, got %q", body)
@@ -601,6 +622,15 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if strings.Contains(body, "Runs with semantic attachment") {
 		t.Fatalf("did not expect semantic attachment card in body, got %q", body)
 	}
+	if strings.Contains(body, "Environments: <strong>") {
+		t.Fatalf("did not expect environment scope summary in body, got %q", body)
+	}
+	if strings.Contains(body, "Semantic matches and bad-PR signals use the latest contributing stored semantic snapshot") {
+		t.Fatalf("did not expect semantic explanatory text in body, got %q", body)
+	}
+	if strings.Contains(body, `class="cards"`) {
+		t.Fatalf("did not expect run-log summary cards in body, got %q", body)
+	}
 	if !strings.Contains(body, "Multiple failures (2)") {
 		t.Fatalf("expected simplified multiple failure summary in body, got %q", body)
 	}
@@ -625,8 +655,56 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if !strings.Contains(body, "#123 (open)") {
 		t.Fatalf("expected open PR state label in body, got %q", body)
 	}
-	if !strings.Contains(body, "/failure-patterns?") || !strings.Contains(body, "start_date=2026-03-16") || !strings.Contains(body, "end_date=2026-03-22") {
-		t.Fatalf("expected anchor-week failure-pattern link in body, got %q", body)
+	if !strings.Contains(body, "/failure-patterns?") || !strings.Contains(body, "start_date=2026-03-16") || !strings.Contains(body, "end_date=2026-03-16") {
+		t.Fatalf("expected day-scoped failure-pattern link in body, got %q", body)
+	}
+	for _, snippet := range []string{
+		`class="report-route-link" href="/">Overview</a>`,
+		`class="report-route-link" href="/failure-patterns">Failure Patterns</a>`,
+		`class="report-route-link active" href="/run-log">Run Log</a>`,
+	} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("expected default route navigation link %q in body, got %q", snippet, body)
+		}
+	}
+}
+
+func TestHandleRunsPageDefaultsWhenDateIsOmitted(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := newHandlerFixture(t)
+	store := fixture.openWeekStore(t, "2026-03-16")
+	if err := store.ReplaceMaterializedWeek(ctx, jobHistoryAPIMaterializedWeek()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, jobHistoryAPIRuns()); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, jobHistoryAPIRawFailures()); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	handler, err := NewHandler(HandlerOptions{
+		PostgresPool: fixture.pool,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/run-log", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if got, want := recorder.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Single Day: Mar 22") {
+		t.Fatalf("expected default run-log day label in body, got %q", body)
+	}
+	if !strings.Contains(body, `class="report-route-link active" href="/run-log">Run Log</a>`) {
+		t.Fatalf("expected default run-log navigation link in body, got %q", body)
 	}
 }
 

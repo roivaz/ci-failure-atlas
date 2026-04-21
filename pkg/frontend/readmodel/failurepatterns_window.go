@@ -16,6 +16,7 @@ type FailurePatternsQuery struct {
 	StartDate    string
 	EndDate      string
 	Week         string
+	Mode         string
 	Environments []string
 	GeneratedAt  time.Time
 }

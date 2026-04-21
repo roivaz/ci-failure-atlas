@@ -222,7 +222,7 @@ func buildHTML(
 	chrome frontui.ReportChromeOptions,
 ) string {
 	var b strings.Builder
-	failurePatternsBaseHref := strings.TrimSpace(chrome.FailurePatternsHref)
+	failurePatternsBaseHref := strings.TrimSpace(chrome.ContextFailurePatternsHref)
 	if failurePatternsBaseHref == "" {
 		failurePatternsBaseHref = "failure-patterns-report.html"
 	}
@@ -231,10 +231,10 @@ func buildHTML(
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Report</title>\n")
+	b.WriteString("  <title>CIHealth Overview</title>\n")
 	b.WriteString(frontui.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
-	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
+	b.WriteString("    body { font-family: Arial, sans-serif; margin: 0; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 4px; }\n")
 	b.WriteString("    .meta { color: #4b5563; margin-bottom: 16px; }\n")
 	b.WriteString("    .chart-controls { margin: 0 0 16px; font-size: 13px; color: #374151; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }\n")
@@ -296,6 +296,7 @@ func buildHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body data-chart-mode=\"count\">\n")
 	b.WriteString(frontui.ReportChromeHTML(chrome))
+	b.WriteString("<main class=\"page-content\">\n")
 
 	previousByEnvironment := map[string]envReport{}
 	for _, report := range previousReports {
@@ -601,6 +602,7 @@ func buildHTML(
 		b.WriteString("  </section>\n")
 	}
 
+	b.WriteString("</main>\n")
 	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("<script>\n")
 	b.WriteString("(function(){\n")

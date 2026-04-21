@@ -140,7 +140,16 @@ func (h *handler) handleRunsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	reportHTML, err := h.generateDayRunHistoryPage(r.Context(), runLogDayQueryFromRequest(r))
+	query, err := h.resolveRunLogPageQuery(r.Context(), runLogDayQueryFromRequest(r))
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
+			statusCode = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+	reportHTML, err := h.generateDayRunHistoryPage(r.Context(), query)
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if errors.Is(err, frontservice.ErrNoSemanticWeeks) || errors.Is(err, frontservice.ErrSemanticWeekNotFound) {
@@ -251,31 +260,32 @@ func (h *handler) generateFailurePatternsReport(ctx context.Context, query front
 	if err != nil {
 		return "", err
 	}
-	rollingHref, err := h.currentRollingReportHref(ctx)
-	if err != nil {
-		return "", err
-	}
-	sprintHref, _ := h.currentSprintReportHref(ctx)
-	anchorStart, anchorEnd := anchorWeekDateRange(scope.AnchorWeek, scope.StartDate, scope.EndDate)
+	timeMode := failurePatternsTimeSelectorMode(query.Mode, scope.StartDate, scope.EndDate)
+	shiftDays := timeSelectorShiftDays(timeMode, scope.StartDate, scope.EndDate)
 	return frontfailurepatterns.RenderHTML(data, frontfailurepatterns.PageOptions{
 		Query: query,
 		Chrome: frontui.ReportChromeOptions{
-			WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
 			CurrentView:         frontui.ReportViewFailurePatterns,
-			PreviousHref:        h.shiftedFailurePatternsHref(ctx, scope.StartDate, scope.EndDate, -7, query.Environments),
-			NextHref:            h.shiftedFailurePatternsHref(ctx, scope.StartDate, scope.EndDate, 7, query.Environments),
-			RollingHref:         rollingHref,
-			ReportHref:          reportHref("/report", anchorStart, anchorEnd, reportPageModeReport),
-			SprintHref:          sprintHref,
-			FailurePatternsHref: failurePatternsHref("/failure-patterns", "", scope.StartDate, scope.EndDate, query.Environments),
-			RunLogHref:          runLogDayHref("/run-log", runLogDefaultDate(scope.EndDate), "", query.Environments),
-			WindowStartDate:     scope.StartDate,
-			WindowEndDate:       scope.EndDate,
-			WindowEditable:      true,
-			WindowFormAction:    "/failure-patterns",
-			WindowResetHref:     "/failure-patterns",
-			WindowEnvironments:  normalizedQueryEnvironments(query.Environments),
-			WindowEnvEditable:   true,
+			OverviewHref:        "/",
+			FailurePatternsHref: "/failure-patterns",
+			RunLogHref:          "/run-log",
+			FilterFormAction:    "/failure-patterns",
+			TimeSelector: frontui.TimeSelectorOptions{
+				Mode:            timeMode,
+				Label:           formatTimeSelectorLabel(timeMode, scope.StartDate, scope.EndDate),
+				PreviousHref:    h.shiftedFailurePatternsHref(ctx, scope.StartDate, scope.EndDate, -shiftDays, query.Environments, timeMode),
+				NextHref:        h.shiftedFailurePatternsHref(ctx, scope.StartDate, scope.EndDate, shiftDays, query.Environments, timeMode),
+				MenuLinks:       h.failurePatternsTimeSelectorLinks(ctx, scope.StartDate, scope.EndDate, query.Environments, timeMode),
+				ShowRangeInputs: true,
+				RangeStartDate:  scope.StartDate,
+				RangeEndDate:    scope.EndDate,
+			},
+			Environment: frontui.EnvironmentControlOptions{
+				Value: chromeEnvironmentValue(query.Environments),
+			},
+			JSONAPIHref: failurePatternsHref("/api/failure-patterns/window", "", scope.StartDate, scope.EndDate, query.Environments, ""),
+			ResetHref:   "/failure-patterns",
+			ShowApply:   true,
 		},
 	}), nil
 }
@@ -285,36 +295,30 @@ func (h *handler) generateDayRunHistoryPage(ctx context.Context, query frontserv
 	if err != nil {
 		return "", err
 	}
-	scope, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
-		Date: data.Meta.Date,
-	})
-	if err != nil {
-		return "", err
-	}
-	rollingHref, err := h.currentRollingReportHref(ctx)
-	if err != nil {
-		return "", err
-	}
-	sprintHref, _ := h.currentSprintReportHref(ctx)
 	environments := query.Environments
-	anchorStart, anchorEnd := anchorWeekDateRange(scope.AnchorWeek, scope.StartDate, scope.EndDate)
 	return frontrunlog.RenderHTML(data, frontrunlog.PageOptions{
 		Query:               query,
-		FailurePatternsHref: failurePatternsHref("/failure-patterns", "", anchorStart, anchorEnd, environments),
-		APIHref:             runLogDayHref("/api/run-log/day", data.Meta.Date, "", environments),
+		FailurePatternsHref: failurePatternsHref("/failure-patterns", "", data.Meta.Date, data.Meta.Date, environments, ""),
 		Chrome: frontui.ReportChromeOptions{
-			WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
 			CurrentView:         frontui.ReportViewRunLog,
-			PreviousHref:        h.shiftedRunLogHref(ctx, data.Meta.Date, -1, environments),
-			NextHref:            h.shiftedRunLogHref(ctx, data.Meta.Date, 1, environments),
-			RollingHref:         rollingHref,
-			ReportHref:          reportHref("/report", anchorStart, anchorEnd, reportPageModeReport),
-			SprintHref:          sprintHref,
-			FailurePatternsHref: failurePatternsHref("/failure-patterns", "", anchorStart, anchorEnd, environments),
-			RunLogHref:          runLogDayHref("/run-log", data.Meta.Date, "", environments),
-			WindowStartDate:     data.Meta.Date,
-			WindowEndDate:       data.Meta.Date,
-			WindowEditable:      false,
+			OverviewHref:        "/",
+			FailurePatternsHref: "/failure-patterns",
+			RunLogHref:          "/run-log",
+			FilterFormAction:    "/run-log",
+			TimeSelector: frontui.TimeSelectorOptions{
+				Mode:          frontui.TimeSelectorModeDay,
+				Label:         formatTimeSelectorLabel(frontui.TimeSelectorModeDay, data.Meta.Date, data.Meta.Date),
+				PreviousHref:  h.shiftedRunLogHref(ctx, data.Meta.Date, -1, environments),
+				NextHref:      h.shiftedRunLogHref(ctx, data.Meta.Date, 1, environments),
+				ShowDateInput: true,
+				DateValue:     data.Meta.Date,
+				AutoSubmit:    true,
+			},
+			Environment: frontui.EnvironmentControlOptions{
+				Value:      chromeEnvironmentValue(environments),
+				AutoSubmit: true,
+			},
+			JSONAPIHref: runLogDayHref("/api/run-log/day", data.Meta.Date, "", environments),
 		},
 	}), nil
 }
@@ -335,43 +339,27 @@ func (h *handler) generateReportPage(
 	if err != nil {
 		return "", err
 	}
-	rollingHref, err := h.currentRollingReportHref(ctx)
-	if err != nil {
-		return "", err
-	}
-	sprintHref, _ := h.currentSprintReportHref(ctx)
-	anchorStart, anchorEnd := anchorWeekDateRange(scope.AnchorWeek, scope.StartDate, scope.EndDate)
-	if mode == reportPageModeRolling {
-		anchorStart, anchorEnd = semanticWeekDateRange(data.NavigationAnchorWeek)
-		if anchorStart == "" || anchorEnd == "" {
-			anchorStart, anchorEnd = anchorWeekDateRange(scope.AnchorWeek, scope.StartDate, scope.EndDate)
-		}
-	}
-
-	shiftDays := 7
-	if mode == reportPageModeSprint {
-		shiftDays = frontservice.SprintDurationDays()
-	}
+	timeMode := reportTimeSelectorMode(mode, scope.StartDate, scope.EndDate)
+	shiftDays := timeSelectorShiftDays(timeMode, scope.StartDate, scope.EndDate)
 
 	opts := reportweekly.DefaultOptions()
 	opts.RunLogDayBasePath = "/run-log"
 	opts.Chrome = frontui.ReportChromeOptions{
-		WindowLabel:         formatWindowLabel(scope.StartDate, scope.EndDate),
-		CurrentView:         reportChromeView(mode),
-		PreviousHref:        h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, -shiftDays, mode),
-		NextHref:            h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, shiftDays, mode),
-		RollingHref:         rollingHref,
-		ReportHref:          reportHref("/report", anchorStart, anchorEnd, reportPageModeReport),
-		SprintHref:          sprintHref,
-		FailurePatternsHref: failurePatternsHref("/failure-patterns", "", anchorStart, anchorEnd, nil),
-		RunLogHref:          runLogDayHref("/run-log", runLogDefaultDate(scope.EndDate), "", nil),
-		WindowStartDate:     scope.StartDate,
-		WindowEndDate:       scope.EndDate,
-		WindowEditable:      false,
-	}
-	if mode == reportPageModeRolling {
-		opts.Chrome.PreviousHref = ""
-		opts.Chrome.NextHref = ""
+		CurrentView:                reportChromeView(mode),
+		OverviewHref:               "/",
+		FailurePatternsHref:        "/failure-patterns",
+		ContextFailurePatternsHref: failurePatternsHref("/failure-patterns", "", scope.StartDate, scope.EndDate, nil, failurePatternsModeQueryValue(timeMode)),
+		RunLogHref:                 "/run-log",
+		TimeSelector: frontui.TimeSelectorOptions{
+			Mode:         timeMode,
+			Label:        formatTimeSelectorLabel(timeMode, scope.StartDate, scope.EndDate),
+			PreviousHref: h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, -shiftDays, reportPageModeForTimeSelectorMode(timeMode)),
+			NextHref:     h.shiftedReportHref(ctx, scope.StartDate, scope.EndDate, shiftDays, reportPageModeForTimeSelectorMode(timeMode)),
+			MenuLinks:    h.reportTimeSelectorLinks(ctx, scope.StartDate, scope.EndDate, timeMode),
+		},
+		Environment: frontui.EnvironmentControlOptions{
+			Disabled: true,
+		},
 	}
 	return reportweekly.RenderHTML(data, opts), nil
 }
@@ -401,7 +389,7 @@ func navigationHref(path string, week string) string {
 	return viewHref(path, week)
 }
 
-func failurePatternsHref(path string, week string, startDate string, endDate string, environments []string) string {
+func failurePatternsHref(path string, week string, startDate string, endDate string, environments []string, mode string) string {
 	trimmedPath := strings.TrimSpace(path)
 	if trimmedPath == "" {
 		return ""
@@ -418,6 +406,9 @@ func failurePatternsHref(path string, week string, startDate string, endDate str
 	}
 	if strings.TrimSpace(endDate) != "" {
 		q.Set("end_date", strings.TrimSpace(endDate))
+	}
+	if normalizedMode := normalizeFailurePatternsMode(mode); normalizedMode != "" {
+		q.Set("mode", normalizedMode)
 	}
 	for _, environment := range normalizedQueryEnvironments(environments) {
 		q.Add("env", environment)
@@ -440,6 +431,7 @@ func failurePatternsQueryFromRequest(r *http.Request) frontservice.FailurePatter
 		StartDate:    strings.TrimSpace(r.URL.Query().Get("start_date")),
 		EndDate:      strings.TrimSpace(r.URL.Query().Get("end_date")),
 		Week:         strings.TrimSpace(r.URL.Query().Get("week")),
+		Mode:         normalizeFailurePatternsMode(r.URL.Query().Get("mode")),
 		Environments: parseListQueryValues(r.URL.Query()["env"]),
 	}
 }
@@ -471,6 +463,25 @@ func (h *handler) resolveFailurePatternsPageQuery(
 	query.Week = ""
 	query.StartDate = window.StartDate
 	query.EndDate = window.EndDate
+	return query, nil
+}
+
+func (h *handler) resolveRunLogPageQuery(
+	ctx context.Context,
+	query frontservice.RunLogDayQuery,
+) (frontservice.RunLogDayQuery, error) {
+	if strings.TrimSpace(query.Date) != "" {
+		return query, nil
+	}
+	window, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		Week:        query.Week,
+		DefaultMode: frontservice.WindowDefaultLatestWeek,
+	})
+	if err != nil {
+		return frontservice.RunLogDayQuery{}, err
+	}
+	query.Week = ""
+	query.Date = runLogDefaultDate(window.EndDate)
 	return query, nil
 }
 
@@ -560,21 +571,351 @@ func reportChromeView(mode reportPageMode) frontui.ReportView {
 	}
 }
 
-func formatWindowLabel(startDate string, endDate string) string {
-	trimmedStart := strings.TrimSpace(startDate)
-	trimmedEnd := strings.TrimSpace(endDate)
-	switch {
-	case trimmedStart == "" && trimmedEnd == "":
-		return ""
-	case trimmedStart == trimmedEnd:
-		return trimmedStart + " UTC"
-	case trimmedStart == "":
-		return trimmedEnd + " UTC"
-	case trimmedEnd == "":
-		return trimmedStart + " UTC"
+func normalizeFailurePatternsMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(reportPageModeRolling):
+		return string(reportPageModeRolling)
+	case string(reportPageModeSprint):
+		return string(reportPageModeSprint)
 	default:
-		return trimmedStart + " to " + trimmedEnd + " UTC"
+		return ""
 	}
+}
+
+func reportTimeSelectorMode(mode reportPageMode, startDate string, endDate string) frontui.TimeSelectorMode {
+	switch mode {
+	case reportPageModeRolling:
+		return frontui.TimeSelectorModeRolling
+	case reportPageModeSprint:
+		return frontui.TimeSelectorModeSprint
+	default:
+		return inferredTimeSelectorMode(startDate, endDate)
+	}
+}
+
+func failurePatternsTimeSelectorMode(mode string, startDate string, endDate string) frontui.TimeSelectorMode {
+	switch normalizeFailurePatternsMode(mode) {
+	case string(reportPageModeRolling):
+		return frontui.TimeSelectorModeRolling
+	case string(reportPageModeSprint):
+		return frontui.TimeSelectorModeSprint
+	default:
+		return inferredTimeSelectorMode(startDate, endDate)
+	}
+}
+
+func inferredTimeSelectorMode(startDate string, endDate string) frontui.TimeSelectorMode {
+	switch {
+	case isSingleDayWindow(startDate, endDate):
+		return frontui.TimeSelectorModeDay
+	case isSprintDateWindow(startDate, endDate):
+		return frontui.TimeSelectorModeSprint
+	case isWeeklyDateWindow(startDate, endDate):
+		return frontui.TimeSelectorModeWeekly
+	default:
+		return frontui.TimeSelectorModeCustom
+	}
+}
+
+func timeSelectorShiftDays(mode frontui.TimeSelectorMode, startDate string, endDate string) int {
+	switch mode {
+	case frontui.TimeSelectorModeRolling:
+		return 0
+	case frontui.TimeSelectorModeWeekly:
+		return 7
+	case frontui.TimeSelectorModeSprint:
+		return frontservice.SprintDurationDays()
+	case frontui.TimeSelectorModeDay:
+		return 1
+	default:
+		return timeWindowSpanDays(startDate, endDate)
+	}
+}
+
+func reportPageModeForTimeSelectorMode(mode frontui.TimeSelectorMode) reportPageMode {
+	switch mode {
+	case frontui.TimeSelectorModeRolling:
+		return reportPageModeRolling
+	case frontui.TimeSelectorModeSprint:
+		return reportPageModeSprint
+	default:
+		return reportPageModeReport
+	}
+}
+
+func failurePatternsModeQueryValue(mode frontui.TimeSelectorMode) string {
+	switch mode {
+	case frontui.TimeSelectorModeRolling:
+		return string(reportPageModeRolling)
+	case frontui.TimeSelectorModeSprint:
+		return string(reportPageModeSprint)
+	default:
+		return ""
+	}
+}
+
+func formatTimeSelectorLabel(mode frontui.TimeSelectorMode, startDate string, endDate string) string {
+	switch mode {
+	case frontui.TimeSelectorModeRolling:
+		return "Last 7 Days"
+	case frontui.TimeSelectorModeWeekly:
+		return "Weekly: " + formatCompactDateRange(startDate, endDate)
+	case frontui.TimeSelectorModeSprint:
+		return "Sprint: " + formatCompactDateRange(startDate, endDate)
+	case frontui.TimeSelectorModeDay:
+		return "Single Day: " + formatCompactDateLabel(startDate)
+	default:
+		return "Custom: " + formatCompactDateRange(startDate, endDate)
+	}
+}
+
+func formatCompactDateRange(startDate string, endDate string) string {
+	startValue, okStart := parseChromeDate(startDate)
+	endValue, okEnd := parseChromeDate(endDate)
+	if !okStart || !okEnd {
+		trimmedStart := strings.TrimSpace(startDate)
+		trimmedEnd := strings.TrimSpace(endDate)
+		switch {
+		case trimmedStart == "" && trimmedEnd == "":
+			return ""
+		case trimmedStart == trimmedEnd:
+			return trimmedStart
+		default:
+			return trimmedStart + " - " + trimmedEnd
+		}
+	}
+	if startValue.Year() == endValue.Year() {
+		return startValue.Format("Jan 2") + " - " + endValue.Format("Jan 2")
+	}
+	return startValue.Format("Jan 2, 2006") + " - " + endValue.Format("Jan 2, 2006")
+}
+
+func formatCompactDateLabel(date string) string {
+	dateValue, ok := parseChromeDate(date)
+	if !ok {
+		return strings.TrimSpace(date)
+	}
+	return dateValue.Format("Jan 2")
+}
+
+func parseChromeDate(value string) (time.Time, bool) {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
+}
+
+func timeWindowSpanDays(startDate string, endDate string) int {
+	startValue, okStart := parseChromeDate(startDate)
+	endValue, okEnd := parseChromeDate(endDate)
+	if !okStart || !okEnd || endValue.Before(startValue) {
+		return 0
+	}
+	return int(endValue.Sub(startValue)/(24*time.Hour)) + 1
+}
+
+func isWeeklyDateWindow(startDate string, endDate string) bool {
+	startValue, okStart := parseChromeDate(startDate)
+	endValue, okEnd := parseChromeDate(endDate)
+	if !okStart || !okEnd {
+		return false
+	}
+	if timeWindowSpanDays(startDate, endDate) != 7 {
+		return false
+	}
+	return startValue.Weekday() == time.Monday && endValue.Equal(startValue.AddDate(0, 0, 6))
+}
+
+func isSprintDateWindow(startDate string, endDate string) bool {
+	startValue, okStart := parseChromeDate(startDate)
+	endValue, okEnd := parseChromeDate(endDate)
+	if !okStart || !okEnd {
+		return false
+	}
+	sprintStart, sprintEnd := frontservice.SprintWindowForDate(startValue)
+	return startValue.Equal(sprintStart.UTC()) &&
+		endValue.Equal(sprintEnd.UTC()) &&
+		timeWindowSpanDays(startDate, endDate) == frontservice.SprintDurationDays()
+}
+
+func rollingWindowEndingOn(endDate string, days int) (string, string, bool) {
+	endValue, ok := parseChromeDate(endDate)
+	if !ok || days <= 0 {
+		return "", "", false
+	}
+	startValue := endValue.AddDate(0, 0, -(days - 1))
+	return startValue.Format("2006-01-02"), endValue.Format("2006-01-02"), true
+}
+
+func weeklyWindowContaining(date string) (string, string, bool) {
+	dateValue, ok := parseChromeDate(date)
+	if !ok {
+		return "", "", false
+	}
+	startValue := dateValue.AddDate(0, 0, -int((dateValue.Weekday()+6)%7))
+	endValue := startValue.AddDate(0, 0, 6)
+	return startValue.Format("2006-01-02"), endValue.Format("2006-01-02"), true
+}
+
+func sprintWindowContaining(date string) (string, string, bool) {
+	dateValue, ok := parseChromeDate(date)
+	if !ok {
+		return "", "", false
+	}
+	startValue, endValue := frontservice.SprintWindowForDate(dateValue)
+	return startValue.Format("2006-01-02"), endValue.Format("2006-01-02"), true
+}
+
+func chromeEnvironmentValue(environments []string) string {
+	normalized := normalizedQueryEnvironments(environments)
+	if len(normalized) == 1 {
+		return normalized[0]
+	}
+	return ""
+}
+
+func runLogDateForWindow(startDate string, endDate string) string {
+	if isSingleDayWindow(startDate, endDate) {
+		return strings.TrimSpace(startDate)
+	}
+	if strings.TrimSpace(endDate) != "" {
+		return runLogDefaultDate(endDate)
+	}
+	return runLogDefaultDate(startDate)
+}
+
+func timeSelectorAnchorDate(startDate string, endDate string) string {
+	if strings.TrimSpace(endDate) != "" {
+		return strings.TrimSpace(endDate)
+	}
+	return strings.TrimSpace(startDate)
+}
+
+func (h *handler) reportTimeSelectorLinks(
+	ctx context.Context,
+	startDate string,
+	endDate string,
+	activeMode frontui.TimeSelectorMode,
+) []frontui.ChromeLink {
+	anchorDate := timeSelectorAnchorDate(startDate, endDate)
+	links := make([]frontui.ChromeLink, 0, 3)
+	if href, err := h.currentRollingReportHref(ctx); err == nil && strings.TrimSpace(href) != "" {
+		links = append(links, frontui.ChromeLink{
+			Label:  "Last 7 Days",
+			Href:   href,
+			Active: activeMode == frontui.TimeSelectorModeRolling,
+		})
+	}
+	if weekStart, weekEnd, ok := weeklyWindowContaining(anchorDate); ok {
+		if href := h.validatedReportWindowHref(ctx, weekStart, weekEnd, reportPageModeReport); href != "" {
+			links = append(links, frontui.ChromeLink{
+				Label:  "Weekly: " + formatCompactDateRange(weekStart, weekEnd),
+				Href:   href,
+				Active: activeMode == frontui.TimeSelectorModeWeekly,
+			})
+		}
+	}
+	if sprintStart, sprintEnd, ok := sprintWindowContaining(anchorDate); ok {
+		if href := h.validatedReportWindowHref(ctx, sprintStart, sprintEnd, reportPageModeSprint); href != "" {
+			links = append(links, frontui.ChromeLink{
+				Label:  "Sprint: " + formatCompactDateRange(sprintStart, sprintEnd),
+				Href:   href,
+				Active: activeMode == frontui.TimeSelectorModeSprint,
+			})
+		}
+	}
+	return links
+}
+
+func (h *handler) failurePatternsTimeSelectorLinks(
+	ctx context.Context,
+	startDate string,
+	endDate string,
+	environments []string,
+	activeMode frontui.TimeSelectorMode,
+) []frontui.ChromeLink {
+	anchorDate := timeSelectorAnchorDate(startDate, endDate)
+	links := make([]frontui.ChromeLink, 0, 4)
+	if rollingStart, rollingEnd, ok := rollingWindowEndingOn(anchorDate, 7); ok {
+		if href := h.validatedFailurePatternsWindowHref(ctx, rollingStart, rollingEnd, environments, frontui.TimeSelectorModeRolling); href != "" {
+			links = append(links, frontui.ChromeLink{
+				Label:  "Last 7 Days",
+				Href:   href,
+				Active: activeMode == frontui.TimeSelectorModeRolling,
+			})
+		}
+	}
+	if weekStart, weekEnd, ok := weeklyWindowContaining(anchorDate); ok {
+		if href := h.validatedFailurePatternsWindowHref(ctx, weekStart, weekEnd, environments, frontui.TimeSelectorModeWeekly); href != "" {
+			links = append(links, frontui.ChromeLink{
+				Label:  "Weekly: " + formatCompactDateRange(weekStart, weekEnd),
+				Href:   href,
+				Active: activeMode == frontui.TimeSelectorModeWeekly,
+			})
+		}
+	}
+	if sprintStart, sprintEnd, ok := sprintWindowContaining(anchorDate); ok {
+		if href := h.validatedFailurePatternsWindowHref(ctx, sprintStart, sprintEnd, environments, frontui.TimeSelectorModeSprint); href != "" {
+			links = append(links, frontui.ChromeLink{
+				Label:  "Sprint: " + formatCompactDateRange(sprintStart, sprintEnd),
+				Href:   href,
+				Active: activeMode == frontui.TimeSelectorModeSprint,
+			})
+		}
+	}
+	if href := h.validatedFailurePatternsWindowHref(ctx, anchorDate, anchorDate, environments, frontui.TimeSelectorModeDay); href != "" {
+		links = append(links, frontui.ChromeLink{
+			Label:  "Single Day: " + formatCompactDateLabel(anchorDate),
+			Href:   href,
+			Active: activeMode == frontui.TimeSelectorModeDay,
+		})
+	}
+	return links
+}
+
+func (h *handler) validatedReportWindowHref(
+	ctx context.Context,
+	startDate string,
+	endDate string,
+	mode reportPageMode,
+) string {
+	if strings.TrimSpace(startDate) == "" || strings.TrimSpace(endDate) == "" {
+		return ""
+	}
+	if _, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		StartDate: startDate,
+		EndDate:   endDate,
+	}); err != nil {
+		return ""
+	}
+	return reportHref("/report", startDate, endDate, mode)
+}
+
+func (h *handler) validatedFailurePatternsWindowHref(
+	ctx context.Context,
+	startDate string,
+	endDate string,
+	environments []string,
+	mode frontui.TimeSelectorMode,
+) string {
+	if strings.TrimSpace(startDate) == "" || strings.TrimSpace(endDate) == "" {
+		return ""
+	}
+	if _, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
+		StartDate: startDate,
+		EndDate:   endDate,
+	}); err != nil {
+		return ""
+	}
+	return failurePatternsHref(
+		"/failure-patterns",
+		"",
+		startDate,
+		endDate,
+		environments,
+		failurePatternsModeQueryValue(mode),
+	)
 }
 
 func (h *handler) currentSprintReportHref(_ context.Context) (string, error) {
@@ -630,7 +971,11 @@ func (h *handler) shiftedFailurePatternsHref(
 	endDate string,
 	days int,
 	environments []string,
+	mode frontui.TimeSelectorMode,
 ) string {
+	if mode == frontui.TimeSelectorModeRolling || days == 0 {
+		return ""
+	}
 	targetStart, targetEnd, err := shiftDateWindow(startDate, endDate, days)
 	if err != nil {
 		return ""
@@ -641,7 +986,7 @@ func (h *handler) shiftedFailurePatternsHref(
 	}); err != nil {
 		return ""
 	}
-	return failurePatternsHref("/failure-patterns", "", targetStart, targetEnd, environments)
+	return failurePatternsHref("/failure-patterns", "", targetStart, targetEnd, environments, failurePatternsModeQueryValue(mode))
 }
 
 func (h *handler) shiftedRunLogHref(
@@ -745,16 +1090,16 @@ func shiftedFailurePatternsHref(
 	currentEndDate, errCurrentEnd := time.Parse("2006-01-02", strings.TrimSpace(endDate))
 	targetWeekStart, errTargetWeek := time.Parse("2006-01-02", trimmedTargetWeek)
 	if errCurrentWeek != nil || errCurrentStart != nil || errCurrentEnd != nil || errTargetWeek != nil {
-		return failurePatternsHref(path, trimmedTargetWeek, targetStart, targetEnd, environments)
+		return failurePatternsHref(path, trimmedTargetWeek, targetStart, targetEnd, environments, "")
 	}
 	startOffset := int(currentStartDate.UTC().Sub(currentWeekStart.UTC()) / (24 * time.Hour))
 	endOffset := int(currentEndDate.UTC().Sub(currentWeekStart.UTC()) / (24 * time.Hour))
 	if startOffset < 0 || endOffset < startOffset || endOffset > 6 {
-		return failurePatternsHref(path, trimmedTargetWeek, targetStart, targetEnd, environments)
+		return failurePatternsHref(path, trimmedTargetWeek, targetStart, targetEnd, environments, "")
 	}
 	shiftedStart := targetWeekStart.UTC().AddDate(0, 0, startOffset).Format("2006-01-02")
 	shiftedEnd := targetWeekStart.UTC().AddDate(0, 0, endOffset).Format("2006-01-02")
-	return failurePatternsHref(path, trimmedTargetWeek, shiftedStart, shiftedEnd, environments)
+	return failurePatternsHref(path, trimmedTargetWeek, shiftedStart, shiftedEnd, environments, "")
 }
 
 func runLogDayHref(path string, date string, week string, environments []string) string {

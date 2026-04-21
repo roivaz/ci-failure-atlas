@@ -434,43 +434,68 @@ func TestReportChromeHTMLFallsBackToThemeToggleWhenUnset(t *testing.T) {
 	}
 }
 
-func TestReportChromeHTMLRendersNavigationAndThemeToggleButton(t *testing.T) {
+func TestReportChromeHTMLRendersTwoTierNavigationAndContextControls(t *testing.T) {
 	t.Parallel()
 
 	rendered := ReportChromeHTML(ReportChromeOptions{
-		WindowLabel:         "2026-03-09 to 2026-03-15 UTC",
-		CurrentView:         ReportViewReport,
-		PreviousWeek:        "2026-03-02",
-		PreviousHref:        "../2026-03-02/weekly-metrics.html",
-		NextWeek:            "",
-		NextHref:            "",
-		RollingHref:         "rolling.html",
-		ReportHref:          "weekly-metrics.html",
-		FailurePatternsHref: "failure-patterns-report.html",
-		RunLogHref:          "run-log.html",
-		ArchiveHref:         "../archive/",
-		WindowStartDate:     "2026-03-09",
-		WindowEndDate:       "2026-03-15",
+		CurrentView:         ReportViewFailurePatterns,
+		OverviewHref:        "/",
+		FailurePatternsHref: "/failure-patterns",
+		RunLogHref:          "/run-log",
+		FilterFormAction:    "/failure-patterns",
+		TimeSelector: TimeSelectorOptions{
+			Mode:         TimeSelectorModeWeekly,
+			Label:        "Weekly: Mar 9 - Mar 15",
+			PreviousHref: "/failure-patterns?end_date=2026-03-08&env=dev&start_date=2026-03-02",
+			MenuLinks: []ChromeLink{
+				{Label: "Last 7 Days", Href: "/failure-patterns?end_date=2026-03-15&env=dev&mode=rolling&start_date=2026-03-09"},
+				{Label: "Weekly: Mar 9 - Mar 15", Href: "/failure-patterns?end_date=2026-03-15&env=dev&start_date=2026-03-09", Active: true},
+			},
+			ShowRangeInputs: true,
+			RangeStartDate:  "2026-03-09",
+			RangeEndDate:    "2026-03-15",
+		},
+		Environment: EnvironmentControlOptions{
+			Value: "dev",
+		},
+		JSONAPIHref: "/api/failure-patterns/window?end_date=2026-03-15&env=dev&start_date=2026-03-09",
+		ResetHref:   "/failure-patterns",
+		ShowApply:   true,
 	})
 	for _, snippet := range []string{
-		"class=\"report-chrome\"",
-		"href=\"../2026-03-02/weekly-metrics.html\"",
-		"2026-03-09 to 2026-03-15 UTC",
-		"href=\"rolling.html\"",
-		"class=\"report-view-link active\" href=\"weekly-metrics.html\"",
-		"href=\"failure-patterns-report.html\"",
-		"href=\"run-log.html\"",
-		">Last 7 Days</a>",
-		">Report</a>",
+		"class=\"report-shell\"",
+		">CIHealth</a>",
+		"class=\"report-route-link\" href=\"/\">Overview</a>",
+		"class=\"report-route-link active\" href=\"/failure-patterns\">Failure Patterns</a>",
+		"href=\"/run-log\">Run Log</a>",
+		"Theme: Auto",
+		">Time:</span>",
+		"Weekly: Mar 9 - Mar 15",
+		"href=\"/failure-patterns?end_date=2026-03-08&amp;env=dev&amp;start_date=2026-03-02\"",
+		"class=\"report-context-nav-btn disabled\"",
+		"class=\"time-selector-option active\" href=\"/failure-patterns?end_date=2026-03-15&amp;env=dev&amp;start_date=2026-03-09\"",
+		"name=\"start_date\" value=\"2026-03-09\"",
+		"name=\"end_date\" value=\"2026-03-15\"",
+		"name=\"env\"",
+		"option value=\"dev\" selected=\"selected\">DEV</option>",
 		">Failure Patterns</a>",
-		">Run Log</a>",
-		"href=\"../archive/\"",
-		"class=\"report-nav-btn disabled\"",
+		">View JSON API</a>",
+		">Reset</a>",
+		">Apply</button>",
 		"id=\"theme-toggle\"",
 	} {
 		if !strings.Contains(rendered, snippet) {
 			t.Fatalf("expected rendered report chrome to contain %q", snippet)
 		}
+	}
+	resetIndex := strings.Index(rendered, ">Reset</a>")
+	applyIndex := strings.Index(rendered, ">Apply</button>")
+	jsonIndex := strings.Index(rendered, ">View JSON API</a>")
+	if resetIndex == -1 || applyIndex == -1 || jsonIndex == -1 {
+		t.Fatalf("expected reset/apply/json controls in rendered chrome: %q", rendered)
+	}
+	if resetIndex > jsonIndex || applyIndex > jsonIndex {
+		t.Fatalf("expected reset/apply controls before the JSON API action: %q", rendered)
 	}
 }
 

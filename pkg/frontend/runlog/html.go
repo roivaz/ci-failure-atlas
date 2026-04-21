@@ -17,30 +17,22 @@ type PageOptions struct {
 	Chrome              frontui.ReportChromeOptions
 	Query               frontservice.RunLogDayQuery
 	FailurePatternsHref string
-	APIHref             string
 }
 
 func RenderHTML(
 	data frontservice.RunLogDayData,
 	options PageOptions,
 ) string {
-	totalRuns := 0
-	totalFailedRuns := 0
-	for _, environment := range data.Environments {
-		totalRuns += environment.Summary.TotalRuns
-		totalFailedRuns += environment.Summary.FailedRuns
-	}
-
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n")
 	b.WriteString("<html lang=\"en\">\n")
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Runs</title>\n")
+	b.WriteString("  <title>CIHealth Run Log</title>\n")
 	b.WriteString(frontui.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
-	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
+	b.WriteString("    body { font-family: Arial, sans-serif; margin: 0; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 6px; }\n")
 	b.WriteString("    h2 { margin-top: 22px; margin-bottom: 8px; }\n")
 	b.WriteString("    .meta { color: #4b5563; margin-bottom: 8px; }\n")
@@ -96,18 +88,8 @@ func RenderHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(frontui.ReportChromeHTML(options.Chrome))
-	if envList := runLogDayEnvironmentList(data.Meta.Environments); envList != "none" {
-		b.WriteString(fmt.Sprintf("  <p class=\"meta\">Environments: <strong>%s</strong></p>\n",
-			html.EscapeString(envList),
-		))
-	}
-	b.WriteString("  <p class=\"meta\">Semantic matches and bad-PR signals use the latest contributing stored semantic snapshot for the matched signature so the score stays stable even on a single-day slice. <span class=\"failure-patterns-header-help\" title=\"The page shows one UTC day of runs, but semantic attachments and bad-PR scoring come from the latest contributing stored semantic snapshot for each matched signature rather than being recomputed from the day in isolation.\">?</span></p>\n")
+	b.WriteString("<main class=\"page-content\">\n")
 	b.WriteString(runLogDayActionsHTML(options))
-	b.WriteString("  <div class=\"cards\">\n")
-	b.WriteString(runLogDayCardHTML("Environments in scope", fmt.Sprintf("%d", len(data.Environments))))
-	b.WriteString(runLogDayCardHTML("Runs", fmt.Sprintf("%d", totalRuns)))
-	b.WriteString(runLogDayCardHTML("Failed runs", fmt.Sprintf("%d", totalFailedRuns)))
-	b.WriteString("  </div>\n")
 
 	for _, environment := range data.Environments {
 		b.WriteString(fmt.Sprintf("  <section id=\"runs-%s\" class=\"section\">\n", html.EscapeString(strings.TrimSpace(environment.Environment))))
@@ -128,6 +110,7 @@ func RenderHTML(
 		b.WriteString("  </section>\n")
 	}
 
+	b.WriteString("</main>\n")
 	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")
@@ -139,13 +122,7 @@ func runLogDayActionsHTML(options PageOptions) string {
 	b.WriteString("  <div class=\"page-actions\">\n")
 	if href := strings.TrimSpace(options.FailurePatternsHref); href != "" {
 		b.WriteString(fmt.Sprintf(
-			"    <a class=\"action-btn action-primary\" href=\"%s\">Open failure patterns for this day</a>\n",
-			html.EscapeString(href),
-		))
-	}
-	if href := strings.TrimSpace(options.APIHref); href != "" {
-		b.WriteString(fmt.Sprintf(
-			"    <a class=\"action-btn action-secondary\" href=\"%s\">View JSON API</a>\n",
+			"    <a class=\"action-btn action-primary\" href=\"%s\">&#8599; Open Failure patterns for this day</a>\n",
 			html.EscapeString(href),
 		))
 	}

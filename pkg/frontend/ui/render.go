@@ -235,28 +235,54 @@ const (
 	ReportViewRunLog          ReportView = "run-log"
 )
 
-type ReportChromeOptions struct {
-	WindowLabel         string
-	CurrentWeek         string
-	CurrentView         ReportView
-	PreviousWeek        string
-	PreviousHref        string
-	NextWeek            string
-	NextHref            string
-	RollingHref         string
-	ReportHref          string
-	SprintHref          string
-	FailurePatternsHref string
-	RunLogHref          string
-	ArchiveHref         string
+type ChromeLink struct {
+	Label  string
+	Href   string
+	Active bool
+}
 
-	WindowStartDate    string
-	WindowEndDate      string
-	WindowEditable     bool
-	WindowFormAction   string
-	WindowResetHref    string
-	WindowEnvironments []string
-	WindowEnvEditable  bool
+type TimeSelectorMode string
+
+const (
+	TimeSelectorModeRolling TimeSelectorMode = "rolling"
+	TimeSelectorModeWeekly  TimeSelectorMode = "weekly"
+	TimeSelectorModeSprint  TimeSelectorMode = "sprint"
+	TimeSelectorModeCustom  TimeSelectorMode = "custom"
+	TimeSelectorModeDay     TimeSelectorMode = "single-day"
+)
+
+type TimeSelectorOptions struct {
+	Mode            TimeSelectorMode
+	Label           string
+	PreviousHref    string
+	NextHref        string
+	MenuLinks       []ChromeLink
+	ShowRangeInputs bool
+	RangeStartDate  string
+	RangeEndDate    string
+	ShowDateInput   bool
+	DateValue       string
+	AutoSubmit      bool
+}
+
+type EnvironmentControlOptions struct {
+	Value      string
+	Disabled   bool
+	AutoSubmit bool
+}
+
+type ReportChromeOptions struct {
+	CurrentView                ReportView
+	OverviewHref               string
+	FailurePatternsHref        string
+	ContextFailurePatternsHref string
+	RunLogHref                 string
+	FilterFormAction           string
+	TimeSelector               TimeSelectorOptions
+	Environment                EnvironmentControlOptions
+	JSONAPIHref                string
+	ResetHref                  string
+	ShowApply                  bool
 }
 
 const (
@@ -338,7 +364,7 @@ func StylesCSS() string {
 
 func ThemeCSS() string {
 	return strings.Join([]string{
-		"    .theme-toggle-wrap { position: fixed; top: 12px; right: 12px; z-index: 999; }",
+		"    .theme-toggle-wrap { display: flex; justify-content: flex-end; padding: 16px 20px 0; }",
 		"    .theme-toggle { border: 1px solid #d1d5db; border-radius: 999px; background: #ffffff; color: #1f2937; font-size: 12px; font-weight: 600; padding: 4px 10px; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }",
 		"    .theme-toggle:hover { background: #f3f4f6; }",
 		"    :root[data-theme=\"dark\"] body { background: #0b1220; color: #e2e8f0; }",
@@ -386,40 +412,67 @@ func ThemeToggleButtonHTML() string {
 
 func ReportChromeCSS() string {
 	return strings.Join([]string{
-		"    .report-chrome { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; }",
-		"    .report-chrome-nav { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }",
-		"    .report-nav-btn, .report-view-link { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #d1d5db; border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 600; color: #1f2937; background: #ffffff; text-decoration: none; }",
-		"    .report-nav-btn:hover, .report-view-link:hover { background: #f3f4f6; }",
-		"    .report-nav-btn.disabled { color: #9ca3af; background: #f3f4f6; border-color: #e5e7eb; cursor: not-allowed; }",
-		"    .report-view-link.active { background: #111827; border-color: #111827; color: #ffffff; }",
-		"    .report-context-label { font-size: 12px; font-weight: 600; color: #4b5563; margin-right: 2px; }",
-		"    .report-mode-selector { display: inline-flex; align-items: center; gap: 4px; flex-basis: 100%; padding-left: 2px; }",
-		"    .report-mode-link { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #d1d5db; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 600; color: #6b7280; background: #ffffff; text-decoration: none; }",
-		"    .report-mode-link:hover { background: #f3f4f6; color: #1f2937; }",
-		"    .report-mode-link.active { background: #374151; border-color: #374151; color: #ffffff; }",
+		"    .page-content { padding: 20px; }",
+		"    .report-shell { margin: 0 0 14px; border-bottom: 1px solid #e5e7eb; background: #ffffff; }",
+		"    .report-chrome-tier { display: flex; align-items: center; gap: 16px; padding: 12px 20px; width: 100%; box-sizing: border-box; }",
+		"    .report-chrome-tier + .report-chrome-tier { border-top: 1px solid #e5e7eb; }",
+		"    .report-chrome-tier1-left { display: flex; align-items: center; gap: 18px; min-width: 0; flex-wrap: wrap; }",
+		"    .report-brand { font-size: 19px; font-weight: 800; color: #111827; letter-spacing: -0.02em; text-decoration: none; }",
+		"    .report-route-nav { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }",
+		"    .report-route-link { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #d1d5db; border-radius: 999px; padding: 6px 12px; font-size: 13px; font-weight: 700; color: #1f2937; background: #ffffff; text-decoration: none; }",
+		"    .report-route-link:hover { background: #f3f4f6; }",
+		"    .report-route-link.active { background: #111827; border-color: #111827; color: #ffffff; }",
 		"    .report-theme-slot { margin-left: auto; }",
 		"    .report-theme-slot .theme-toggle { box-shadow: none; }",
-		"    .report-chrome-window { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }",
-		"    .report-chrome-window input[type=\"date\"] { border: 1px solid #d1d5db; border-radius: 6px; padding: 4px 8px; font-size: 12px; background: #ffffff; color: #111827; }",
-		"    .report-chrome-window input[type=\"text\"] { border: 1px solid #d1d5db; border-radius: 6px; padding: 4px 8px; font-size: 12px; background: #ffffff; color: #111827; width: 80px; }",
-		"    .report-chrome-window .chrome-apply { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #111827; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 600; background: #111827; color: #ffffff; cursor: pointer; }",
-		"    .report-chrome-window .chrome-apply:hover { background: #1f2937; }",
-		"    .report-chrome-window .chrome-reset { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #d1d5db; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 600; background: #ffffff; color: #1f2937; text-decoration: none; }",
-		"    .report-chrome-window .chrome-reset:hover { background: #f3f4f6; }",
-		"    :root[data-theme=\"dark\"] .report-chrome { background: #111827; border-color: #334155; }",
-		"    :root[data-theme=\"dark\"] .report-context-label { color: #94a3b8; }",
-		"    :root[data-theme=\"dark\"] .report-nav-btn, :root[data-theme=\"dark\"] .report-view-link { background: #1f2937; border-color: #334155; color: #e2e8f0; }",
-		"    :root[data-theme=\"dark\"] .report-nav-btn:hover, :root[data-theme=\"dark\"] .report-view-link:hover { background: #0f172a; }",
-		"    :root[data-theme=\"dark\"] .report-nav-btn.disabled { background: #0f172a; border-color: #334155; color: #64748b; }",
-		"    :root[data-theme=\"dark\"] .report-view-link.active { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }",
-		"    :root[data-theme=\"dark\"] .report-mode-link { background: #1f2937; border-color: #334155; color: #94a3b8; }",
-		"    :root[data-theme=\"dark\"] .report-mode-link:hover { background: #0f172a; color: #e2e8f0; }",
-		"    :root[data-theme=\"dark\"] .report-mode-link.active { background: #475569; border-color: #475569; color: #e2e8f0; }",
-		"    :root[data-theme=\"dark\"] .report-chrome-window input[type=\"date\"], :root[data-theme=\"dark\"] .report-chrome-window input[type=\"text\"] { background: #0f172a; border-color: #334155; color: #e2e8f0; }",
-		"    :root[data-theme=\"dark\"] .report-chrome-window .chrome-apply { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }",
-		"    :root[data-theme=\"dark\"] .report-chrome-window .chrome-apply:hover { background: #1d4ed8; }",
-		"    :root[data-theme=\"dark\"] .report-chrome-window .chrome-reset { background: #1f2937; border-color: #334155; color: #e2e8f0; }",
-		"    :root[data-theme=\"dark\"] .report-chrome-window .chrome-reset:hover { background: #0f172a; }",
+		"    .report-context-tier { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 16px; width: 100%; box-sizing: border-box; }",
+		"    .report-context-left { justify-self: start; min-width: 0; }",
+		"    .report-context-middle { justify-self: center; }",
+		"    .report-context-right { justify-self: end; display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 36px; }",
+		"    .report-context-right.is-empty { min-width: 0; }",
+		"    .report-context-label { font-size: 12px; font-weight: 700; color: #4b5563; }",
+		"    .report-time-controls { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }",
+		"    .report-context-nav-btn, .report-context-action, .report-context-apply, .time-selector-summary, .report-env-static { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #d1d5db; border-radius: 999px; padding: 7px 12px; font-size: 13px; font-weight: 600; color: #1f2937; background: #ffffff; text-decoration: none; }",
+		"    .report-context-nav-btn:hover, .report-context-action:hover, .time-selector-summary:hover { background: #f3f4f6; }",
+		"    .report-context-nav-btn.disabled { color: #9ca3af; background: #f9fafb; border-color: #e5e7eb; cursor: not-allowed; }",
+		"    .report-context-nav-btn { min-width: 38px; padding-left: 0; padding-right: 0; }",
+		"    .time-selector { position: relative; }",
+		"    .time-selector summary { list-style: none; }",
+		"    .time-selector summary::-webkit-details-marker { display: none; }",
+		"    .time-selector-summary { min-width: 250px; justify-content: space-between; gap: 12px; cursor: pointer; }",
+		"    .time-selector[open] .time-selector-summary { background: #f3f4f6; }",
+		"    .time-selector-summary-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
+		"    .time-selector-summary-caret { color: #6b7280; font-size: 11px; }",
+		"    .time-selector-panel { position: absolute; top: calc(100% + 8px); left: 0; z-index: 30; min-width: 280px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff; box-shadow: 0 16px 36px rgba(15, 23, 42, 0.16); }",
+		"    .time-selector-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #d1d5db; border-radius: 10px; padding: 8px 10px; font-size: 13px; font-weight: 600; color: #1f2937; background: #ffffff; text-decoration: none; }",
+		"    .time-selector-option:hover { background: #f3f4f6; }",
+		"    .time-selector-option.active { border-color: #111827; background: #111827; color: #ffffff; }",
+		"    .time-selector-fields { display: grid; gap: 8px; padding-top: 4px; border-top: 1px solid #e5e7eb; }",
+		"    .time-selector-fields-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.04em; }",
+		"    .time-selector-fields-grid { display: grid; gap: 8px; }",
+		"    .time-selector-fields-grid label, .report-env-control { display: grid; gap: 4px; font-size: 12px; font-weight: 700; color: #4b5563; }",
+		"    .time-selector-fields-grid input[type=\"date\"], .report-env-control select { border: 1px solid #d1d5db; border-radius: 10px; padding: 8px 10px; font-size: 13px; background: #ffffff; color: #111827; }",
+		"    .report-env-control select { min-width: 110px; }",
+		"    .report-context-apply { border-color: #111827; background: #111827; color: #ffffff; cursor: pointer; }",
+		"    .report-context-apply:hover { background: #1f2937; }",
+		"    .report-context-action { white-space: nowrap; }",
+		"    @media (max-width: 920px) { .report-context-tier { grid-template-columns: 1fr; } .report-context-middle, .report-context-right { justify-self: start; } .time-selector-panel { position: static; box-shadow: none; } }",
+		"    :root[data-theme=\"dark\"] .report-shell { background: #111827; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .report-brand { color: #f8fafc; }",
+		"    :root[data-theme=\"dark\"] .report-route-link, :root[data-theme=\"dark\"] .report-context-nav-btn, :root[data-theme=\"dark\"] .report-context-action, :root[data-theme=\"dark\"] .report-context-apply, :root[data-theme=\"dark\"] .time-selector-summary, :root[data-theme=\"dark\"] .report-env-static { background: #1f2937; border-color: #334155; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .report-route-link:hover, :root[data-theme=\"dark\"] .report-context-nav-btn:hover, :root[data-theme=\"dark\"] .report-context-action:hover, :root[data-theme=\"dark\"] .time-selector-summary:hover { background: #0f172a; }",
+		"    :root[data-theme=\"dark\"] .report-route-link.active { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .report-context-nav-btn.disabled { background: #0f172a; border-color: #334155; color: #64748b; }",
+		"    :root[data-theme=\"dark\"] .report-context-label, :root[data-theme=\"dark\"] .report-env-control, :root[data-theme=\"dark\"] .time-selector-fields-grid label, :root[data-theme=\"dark\"] .time-selector-fields-title { color: #94a3b8; }",
+		"    :root[data-theme=\"dark\"] .time-selector[open] .time-selector-summary { background: #0f172a; }",
+		"    :root[data-theme=\"dark\"] .time-selector-summary-caret { color: #94a3b8; }",
+		"    :root[data-theme=\"dark\"] .time-selector-panel { background: #111827; border-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .time-selector-option { background: #0f172a; border-color: #334155; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .time-selector-option:hover { background: #1e293b; }",
+		"    :root[data-theme=\"dark\"] .time-selector-option.active { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .time-selector-fields { border-top-color: #334155; }",
+		"    :root[data-theme=\"dark\"] .time-selector-fields-grid input[type=\"date\"], :root[data-theme=\"dark\"] .report-env-control select { background: #0f172a; border-color: #334155; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .report-context-apply { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }",
+		"    :root[data-theme=\"dark\"] .report-context-apply:hover { background: #1d4ed8; }",
 	}, "\n") + "\n"
 }
 
@@ -429,97 +482,136 @@ func ReportChromeHTML(options ReportChromeOptions) string {
 		return ThemeToggleHTML()
 	}
 	var b strings.Builder
-	b.WriteString("  <div class=\"report-chrome\">\n")
-	b.WriteString("    <div class=\"report-chrome-nav\">\n")
-	b.WriteString(renderReportChromeNavButton(normalized.PreviousHref, "&larr; Older", normalized.PreviousWeek, true))
-	b.WriteString(renderReportChromeNavButton(normalized.NextHref, "Newer &rarr;", normalized.NextWeek, false))
-	b.WriteString("    </div>\n")
-	b.WriteString(renderChromeWindowControls(normalized))
-	isReportPage := normalized.CurrentView == ReportViewReport || normalized.CurrentView == ReportViewSprint
-	b.WriteString("    <div class=\"report-chrome-nav\">\n")
-	if strings.TrimSpace(normalized.RollingHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.RollingHref, "Last 7 Days", normalized.CurrentView == ReportViewRolling))
-	}
-	if strings.TrimSpace(normalized.ReportHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.ReportHref, "Report", isReportPage))
-	}
-	if strings.TrimSpace(normalized.FailurePatternsHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.FailurePatternsHref, "Failure Patterns", normalized.CurrentView == ReportViewFailurePatterns))
-	}
-	if strings.TrimSpace(normalized.RunLogHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.RunLogHref, "Run Log", normalized.CurrentView == ReportViewRunLog))
-	}
-	if strings.TrimSpace(normalized.ArchiveHref) != "" {
-		b.WriteString(renderReportChromeViewLink(normalized.ArchiveHref, "Archive", false))
-	}
-	b.WriteString("    </div>\n")
-	b.WriteString("    <div class=\"report-theme-slot\">")
+	b.WriteString("  <div class=\"report-shell\">\n")
+	b.WriteString("    <div class=\"report-chrome-tier\">\n")
+	b.WriteString("      <div class=\"report-chrome-tier1-left\">\n")
+	b.WriteString(fmt.Sprintf("        <a class=\"report-brand\" href=\"%s\">CIHealth</a>\n", html.EscapeString(chromeOverviewHref(normalized))))
+	b.WriteString("        <nav class=\"report-route-nav\" aria-label=\"Primary navigation\">\n")
+	b.WriteString(renderReportChromeRouteLink(chromeOverviewHref(normalized), "Overview", isOverviewView(normalized.CurrentView)))
+	b.WriteString(renderReportChromeRouteLink(normalized.FailurePatternsHref, "Failure Patterns", normalized.CurrentView == ReportViewFailurePatterns))
+	b.WriteString(renderReportChromeRouteLink(normalized.RunLogHref, "Run Log", normalized.CurrentView == ReportViewRunLog))
+	b.WriteString("        </nav>\n")
+	b.WriteString("      </div>\n")
+	b.WriteString("      <div class=\"report-theme-slot\">")
 	b.WriteString(ThemeToggleButtonHTML())
 	b.WriteString("</div>\n")
-	if isReportPage {
-		b.WriteString(renderReportModeSelector(normalized))
+	b.WriteString("    </div>\n")
+	if strings.TrimSpace(normalized.FilterFormAction) != "" {
+		b.WriteString(fmt.Sprintf(
+			"    <form class=\"report-chrome-tier report-context-tier\" method=\"get\" action=\"%s\">\n",
+			html.EscapeString(normalized.FilterFormAction),
+		))
+	} else {
+		b.WriteString("    <div class=\"report-chrome-tier report-context-tier\">\n")
+	}
+	b.WriteString(renderChromeTimeControls(normalized))
+	b.WriteString(renderChromeEnvironmentControl(normalized))
+	b.WriteString(renderChromeActionSlot(normalized))
+	if strings.TrimSpace(normalized.FilterFormAction) != "" {
+		b.WriteString("    </form>\n")
+	} else {
+		b.WriteString("    </div>\n")
 	}
 	b.WriteString("  </div>\n")
 	return b.String()
 }
 
-func renderChromeWindowControls(options ReportChromeOptions) string {
-	startDate := strings.TrimSpace(options.WindowStartDate)
-	endDate := strings.TrimSpace(options.WindowEndDate)
-	if startDate == "" && endDate == "" {
-		if options.WindowLabel != "" {
-			return fmt.Sprintf("    <div class=\"report-chrome-nav\"><span class=\"report-context-label\">%s</span></div>\n",
-				html.EscapeString(options.WindowLabel))
-		}
-		return ""
-	}
-	if !options.WindowEditable {
-		label := options.WindowLabel
-		if label == "" {
-			label = formatChromeWindowLabel(startDate, endDate)
-		}
-		return fmt.Sprintf("    <div class=\"report-chrome-nav\"><span class=\"report-context-label\">%s</span></div>\n",
-			html.EscapeString(label))
-	}
-	formAction := strings.TrimSpace(options.WindowFormAction)
-	if formAction == "" {
-		formAction = "/failure-patterns"
+func renderChromeTimeControls(options ReportChromeOptions) string {
+	timeSelector := options.TimeSelector
+	autoSubmitAttr := ""
+	if timeSelector.AutoSubmit {
+		autoSubmitAttr = ` onchange="if (this.form) { this.form.submit(); }"`
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("    <form class=\"report-chrome-window\" method=\"get\" action=\"%s\">\n", html.EscapeString(formAction)))
-	b.WriteString(fmt.Sprintf("      <input type=\"date\" name=\"start_date\" value=\"%s\" required title=\"Start date (UTC)\" />\n", html.EscapeString(startDate)))
-	b.WriteString(fmt.Sprintf("      <span class=\"report-context-label\">to</span>\n"))
-	b.WriteString(fmt.Sprintf("      <input type=\"date\" name=\"end_date\" value=\"%s\" required title=\"End date (UTC)\" />\n", html.EscapeString(endDate)))
-	if options.WindowEnvEditable {
-		envValue := ""
-		if len(options.WindowEnvironments) > 0 {
-			envValue = strings.Join(options.WindowEnvironments, ",")
-		}
-		b.WriteString(fmt.Sprintf("      <input type=\"text\" name=\"env\" value=\"%s\" placeholder=\"env\" title=\"Environment filter (comma-separated)\" />\n", html.EscapeString(envValue)))
+	b.WriteString("      <div class=\"report-context-left\">\n")
+	b.WriteString("        <div class=\"report-time-controls\">\n")
+	b.WriteString("          <span class=\"report-context-label\">Time:</span>\n")
+	b.WriteString(renderReportChromeNavButton(timeSelector.PreviousHref, "&lt;"))
+	b.WriteString("          <details class=\"time-selector\">\n")
+	b.WriteString("            <summary class=\"time-selector-summary\"><span class=\"time-selector-summary-text\">")
+	b.WriteString(html.EscapeString(defaultTimeSelectorLabel(timeSelector.Label)))
+	b.WriteString("</span><span class=\"time-selector-summary-caret\">&#9662;</span></summary>\n")
+	b.WriteString("            <div class=\"time-selector-panel\">\n")
+	for _, link := range timeSelector.MenuLinks {
+		b.WriteString(renderTimeSelectorMenuLink(link))
 	}
-	b.WriteString("      <button class=\"chrome-apply\" type=\"submit\">Apply</button>\n")
-	if resetHref := strings.TrimSpace(options.WindowResetHref); resetHref != "" {
-		b.WriteString(fmt.Sprintf("      <a class=\"chrome-reset\" href=\"%s\">Reset</a>\n", html.EscapeString(resetHref)))
+	if timeSelector.ShowRangeInputs {
+		b.WriteString("              <div class=\"time-selector-fields\">\n")
+		b.WriteString("                <span class=\"time-selector-fields-title\">Custom range</span>\n")
+		b.WriteString("                <div class=\"time-selector-fields-grid\">\n")
+		b.WriteString(fmt.Sprintf(
+			"                  <label>Start date<input type=\"date\" name=\"start_date\" value=\"%s\" required title=\"Start date (UTC)\" /></label>\n",
+			html.EscapeString(strings.TrimSpace(timeSelector.RangeStartDate)),
+		))
+		b.WriteString(fmt.Sprintf(
+			"                  <label>End date<input type=\"date\" name=\"end_date\" value=\"%s\" required title=\"End date (UTC)\" /></label>\n",
+			html.EscapeString(strings.TrimSpace(timeSelector.RangeEndDate)),
+		))
+		b.WriteString("                </div>\n")
+		b.WriteString("              </div>\n")
 	}
-	b.WriteString("    </form>\n")
+	if timeSelector.ShowDateInput {
+		b.WriteString("              <div class=\"time-selector-fields\">\n")
+		b.WriteString("                <span class=\"time-selector-fields-title\">Pick a day</span>\n")
+		b.WriteString("                <div class=\"time-selector-fields-grid\">\n")
+		b.WriteString(fmt.Sprintf(
+			"                  <label>Date<input type=\"date\" name=\"date\" value=\"%s\" required title=\"UTC day\"%s /></label>\n",
+			html.EscapeString(strings.TrimSpace(timeSelector.DateValue)),
+			autoSubmitAttr,
+		))
+		b.WriteString("                </div>\n")
+		b.WriteString("              </div>\n")
+	}
+	b.WriteString("            </div>\n")
+	b.WriteString("          </details>\n")
+	b.WriteString(renderReportChromeNavButton(timeSelector.NextHref, "&gt;"))
+	if href := strings.TrimSpace(options.ResetHref); href != "" {
+		b.WriteString(fmt.Sprintf(
+			"          <a class=\"report-context-action\" href=\"%s\">Reset</a>\n",
+			html.EscapeString(href),
+		))
+	}
+	if options.ShowApply {
+		b.WriteString("          <button class=\"report-context-apply\" type=\"submit\">Apply</button>\n")
+	}
+	b.WriteString("        </div>\n")
+	b.WriteString("      </div>\n")
 	return b.String()
 }
 
-func formatChromeWindowLabel(startDate string, endDate string) string {
-	s := strings.TrimSpace(startDate)
-	e := strings.TrimSpace(endDate)
-	switch {
-	case s == "" && e == "":
-		return ""
-	case s == e:
-		return s + " UTC"
-	case s == "":
-		return e + " UTC"
-	case e == "":
-		return s + " UTC"
-	default:
-		return s + " to " + e + " UTC"
+func renderChromeEnvironmentControl(options ReportChromeOptions) string {
+	environment := options.Environment
+	selectedValue := normalizeChromeEnvironmentValue(environment.Value)
+	var b strings.Builder
+	b.WriteString("      <div class=\"report-context-middle\">\n")
+	if environment.Disabled {
+		b.WriteString("        <span class=\"report-env-static\"><span class=\"report-context-label\">Env:</span>&nbsp;ALL</span>\n")
+		b.WriteString("      </div>\n")
+		return b.String()
 	}
+	autoSubmitAttr := ""
+	if environment.AutoSubmit {
+		autoSubmitAttr = ` onchange="if (this.form) { this.form.submit(); }"`
+	}
+	b.WriteString("        <label class=\"report-env-control\"><span class=\"report-context-label\">Env:</span><select name=\"env\"")
+	b.WriteString(autoSubmitAttr)
+	b.WriteString(">\n")
+	b.WriteString(fmt.Sprintf("          <option value=\"\"%s>ALL</option>\n", selectedAttr(selectedValue == "")))
+	for _, environmentName := range sourceoptions.SupportedEnvironments() {
+		trimmedName := strings.TrimSpace(environmentName)
+		if trimmedName == "" {
+			continue
+		}
+		b.WriteString(fmt.Sprintf(
+			"          <option value=\"%s\"%s>%s</option>\n",
+			html.EscapeString(trimmedName),
+			selectedAttr(trimmedName == selectedValue),
+			html.EscapeString(strings.ToUpper(trimmedName)),
+		))
+	}
+	b.WriteString("        </select></label>\n")
+	b.WriteString("      </div>\n")
+	return b.String()
 }
 
 func ThemeInitScriptTag() string {
@@ -608,22 +700,15 @@ func ThemeToggleScriptTag() string {
 }
 
 func normalizedReportChromeOptions(options ReportChromeOptions) ReportChromeOptions {
-	options.WindowLabel = strings.TrimSpace(options.WindowLabel)
-	options.CurrentWeek = strings.TrimSpace(options.CurrentWeek)
-	options.PreviousWeek = strings.TrimSpace(options.PreviousWeek)
-	options.PreviousHref = strings.TrimSpace(options.PreviousHref)
-	options.NextWeek = strings.TrimSpace(options.NextWeek)
-	options.NextHref = strings.TrimSpace(options.NextHref)
-	options.RollingHref = strings.TrimSpace(options.RollingHref)
-	options.ReportHref = strings.TrimSpace(options.ReportHref)
-	options.SprintHref = strings.TrimSpace(options.SprintHref)
+	options.OverviewHref = strings.TrimSpace(options.OverviewHref)
 	options.FailurePatternsHref = strings.TrimSpace(options.FailurePatternsHref)
+	options.ContextFailurePatternsHref = strings.TrimSpace(options.ContextFailurePatternsHref)
 	options.RunLogHref = strings.TrimSpace(options.RunLogHref)
-	options.ArchiveHref = strings.TrimSpace(options.ArchiveHref)
-	options.WindowStartDate = strings.TrimSpace(options.WindowStartDate)
-	options.WindowEndDate = strings.TrimSpace(options.WindowEndDate)
-	options.WindowFormAction = strings.TrimSpace(options.WindowFormAction)
-	options.WindowResetHref = strings.TrimSpace(options.WindowResetHref)
+	options.FilterFormAction = strings.TrimSpace(options.FilterFormAction)
+	options.JSONAPIHref = strings.TrimSpace(options.JSONAPIHref)
+	options.ResetHref = strings.TrimSpace(options.ResetHref)
+	options.Environment.Value = normalizeChromeEnvironmentValue(options.Environment.Value)
+	options.TimeSelector = normalizedTimeSelectorOptions(options.TimeSelector)
 	switch options.CurrentView {
 	case ReportViewRolling, ReportViewReport, ReportViewSprint, ReportViewFailurePatterns, ReportViewRunLog:
 	default:
@@ -633,92 +718,144 @@ func normalizedReportChromeOptions(options ReportChromeOptions) ReportChromeOpti
 }
 
 func hasReportChromeNavigation(options ReportChromeOptions) bool {
-	return options.WindowLabel != "" ||
-		options.CurrentWeek != "" ||
-		options.PreviousHref != "" ||
-		options.NextHref != "" ||
-		options.RollingHref != "" ||
-		options.ReportHref != "" ||
-		options.SprintHref != "" ||
+	return options.OverviewHref != "" ||
 		options.FailurePatternsHref != "" ||
 		options.RunLogHref != "" ||
-		options.ArchiveHref != ""
+		options.TimeSelector.Label != ""
 }
 
-func renderReportChromeNavButton(href string, label string, week string, older bool) string {
-	trimmedHref := strings.TrimSpace(href)
-	trimmedWeek := strings.TrimSpace(week)
-	if trimmedHref == "" {
-		disabledTitle := "No older window available"
-		if !older {
-			disabledTitle = "No newer window available"
+func normalizedTimeSelectorOptions(options TimeSelectorOptions) TimeSelectorOptions {
+	options.Label = strings.TrimSpace(options.Label)
+	options.PreviousHref = strings.TrimSpace(options.PreviousHref)
+	options.NextHref = strings.TrimSpace(options.NextHref)
+	options.RangeStartDate = strings.TrimSpace(options.RangeStartDate)
+	options.RangeEndDate = strings.TrimSpace(options.RangeEndDate)
+	options.DateValue = strings.TrimSpace(options.DateValue)
+	filteredLinks := make([]ChromeLink, 0, len(options.MenuLinks))
+	for _, link := range options.MenuLinks {
+		trimmedLabel := strings.TrimSpace(link.Label)
+		trimmedHref := strings.TrimSpace(link.Href)
+		if trimmedLabel == "" || trimmedHref == "" {
+			continue
 		}
+		filteredLinks = append(filteredLinks, ChromeLink{
+			Label:  trimmedLabel,
+			Href:   trimmedHref,
+			Active: link.Active,
+		})
+	}
+	options.MenuLinks = filteredLinks
+	switch options.Mode {
+	case TimeSelectorModeRolling, TimeSelectorModeWeekly, TimeSelectorModeSprint, TimeSelectorModeCustom, TimeSelectorModeDay:
+	default:
+		options.Mode = ""
+	}
+	return options
+}
+
+func chromeOverviewHref(options ReportChromeOptions) string {
+	if strings.TrimSpace(options.OverviewHref) != "" {
+		return strings.TrimSpace(options.OverviewHref)
+	}
+	return "/report"
+}
+
+func isOverviewView(view ReportView) bool {
+	return view == ReportViewRolling || view == ReportViewReport || view == ReportViewSprint
+}
+
+func defaultTimeSelectorLabel(label string) string {
+	if strings.TrimSpace(label) == "" {
+		return "Select time window"
+	}
+	return strings.TrimSpace(label)
+}
+
+func normalizeChromeEnvironmentValue(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return ""
+	}
+	for _, environmentName := range sourceoptions.SupportedEnvironments() {
+		if normalized == strings.TrimSpace(environmentName) {
+			return normalized
+		}
+	}
+	return ""
+}
+
+func selectedAttr(selected bool) string {
+	if selected {
+		return ` selected="selected"`
+	}
+	return ""
+}
+
+func renderReportChromeNavButton(href string, label string) string {
+	trimmedHref := strings.TrimSpace(href)
+	if trimmedHref == "" {
 		return fmt.Sprintf(
-			"      <span class=\"report-nav-btn disabled\" aria-disabled=\"true\" title=\"%s\">%s</span>\n",
-			html.EscapeString(disabledTitle),
+			"          <span class=\"report-context-nav-btn disabled\" aria-disabled=\"true\">%s</span>\n",
 			label,
 		)
 	}
-	title := "Go to older window"
-	if !older {
-		title = "Go to newer window"
-	}
-	if trimmedWeek != "" {
-		title = fmt.Sprintf("%s anchored on %s (UTC)", title, trimmedWeek)
-	}
 	return fmt.Sprintf(
-		"      <a class=\"report-nav-btn\" href=\"%s\" title=\"%s\">%s</a>\n",
+		"          <a class=\"report-context-nav-btn\" href=\"%s\">%s</a>\n",
 		html.EscapeString(trimmedHref),
-		html.EscapeString(title),
 		label,
 	)
 }
 
-func renderReportChromeViewLink(href string, label string, active bool) string {
+func renderReportChromeRouteLink(href string, label string, active bool) string {
 	trimmedHref := strings.TrimSpace(href)
 	if trimmedHref == "" {
 		return ""
 	}
-	className := "report-view-link"
+	className := "report-route-link"
 	if active {
 		className += " active"
 	}
 	return fmt.Sprintf(
-		"      <a class=\"%s\" href=\"%s\">%s</a>\n",
+		"          <a class=\"%s\" href=\"%s\">%s</a>\n",
 		className,
 		html.EscapeString(trimmedHref),
 		html.EscapeString(strings.TrimSpace(label)),
 	)
 }
 
-func renderReportModeSelector(options ReportChromeOptions) string {
-	reportHref := strings.TrimSpace(options.ReportHref)
-	sprintHref := strings.TrimSpace(options.SprintHref)
-	if reportHref == "" && sprintHref == "" {
-		return ""
-	}
+func renderTimeSelectorMenuLink(link ChromeLink) string {
 	var b strings.Builder
-	b.WriteString("    <div class=\"report-mode-selector\">\n")
-	if reportHref != "" {
-		b.WriteString(renderReportModeLink(reportHref, "Weekly", options.CurrentView == ReportViewReport))
+	className := "time-selector-option"
+	if link.Active {
+		className += " active"
 	}
-	if sprintHref != "" {
-		b.WriteString(renderReportModeLink(sprintHref, "By Sprint", options.CurrentView == ReportViewSprint))
-	}
-	b.WriteString("    </div>\n")
+	b.WriteString(fmt.Sprintf(
+		"              <a class=\"%s\" href=\"%s\">%s</a>\n",
+		className,
+		html.EscapeString(strings.TrimSpace(link.Href)),
+		html.EscapeString(strings.TrimSpace(link.Label)),
+	))
 	return b.String()
 }
 
-func renderReportModeLink(href string, label string, active bool) string {
-	className := "report-mode-link"
-	if active {
-		className += " active"
+func renderChromeActionSlot(options ReportChromeOptions) string {
+	hasActions := strings.TrimSpace(options.JSONAPIHref) != ""
+	className := "report-context-right"
+	if !hasActions {
+		className += " is-empty"
 	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("      <div class=\"%s\">\n", className))
+	if href := strings.TrimSpace(options.JSONAPIHref); href != "" {
+		b.WriteString(fmt.Sprintf(
+			"        <a class=\"report-context-action\" href=\"%s\">View JSON API</a>\n",
+			html.EscapeString(href),
+		))
+	}
+	b.WriteString("      </div>\n")
 	return fmt.Sprintf(
-		"      <a class=\"%s\" href=\"%s\">%s</a>\n",
-		className,
-		html.EscapeString(strings.TrimSpace(href)),
-		html.EscapeString(strings.TrimSpace(label)),
+		"%s",
+		b.String(),
 	)
 }
 

@@ -26,24 +26,16 @@ func RenderHTML(
 	data frontservice.FailurePatternsData,
 	options PageOptions,
 ) string {
-	totalRows := 0
-	totalMatchedFailures := 0
-	for _, environment := range data.Environments {
-		totalRows += len(environment.Rows)
-		totalMatchedFailures += environment.Summary.MatchedFailureCount
-	}
-
-	startDate, endDate, hasWindow := parseFailurePatternsDates(data.Meta.StartDate, data.Meta.EndDate)
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n")
 	b.WriteString("<html lang=\"en\">\n")
 	b.WriteString("<head>\n")
 	b.WriteString("  <meta charset=\"utf-8\" />\n")
 	b.WriteString("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n")
-	b.WriteString("  <title>CI Failure Patterns</title>\n")
+	b.WriteString("  <title>CIHealth Failure Patterns</title>\n")
 	b.WriteString(frontui.ThemeInitScriptTag())
 	b.WriteString("  <style>\n")
-	b.WriteString("    body { font-family: Arial, sans-serif; margin: 20px; color: #1f2937; }\n")
+	b.WriteString("    body { font-family: Arial, sans-serif; margin: 0; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 6px; }\n")
 	b.WriteString("    h2 { margin-top: 22px; }\n")
 	b.WriteString("    .meta { color: #4b5563; margin-bottom: 8px; }\n")
@@ -61,15 +53,7 @@ func RenderHTML(
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
 	b.WriteString(frontui.ReportChromeHTML(options.Chrome))
-	b.WriteString("  <p class=\"meta\">Runs affected, run impact, and seen-in are recomputed across the selected window. <span class=\"failure-patterns-header-help\" title=\"Flake signal and trend stay anchored to the most recent weekly data for each failure pattern, keeping the signal stable across longer date ranges.\">?</span></p>\n")
-	b.WriteString("  <div class=\"cards\">\n")
-	b.WriteString(failurePatternsCardHTML("Environments", fmt.Sprintf("%d", len(data.Environments))))
-	b.WriteString(failurePatternsCardHTML("Failure patterns", fmt.Sprintf("%d", totalRows)))
-	b.WriteString(failurePatternsCardHTML("Failures matched", fmt.Sprintf("%d", totalMatchedFailures)))
-	if hasWindow {
-		b.WriteString(failurePatternsCardHTML("Window", fmt.Sprintf("%d days", failurePatternsInclusiveDays(startDate, endDate))))
-	}
-	b.WriteString("  </div>\n")
+	b.WriteString("<main class=\"page-content\">\n")
 
 	for _, environment := range data.Environments {
 		failurePatternRows := failurePatternsFailurePatternRows(environment.Rows, environment.Summary.MatchedFailureCount)
@@ -103,6 +87,7 @@ func RenderHTML(
 		b.WriteString("  </section>\n")
 	}
 
+	b.WriteString("</main>\n")
 	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")
@@ -214,7 +199,6 @@ func failurePatternsInclusiveDays(startDate time.Time, endDate time.Time) int {
 	}
 	return int(endDay.Sub(startDay)/(24*time.Hour)) + 1
 }
-
 
 func normalizedQueryEnvironments(values []string) []string {
 	if len(values) == 0 {
