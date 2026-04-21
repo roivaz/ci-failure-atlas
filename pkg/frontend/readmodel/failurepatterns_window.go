@@ -181,11 +181,8 @@ func (s *Service) BuildFailurePatterns(ctx context.Context, query FailurePattern
 	}
 
 	signalHorizonRefs := buildSignalHorizonReferences(allWeeks, weeklyDataByWeek)
-	signalHorizonTrendAnchor := failurePatternsTrendAnchor(anchorWeek)
-	signalHorizonDays := len(allWeeks) * 7
-	if signalHorizonDays < 21 {
-		signalHorizonDays = 21
-	}
+	trendDays := presentationTrendDays(scope.StartTime, scope.EndTime)
+	trendEndAnchor := scope.EndTime.Add(-time.Nanosecond)
 
 	targetEnvironments := sortedStringSet(targetEnvironmentSet)
 	if len(targetEnvironments) == 0 {
@@ -243,7 +240,7 @@ func (s *Service) BuildFailurePatterns(ctx context.Context, query FailurePattern
 
 	for environment, rowMap := range rowsByEnvironment {
 		for mergeKey, row := range rowMap {
-			enriched := enrichRowFromSignalHorizon(row, signalHorizonRefs, signalHorizonTrendAnchor, signalHorizonDays)
+			enriched := enrichRowFromSignalHorizon(row, signalHorizonRefs, trendEndAnchor, trendDays)
 			rowMap[mergeKey] = enriched
 			_ = environment
 		}
@@ -581,6 +578,25 @@ func buildWindowedTrend(references []FailurePatternReportReference, trendAnchor 
 		return append([]int(nil), counts...), trendRange, true
 	}
 	return nil, "", false
+}
+
+const (
+	trendMinDays = 7
+	trendMaxDays = 14
+)
+
+func presentationTrendDays(start time.Time, end time.Time) int {
+	if start.IsZero() || end.IsZero() || !start.Before(end) {
+		return trendMinDays
+	}
+	days := int(end.Sub(start).Hours()/24) + 1
+	if days < trendMinDays {
+		return trendMinDays
+	}
+	if days > trendMaxDays {
+		return trendMaxDays
+	}
+	return days
 }
 
 func failurePatternsTrendAnchor(week string) time.Time {
@@ -1254,9 +1270,11 @@ func enrichRowFromSignalHorizon(
 	enriched.ScoringReferences = append([]FailurePatternReportReference(nil), horizonRefsForRow...)
 	enriched.WeeklyPostGoodCount = windowedPostGoodCount(enriched.ScoringReferences)
 
-	if counts, trendRange, ok := buildWindowedTrendN(horizonRefsForRow, trendAnchor, trendDays); ok {
-		enriched.TrendCounts = counts
-		enriched.TrendRange = trendRange
+	if trendDays > 0 && !trendAnchor.IsZero() {
+		if _, counts, trendRange, ok := DailyDensitySparkline(toWindowedHTMLRunReferences(horizonRefsForRow), trendDays, trendAnchor); ok {
+			enriched.TrendCounts = append([]int(nil), counts...)
+			enriched.TrendRange = trendRange
+		}
 	}
 
 	for i, child := range enriched.LinkedChildren {
@@ -1269,12 +1287,3 @@ func enrichRowFromSignalHorizon(
 	return enriched
 }
 
-func buildWindowedTrendN(references []FailurePatternReportReference, trendAnchor time.Time, days int) ([]int, string, bool) {
-	if trendAnchor.IsZero() || days <= 0 {
-		return nil, "", false
-	}
-	if _, counts, trendRange, ok := DailyDensitySparkline(toWindowedHTMLRunReferences(references), days, trendAnchor); ok {
-		return append([]int(nil), counts...), trendRange, true
-	}
-	return nil, "", false
-}
