@@ -451,18 +451,39 @@ func (h *handler) resolveFailurePatternsPageQuery(
 	ctx context.Context,
 	query frontservice.FailurePatternsQuery,
 ) (frontservice.FailurePatternsQuery, error) {
+	hasExplicitWindow := hasFailurePatternsQuery(query) || strings.TrimSpace(query.Week) != ""
+	requestedMode := normalizeFailurePatternsMode(query.Mode)
+	defaultMode := frontservice.WindowDefaultRolling
+	switch requestedMode {
+	case string(reportPageModeSprint):
+		defaultMode = frontservice.WindowDefaultLatestSprint
+	case string(reportPageModeRolling), "":
+		defaultMode = frontservice.WindowDefaultRolling
+	}
 	window, err := h.service.ResolveWindow(ctx, frontservice.WindowRequest{
 		StartDate:   query.StartDate,
 		EndDate:     query.EndDate,
 		Week:        query.Week,
-		DefaultMode: frontservice.WindowDefaultLatestWeek,
+		DefaultMode: defaultMode,
+		RollingDays: 7,
 	})
 	if err != nil {
+		if !hasExplicitWindow && defaultMode == frontservice.WindowDefaultRolling {
+			if weekWindow, weekErr := h.service.ResolveWeekWindow(ctx, "", time.Time{}); weekErr == nil {
+				query.Week = ""
+				query.StartDate, query.EndDate = semanticWeekDateRange(weekWindow.CurrentWeek)
+				query.Mode = string(reportPageModeRolling)
+				return query, nil
+			}
+		}
 		return frontservice.FailurePatternsQuery{}, err
 	}
 	query.Week = ""
 	query.StartDate = window.StartDate
 	query.EndDate = window.EndDate
+	if !hasExplicitWindow && requestedMode == "" && defaultMode == frontservice.WindowDefaultRolling {
+		query.Mode = string(reportPageModeRolling)
+	}
 	return query, nil
 }
 

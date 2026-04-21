@@ -337,7 +337,65 @@ func TestHandleFailurePatternsPageWindowRendersHTML(t *testing.T) {
 	}
 }
 
-func TestHandleFailurePatternsPageDefaultsToFullWeekWindow(t *testing.T) {
+func TestHandleFailurePatternsPageDefaultsToRollingWindow(t *testing.T) {
+	ctx := context.Background()
+	fixture := newHandlerFixture(t)
+	store := fixture.openWeekStore(t, "2026-03-16")
+	if err := store.ReplaceMaterializedWeek(ctx, reviewAPIMaterializedWeek()); err != nil {
+		t.Fatalf("seed materialized week: %v", err)
+	}
+	if err := store.UpsertRuns(ctx, []storecontracts.RunRecord{
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/1",
+			JobName:     "periodic-ci",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T08:00:00Z",
+		},
+		{
+			Environment: "dev",
+			RunURL:      "https://prow.example.com/view/2",
+			JobName:     "periodic-ci-nodepool",
+			Failed:      true,
+			OccurredAt:  "2026-03-16T09:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+	if err := store.UpsertRawFailures(ctx, reviewAPIRawFailures()); err != nil {
+		t.Fatalf("seed raw failures: %v", err)
+	}
+
+	handler, err := NewHandler(HandlerOptions{
+		PostgresPool: fixture.pool,
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/failure-patterns", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if got, want := recorder.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `name="start_date" value="2026-03-16"`) {
+		t.Fatalf("expected default start_date in body, got %q", body)
+	}
+	if !strings.Contains(body, `name="end_date" value="2026-03-22"`) {
+		t.Fatalf("expected default end_date in body, got %q", body)
+	}
+	if !strings.Contains(body, "Last 7 Days") {
+		t.Fatalf("expected Last 7 Days selector label in body, got %q", body)
+	}
+	if !strings.Contains(body, "Apply") {
+		t.Fatalf("expected apply button in body, got %q", body)
+	}
+}
+
+func TestHandleFailurePatternsPageWeekQueryUsesFullWeekWindow(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
