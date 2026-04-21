@@ -65,11 +65,11 @@ func TestHTTPClientListJobsDecodesWrappedJSResponse(t *testing.T) {
 func TestStateHelpers(t *testing.T) {
 	t.Parallel()
 
-	if !IsTerminalState("success") || !IsTerminalState("failure") || !IsTerminalState("error") || !IsTerminalState("aborted") {
+	if !IsTerminalState("success") || !IsTerminalState("failure") || !IsTerminalState("error") {
 		t.Fatalf("expected terminal states to be recognized")
 	}
-	if IsTerminalState("pending") {
-		t.Fatalf("expected pending to be non-terminal")
+	if IsTerminalState("pending") || IsTerminalState("aborted") {
+		t.Fatalf("expected pending and aborted to be non-terminal for run ingestion")
 	}
 	if FailedFromState("success") {
 		t.Fatalf("expected success to map to failed=false")

@@ -501,7 +501,7 @@ func isSpaceByte(value byte) bool {
 
 func IsTerminalState(state string) bool {
 	switch normalizeState(state) {
-	case "success", "failure", "error", "aborted":
+	case "success", "failure", "error":
 		return true
 	default:
 		return false

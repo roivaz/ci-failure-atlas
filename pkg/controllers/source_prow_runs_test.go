@@ -92,6 +92,26 @@ func TestMapProwJobToRunRecord(t *testing.T) {
 	}
 }
 
+func TestMapProwJobToRunRecordDropsAbortedJob(t *testing.T) {
+	t.Parallel()
+
+	job := prowjobs.Job{
+		Spec: prowjobs.JobSpec{
+			Job: "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+		},
+		Status: prowjobs.JobStatus{
+			State:          "aborted",
+			URL:            "gs://test-platform-results/pr-logs/pull/Azure_ARO-HCP/4313/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+			StartTime:      mustParseRFC3339(t, "2026-04-20T10:00:00Z"),
+			CompletionTime: mustParseRFC3339(t, "2026-04-20T10:45:00Z"),
+		},
+	}
+
+	if _, ok := mapProwJobToRunRecord("https://prow.ci.openshift.org", "dev", job); ok {
+		t.Fatalf("expected aborted job to be ignored")
+	}
+}
+
 func TestListCompletedJobsSincePagesUntilCutoff(t *testing.T) {
 	t.Parallel()
 
@@ -174,8 +194,8 @@ func TestListCompletedJobsSincePagesUntilCutoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listCompletedJobsSince returned error: %v", err)
 	}
-	if len(jobs) != 3 {
-		t.Fatalf("unexpected job count: got=%d want=3", len(jobs))
+	if len(jobs) != 2 {
+		t.Fatalf("unexpected job count: got=%d want=2", len(jobs))
 	}
 	if stats.PagesFetched != 2 {
 		t.Fatalf("unexpected page count: got=%d want=2", stats.PagesFetched)
@@ -189,8 +209,13 @@ func TestListCompletedJobsSincePagesUntilCutoff(t *testing.T) {
 	if jobs[0].Status.URL != "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4313/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488" {
 		t.Fatalf("unexpected resolved run URL: got=%q", jobs[0].Status.URL)
 	}
-	if jobs[2].Status.CompletionTime.Before(since) {
-		t.Fatalf("expected all returned jobs to satisfy the cutoff: got completion=%s since=%s", jobs[2].Status.CompletionTime.Format(time.RFC3339), since.Format(time.RFC3339))
+	if jobs[1].Status.CompletionTime.Before(since) {
+		t.Fatalf("expected all returned jobs to satisfy the cutoff: got completion=%s since=%s", jobs[1].Status.CompletionTime.Format(time.RFC3339), since.Format(time.RFC3339))
+	}
+	for _, job := range jobs {
+		if job.Status.State == "aborted" || job.Status.State == "pending" {
+			t.Fatalf("unexpected non-ingestible job state returned: %q", job.Status.State)
+		}
 	}
 }
 
