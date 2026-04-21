@@ -262,10 +262,11 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 		"data-sort-key=\"jobs_affected\"",
 		"data-sort-key=\"impact\"",
 		"data-sort-key=\"category\"",
-		"<th>Trend</th>",
+		"role=\"tooltip\">Shows daily activity for this failure pattern in a trailing window anchored to the selected end date.",
 		"<th>Also in",
-		"title=\"Percentage of all job runs in this environment affected by this failure pattern during the selected window.\"",
-		"title=\"Other environments where the same failure pattern was also detected during the selected window.\"",
+		"failure-patterns-header-help",
+		"role=\"tooltip\">Percentage of all job runs in this environment affected by this failure pattern during the selected window.",
+		"role=\"tooltip\">Other environments where the same failure pattern was also detected during the selected window.",
 		"<svg class=\"trend-svg\"",
 		"Mar 1: 0 · Mar 2: 2 · Mar 3: 1 · Mar 4: 3 · Mar 5: 0 · Mar 6: 4 · Mar 7: 2",
 	}
@@ -286,7 +287,7 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 	jobsAffectedHeader := strings.Index(headerRow, "data-sort-key=\"jobs_affected\"")
 	impactHeader := strings.Index(headerRow, "data-sort-key=\"impact\"")
 	categoryHeader := strings.Index(headerRow, "data-sort-key=\"category\"")
-	trendHeader := strings.Index(headerRow, "<th>Trend</th>")
+	trendHeader := strings.Index(headerRow, "Shows daily activity for this failure pattern in a trailing window anchored to the selected end date.")
 	seenInHeader := strings.Index(headerRow, "<th>Also in")
 	if !(signatureHeader < laneHeader && laneHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < categoryHeader && categoryHeader < trendHeader && trendHeader < seenInHeader) {
 		t.Fatalf("unexpected shared header order in rendered table")

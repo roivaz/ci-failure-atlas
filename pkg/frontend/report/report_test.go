@@ -92,6 +92,10 @@ func TestBuildHTMLInlinesGoalDefinitionsInExecutiveTable(t *testing.T) {
 
 	for _, snippet := range []string{
 		">Goal</span>",
+		"exec-heading-help",
+		"Env</span><span class=\"inline-tooltip align-start",
+		"Success</span><span class=\"inline-tooltip align-center",
+		"E2E success vs prev</span><span class=\"inline-tooltip align-end",
 		"95% - After last push of a PR that merges",
 		"95% - All E2E job runs",
 	} {
@@ -101,6 +105,139 @@ func TestBuildHTMLInlinesGoalDefinitionsInExecutiveTable(t *testing.T) {
 	}
 	if strings.Contains(rendered, "Goals:") {
 		t.Fatalf("did not expect standalone goals section in rendered report HTML: %q", rendered)
+	}
+}
+
+func TestBuildHTMLUsesUpdatedRunOutcomeCardsAndChartLayout(t *testing.T) {
+	t.Parallel()
+
+	startDate := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
+	endDate := time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)
+
+	rendered := buildHTML(
+		startDate,
+		endDate,
+		[]envReport{
+			{
+				Environment: "dev",
+				Days: []dayReport{
+					{
+						Date: "2026-03-16",
+						Counts: counts{
+							RunCount:                10,
+							FailureCount:            3,
+							FailedCIInfraRunCount:   1,
+							FailedProvisionRunCount: 1,
+							FailedE2ERunCount:       1,
+							PostGoodRunCount:        4,
+							PostGoodFailedProvision: 1,
+							PostGoodFailedE2EJobs:   1,
+						},
+						PostGoodRunOutcomes: runOutcomes{
+							TotalRuns:           4,
+							SuccessfulRuns:      2,
+							ProvisionFailedRuns: 1,
+							E2EFailedRuns:       1,
+						},
+					},
+				},
+				Totals: counts{
+					RunCount:                10,
+					FailureCount:            3,
+					FailedCIInfraRunCount:   1,
+					FailedProvisionRunCount: 1,
+					FailedE2ERunCount:       1,
+					PostGoodRunCount:        4,
+					PostGoodFailedProvision: 1,
+					PostGoodFailedE2EJobs:   1,
+				},
+			},
+		},
+		nil,
+		95.0,
+		nil,
+		nil,
+		"/run-log",
+		frontui.ReportChromeOptions{},
+	)
+
+	required := []string{
+		"Provision success",
+		"E2E success",
+		"Provisioning here means infrastructure setup before E2E tests start.",
+		"These DEV-only metrics include only runs that happened after the final push to a PR that later merged.",
+		"class=\"outcome-total\">10 runs</span>",
+		"class=\"outcome-total\">4 runs</span>",
+		"Successful runs: 7 of 10 runs (70.0%)",
+		"role=\"tooltip\">Successful runs: 7 of 10 runs (70.0%)",
+		"class=\"inline-tooltip align-center outcome-segment-wrap\" data-inline-tooltip style=\"left: 0.000000%; width: 70.000000%; background: #5f8a69;\"",
+		"class=\"outcome-segment-label\">70%</span>",
+		"role=\"button\" class=\"inline-tooltip-trigger outcome-segment seg-success\"",
+		"E2E Jobs (after last push of merged PR)</div><span class=\"inline-tooltip align-start",
+		"Success Rate (after last push of merged PR)</div><span class=\"inline-tooltip align-center",
+		"E2E success (after last push of merged PR)</div><span class=\"inline-tooltip align-end",
+		"background: #5f8a69;",
+	}
+	for _, snippet := range required {
+		if !strings.Contains(rendered, snippet) {
+			t.Fatalf("expected rendered report HTML to contain %q", snippet)
+		}
+	}
+
+	for _, stale := range []string{
+		"Provision step success rate (Other excluded)",
+		"E2E success (runs reaching E2E)",
+		"Chart mode:",
+		"mode-count",
+		"mode-percent",
+		"S:7",
+		"<button type=\"button\" class=\"inline-tooltip-trigger outcome-segment",
+		"title=\"Successful runs: 7 of 10 runs (70.0%)\"",
+	} {
+		if strings.Contains(rendered, stale) {
+			t.Fatalf("did not expect rendered report HTML to contain %q", stale)
+		}
+	}
+}
+
+func TestRenderOutcomeChartScalesBarsByRelativeRunVolume(t *testing.T) {
+	t.Parallel()
+
+	rendered := renderOutcomeChart(
+		"Daily Run Outcomes",
+		[]outcomeChartDay{
+			{
+				Date:                "2026-03-16",
+				TotalRuns:           10,
+				SuccessfulRuns:      7,
+				ProvisionFailedRuns: 1,
+				E2EFailedRuns:       1,
+				CIInfraFailedRuns:   1,
+			},
+			{
+				Date:              "2026-03-17",
+				TotalRuns:         1,
+				CIInfraFailedRuns: 1,
+			},
+		},
+		"dev",
+		"/run-log",
+		"Successful runs",
+	)
+
+	for _, snippet := range []string{
+		"class=\"outcome-bar-shell\"",
+		"class=\"outcome-bar\" style=\"width: 100.000000%;\"",
+		"class=\"outcome-bar\" style=\"width: 10.000000%;\"",
+		"Other failures: 1 of 1 runs (100.0%)",
+		"style=\"left: 0.000000%; width: 100.000000%; background: #708092;\"",
+	} {
+		if !strings.Contains(rendered, snippet) {
+			t.Fatalf("expected scaled outcome chart HTML to contain %q", snippet)
+		}
+	}
+	if strings.Contains(rendered, "class=\"outcome-segment-label\">100%</span>") {
+		t.Fatalf("did not expect a 100%% label inside the narrow 10%%-width scaled bar")
 	}
 }
 

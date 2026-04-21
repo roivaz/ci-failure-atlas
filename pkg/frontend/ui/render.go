@@ -327,7 +327,21 @@ func StylesCSS() string {
 		"    .signal-regression { color: #dc2626; }",
 		"    .signal-flake { color: #b45309; }",
 		"    .signal-new { color: #7c3aed; }",
-		"    .failure-patterns-header-help { display: inline-flex; align-items: center; justify-content: center; margin-left: 5px; width: 14px; height: 14px; border-radius: 999px; border: 1px solid #93c5fd; color: #1d4ed8; background: #eff6ff; font-size: 10px; font-weight: 700; cursor: help; vertical-align: middle; }",
+		"    .inline-tooltip { position: relative; display: inline-flex; align-items: center; vertical-align: middle; min-width: 0; }",
+		"    .inline-tooltip-trigger { display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: 1; cursor: pointer; appearance: none; -webkit-appearance: none; }",
+		"    .inline-tooltip-trigger:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }",
+		"    .inline-tooltip-panel { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: min(320px, calc(100vw - 32px)); min-width: min(220px, calc(100vw - 32px)); max-width: calc(100vw - 32px); padding: 8px 10px; border-radius: 8px; border: 1px solid #60a5fa; background: #dbeafe; color: #172554; font-size: 12px; font-weight: 500; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; text-align: left; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18); visibility: hidden; opacity: 0; pointer-events: none; z-index: 20; }",
+		"    .inline-tooltip-panel::before { content: \"\"; position: absolute; top: -6px; left: 50%; width: 10px; height: 10px; background: inherit; border-top: 1px solid #60a5fa; border-left: 1px solid #60a5fa; transform: translateX(-50%) rotate(45deg); }",
+		"    .inline-tooltip.align-start .inline-tooltip-panel { left: 0; transform: none; }",
+		"    .inline-tooltip.align-start .inline-tooltip-panel::before { left: 12px; transform: rotate(45deg); }",
+		"    .inline-tooltip.align-end .inline-tooltip-panel { left: auto; right: 0; transform: none; }",
+		"    .inline-tooltip.align-end .inline-tooltip-panel::before { left: auto; right: 12px; transform: rotate(45deg); }",
+		"    .inline-tooltip:hover .inline-tooltip-panel, .inline-tooltip[data-open=\"true\"] .inline-tooltip-panel, .inline-tooltip-trigger:focus-visible + .inline-tooltip-panel { visibility: visible; opacity: 1; pointer-events: auto; }",
+		"    .failure-patterns-header-help, .exec-heading-help, .card-help { flex: none; width: 18px; height: 18px; border-radius: 999px; border: 1px solid #93c5fd; color: #1d4ed8; background: #eff6ff; font-size: 11px; font-weight: 700; }",
+		"    .failure-patterns-header-help { margin-left: 5px; }",
+		"    .card-help { width: 16px; height: 16px; font-size: 10px; }",
+		"    .exec-heading-label { display: inline-flex; align-items: center; }",
+		"    .failure-patterns-header-help:hover, .exec-heading-help:hover, .card-help:hover { background: #dbeafe; border-color: #60a5fa; }",
 		"    .trend-svg { display: block; }",
 		"    details { margin: 2px 0; }",
 		"    details summary { cursor: pointer; color: #1d4ed8; }",
@@ -389,7 +403,11 @@ func ThemeCSS() string {
 		"    :root[data-theme=\"dark\"] .linked-failure-pattern-item-remove:hover { background: #1f2937; }",
 		"    :root[data-theme=\"dark\"] .linked-failure-pattern-item-meta { color: #94a3b8; }",
 		"    :root[data-theme=\"dark\"] pre { background: #020617; color: #e2e8f0; border: 1px solid #334155; }",
-		"    :root[data-theme=\"dark\"] .failure-patterns-header-help { border-color: #334155; color: #93c5fd; background: #1e293b; }",
+		"    :root[data-theme=\"dark\"] .inline-tooltip-trigger:focus-visible { outline-color: #60a5fa; }",
+		"    :root[data-theme=\"dark\"] .inline-tooltip-panel { background: #172554; border-color: #60a5fa; color: #dbeafe; box-shadow: 0 18px 40px rgba(2, 6, 23, 0.45); }",
+		"    :root[data-theme=\"dark\"] .inline-tooltip-panel::before { border-top-color: #60a5fa; border-left-color: #60a5fa; }",
+		"    :root[data-theme=\"dark\"] .failure-patterns-header-help, :root[data-theme=\"dark\"] .exec-heading-help, :root[data-theme=\"dark\"] .card-help { border-color: #334155; color: #93c5fd; background: #1e293b; }",
+		"    :root[data-theme=\"dark\"] .failure-patterns-header-help:hover, :root[data-theme=\"dark\"] .exec-heading-help:hover, :root[data-theme=\"dark\"] .card-help:hover { background: #2563eb; border-color: #2563eb; color: #e2e8f0; }",
 		"    :root[data-theme=\"dark\"] .failure-patterns-sort-indicator { color: #94a3b8; }",
 		"    :root[data-theme=\"dark\"] .impact-high { color: inherit; }",
 		"    :root[data-theme=\"dark\"] .impact-medium { color: inherit; }",
@@ -698,6 +716,60 @@ func ThemeToggleScriptTag() string {
 `) + "\n"
 }
 
+func TooltipScriptTag() string {
+	return strings.TrimSpace(`
+<script>
+(function () {
+  function setOpen(tooltip, open) {
+    if (!tooltip) {
+      return;
+    }
+    if (open) {
+      tooltip.setAttribute("data-open", "true");
+      return;
+    }
+    tooltip.removeAttribute("data-open");
+  }
+
+  function closeAll(except) {
+    document.querySelectorAll("[data-inline-tooltip][data-open='true']").forEach(function (tooltip) {
+      if (tooltip !== except) {
+        setOpen(tooltip, false);
+      }
+    });
+  }
+
+  document.addEventListener("click", function (event) {
+    var trigger = event.target.closest("[data-tooltip-trigger]");
+    if (!trigger) {
+      closeAll(null);
+      return;
+    }
+    var tooltip = trigger.closest("[data-inline-tooltip]");
+    if (!tooltip) {
+      return;
+    }
+    var isOpen = tooltip.getAttribute("data-open") === "true";
+    closeAll(tooltip);
+    setOpen(tooltip, !isOpen);
+    event.preventDefault();
+    event.stopPropagation();
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") {
+      return;
+    }
+    closeAll(null);
+    if (document.activeElement && document.activeElement.matches && document.activeElement.matches("[data-tooltip-trigger]")) {
+      document.activeElement.blur();
+    }
+  });
+})();
+</script>
+`) + "\n"
+}
+
 func normalizedReportChromeOptions(options ReportChromeOptions) ReportChromeOptions {
 	options.OverviewHref = strings.TrimSpace(options.OverviewHref)
 	options.FailurePatternsHref = strings.TrimSpace(options.FailurePatternsHref)
@@ -895,12 +967,12 @@ func RenderTable(rows []FailurePatternRow, options TableOptions) string {
 	if opts.IncludeSelection {
 		headers = append(headers, "<th class=\"failure-patterns-select-col\">Select</th>")
 	}
-	headers = append(headers, renderTooltipHeaderCell("Failure pattern", "The canonical description of a recurring CI failure, extracted and normalized from raw logs."))
-	headers = append(headers, renderTooltipHeaderCell("Failed at", "The stage of the job run where this failure occurred: 'provision' (environment setup, DEV only), 'e2e' (test suite execution), or 'other' (CI infrastructure issues — no failure pattern extracted)."))
+	headers = append(headers, renderTooltipHeaderCellWithPlacement("Failure pattern", "The canonical description of a recurring CI failure, extracted and normalized from raw logs.", tooltipPlacementStart))
+	headers = append(headers, renderTooltipHeaderCellWithPlacement("Failed at", "The stage of the job run where this failure occurred: 'provision' (environment setup, DEV only), 'e2e' (test suite execution), or 'other' (CI infrastructure issues that did not produce a failure pattern).", tooltipPlacementStart))
 	headers = append(headers,
-		renderSortableHeaderCell("Runs affected", sortKeyJobsAffected, "Number of distinct job runs where this failure pattern was detected.", initialSortKey, initialSortDirection),
-		renderSortableHeaderCell("Impact", sortKeyImpact, "Percentage of all job runs in this environment affected by this failure pattern during the selected window.", initialSortKey, initialSortDirection),
-		renderSortableHeaderCell("Signal", sortKeyCategory, "Classification of this failure pattern: Regression (likely caused by a specific PR), Flake (intermittent failure spread across days), Noise (low-quality or generic pattern), or Indeterminate.", initialSortKey, initialSortDirection),
+		renderSortableHeaderCellWithPlacement("Runs affected", sortKeyJobsAffected, "Number of distinct job runs where this failure pattern was detected.", initialSortKey, initialSortDirection, tooltipPlacementStart),
+		renderSortableHeaderCellWithPlacement("Impact", sortKeyImpact, "Percentage of all job runs in this environment affected by this failure pattern during the selected window.", initialSortKey, initialSortDirection, tooltipPlacementCenter),
+		renderSortableHeaderCellWithPlacement("Signal", sortKeyCategory, "Classification of this failure pattern: Regression (likely caused by a specific PR), Flake (intermittent failure spread across days), Noise (low-quality or generic pattern), or Indeterminate.", initialSortKey, initialSortDirection, tooltipPlacementEnd),
 	)
 	if opts.ShowCount {
 		headers = append(headers, renderSortableHeaderCell("Count", sortKeyCount, "", initialSortKey, initialSortDirection))
@@ -915,9 +987,9 @@ func RenderTable(rows []FailurePatternRow, options TableOptions) string {
 		headers = append(headers, renderSortableHeaderCell("Linked group ID", sortKeyManualCluster, "ID of the linked failure group, assigned when patterns are manually grouped in the review workflow.", initialSortKey, initialSortDirection))
 	}
 	if opts.IncludeTrend {
-		headers = append(headers, fmt.Sprintf("<th>%s</th>", html.EscapeString(opts.TrendHeaderLabel)))
+		headers = append(headers, renderTooltipHeaderCellWithPlacement(opts.TrendHeaderLabel, "Shows daily activity for this failure pattern in a trailing window anchored to the selected end date. The sparkline covers at least 7 days and at most 14 days, depending on the current window size.", tooltipPlacementEnd))
 	}
-	headers = append(headers, renderTooltipHeaderCell("Also in", "Other environments where the same failure pattern was also detected during the selected window."))
+	headers = append(headers, renderTooltipHeaderCellWithPlacement("Also in", "Other environments where the same failure pattern was also detected during the selected window.", tooltipPlacementEnd))
 	if opts.ShowQualityScore {
 		headers = append(headers, "<th>Quality score</th>")
 	}
@@ -944,7 +1016,67 @@ func RenderTable(rows []FailurePatternRow, options TableOptions) string {
 	return b.String()
 }
 
-func renderTooltipHeaderCell(label string, tooltip string) string {
+const (
+	tooltipPlacementCenter = "center"
+	tooltipPlacementStart  = "start"
+	tooltipPlacementEnd    = "end"
+)
+
+func normalizeTooltipPlacement(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case tooltipPlacementStart:
+		return tooltipPlacementStart
+	case tooltipPlacementEnd:
+		return tooltipPlacementEnd
+	default:
+		return tooltipPlacementCenter
+	}
+}
+
+func InlineTooltipHTML(triggerHTML string, tooltip string, wrapperClass string, wrapperStyle string, placement string) string {
+	trimmedTooltip := strings.TrimSpace(tooltip)
+	trimmedTrigger := strings.TrimSpace(triggerHTML)
+	if trimmedTooltip == "" || trimmedTrigger == "" {
+		return ""
+	}
+	wrapperClasses := []string{
+		"inline-tooltip",
+		"align-" + normalizeTooltipPlacement(placement),
+	}
+	if trimmedClass := strings.TrimSpace(wrapperClass); trimmedClass != "" {
+		wrapperClasses = append(wrapperClasses, trimmedClass)
+	}
+	styleAttr := ""
+	if trimmedStyle := strings.TrimSpace(wrapperStyle); trimmedStyle != "" {
+		styleAttr = fmt.Sprintf(` style="%s"`, html.EscapeString(trimmedStyle))
+	}
+	return fmt.Sprintf(
+		"<span class=\"%s\" data-inline-tooltip%s>%s<span class=\"inline-tooltip-panel\" role=\"tooltip\">%s</span></span>",
+		html.EscapeString(strings.Join(wrapperClasses, " ")),
+		styleAttr,
+		trimmedTrigger,
+		html.EscapeString(trimmedTooltip),
+	)
+}
+
+func HelpTooltipHTML(tooltip string, triggerClass string) string {
+	return HelpTooltipHTMLWithPlacement(tooltip, triggerClass, tooltipPlacementCenter)
+}
+
+func HelpTooltipHTMLWithPlacement(tooltip string, triggerClass string, placement string) string {
+	classes := "inline-tooltip-trigger"
+	if trimmedClass := strings.TrimSpace(triggerClass); trimmedClass != "" {
+		classes += " " + trimmedClass
+	}
+	triggerHTML := fmt.Sprintf(
+		"<button type=\"button\" class=\"%s\" data-tooltip-trigger aria-label=\"More information: %s\"><span aria-hidden=\"true\">i</span></button>",
+		html.EscapeString(classes),
+		html.EscapeString(strings.TrimSpace(tooltip)),
+	)
+	return InlineTooltipHTML(triggerHTML, tooltip, "", "", placement)
+}
+
+func renderTooltipHeaderCellWithPlacement(label string, tooltip string, placement string) string {
 	trimmedLabel := strings.TrimSpace(label)
 	if trimmedLabel == "" {
 		trimmedLabel = "n/a"
@@ -954,21 +1086,24 @@ func renderTooltipHeaderCell(label string, tooltip string) string {
 		return fmt.Sprintf("<th>%s</th>", html.EscapeString(trimmedLabel))
 	}
 	return fmt.Sprintf(
-		"<th>%s<span class=\"failure-patterns-header-help\" title=\"%s\" aria-label=\"%s\">i</span></th>",
+		"<th>%s%s</th>",
 		html.EscapeString(trimmedLabel),
-		html.EscapeString(trimmedTooltip),
-		html.EscapeString(trimmedTooltip),
+		HelpTooltipHTMLWithPlacement(trimmedTooltip, "failure-patterns-header-help", placement),
 	)
 }
 
-func renderSortableHeaderCell(label string, sortKey string, tooltip string, activeSortKey string, activeSortDirection string) string {
+func renderTooltipHeaderCell(label string, tooltip string) string {
+	return renderTooltipHeaderCellWithPlacement(label, tooltip, tooltipPlacementCenter)
+}
+
+func renderSortableHeaderCellWithPlacement(label string, sortKey string, tooltip string, activeSortKey string, activeSortDirection string, placement string) string {
 	trimmedLabel := strings.TrimSpace(label)
 	if trimmedLabel == "" {
 		trimmedLabel = "n/a"
 	}
 	trimmedSortKey := strings.TrimSpace(sortKey)
 	if trimmedSortKey == "" {
-		return renderTooltipHeaderCell(trimmedLabel, tooltip)
+		return renderTooltipHeaderCellWithPlacement(trimmedLabel, tooltip, placement)
 	}
 	ariaSort := "none"
 	indicator := ""
@@ -995,14 +1130,14 @@ func renderSortableHeaderCell(label string, sortKey string, tooltip string, acti
 	))
 	trimmedTooltip := strings.TrimSpace(tooltip)
 	if trimmedTooltip != "" {
-		b.WriteString(fmt.Sprintf(
-			"<span class=\"failure-patterns-header-help\" title=\"%s\" aria-label=\"%s\">i</span>",
-			html.EscapeString(trimmedTooltip),
-			html.EscapeString(trimmedTooltip),
-		))
+		b.WriteString(HelpTooltipHTMLWithPlacement(trimmedTooltip, "failure-patterns-header-help", placement))
 	}
 	b.WriteString("</th>")
 	return b.String()
+}
+
+func renderSortableHeaderCell(label string, sortKey string, tooltip string, activeSortKey string, activeSortDirection string) string {
+	return renderSortableHeaderCellWithPlacement(label, sortKey, tooltip, activeSortKey, activeSortDirection, tooltipPlacementCenter)
 }
 
 func renderTableSortScriptTag() string {

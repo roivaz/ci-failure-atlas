@@ -88,6 +88,7 @@ func RenderHTML(
 	}
 
 	b.WriteString("</main>\n")
+	b.WriteString(frontui.TooltipScriptTag())
 	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")

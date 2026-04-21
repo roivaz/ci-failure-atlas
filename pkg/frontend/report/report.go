@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -237,13 +238,12 @@ func buildHTML(
 	b.WriteString("    body { font-family: Arial, sans-serif; margin: 0; color: #1f2937; }\n")
 	b.WriteString("    h1 { margin-bottom: 4px; }\n")
 	b.WriteString("    .meta { color: #4b5563; margin-bottom: 16px; }\n")
-	b.WriteString("    .chart-controls { margin: 0 0 16px; font-size: 13px; color: #374151; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }\n")
-	b.WriteString("    .chart-controls label { display: inline-flex; align-items: center; gap: 6px; }\n")
 	b.WriteString("    .env { border: 1px solid #e5e7eb; border-radius: 8px; margin: 14px 0; padding: 12px; }\n")
 	b.WriteString("    .overview-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 10px 0 16px; }\n")
 	b.WriteString("    .overview-table th, .overview-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }\n")
 	b.WriteString("    .overview-table th { background: #f3f4f6; color: #374151; font-weight: 700; }\n")
-	b.WriteString("    .exec-heading-help { border-bottom: 1px dotted #9ca3af; cursor: help; }\n")
+	b.WriteString("    .exec-heading-wrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; }\n")
+	b.WriteString("    .exec-heading-wrap .exec-heading-label { min-width: 0; }\n")
 	b.WriteString("    .status-on-track { color: #166534; font-weight: 700; }\n")
 	b.WriteString("    .status-off-track { color: #991b1b; font-weight: 700; }\n")
 	b.WriteString("    .status-near-track { color: #92400e; font-weight: 700; }\n")
@@ -255,26 +255,35 @@ func buildHTML(
 	b.WriteString("    .cards.cards-post-good { margin-top: 0; }\n")
 	b.WriteString("    .cards.cards-dev { grid-template-columns: repeat(4, minmax(0, 1fr)); }\n")
 	b.WriteString("    .card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px; min-width: 0; }\n")
+	b.WriteString("    .card-label-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }\n")
+	b.WriteString("    .card-label-row .label { margin: 0; min-width: 0; }\n")
 	b.WriteString("    .label { font-size: 12px; color: #6b7280; }\n")
 	b.WriteString("    .value { font-size: 18px; font-weight: 700; }\n")
 	b.WriteString("    .chart-title { margin: 4px 0 6px; font-size: 14px; }\n")
 	b.WriteString("    .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: #4b5563; margin: 4px 0 8px; }\n")
 	b.WriteString("    .legend-item { display: inline-flex; align-items: center; gap: 6px; }\n")
 	b.WriteString("    .legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }\n")
-	b.WriteString("    .outcomes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }\n")
-	b.WriteString("    .outcome-row { display: grid; grid-template-columns: 95px 1fr 275px; align-items: center; gap: 8px; font-size: 12px; }\n")
-	b.WriteString("    .outcome-date { color: #374151; font-weight: 600; }\n")
-	b.WriteString("    .outcome-bar { height: 14px; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 999px; overflow: hidden; display: flex; }\n")
-	b.WriteString("    .outcome-bar-empty { display: flex; justify-content: center; align-items: center; color: #9ca3af; font-size: 11px; }\n")
-	b.WriteString("    .outcome-segment { display: flex; align-items: center; justify-content: center; height: 100%; min-width: 0; overflow: hidden; }\n")
-	b.WriteString("    .segment-label { font-size: 10px; font-weight: 700; color: #ffffff; text-shadow: 0 1px 1px rgba(0,0,0,0.45); white-space: nowrap; padding: 0 2px; }\n")
-	b.WriteString("    .outcome-segment.label-hidden .segment-label { display: none; }\n")
-	b.WriteString("    .seg-success { background: #22c55e; }\n")
-	b.WriteString("    .seg-provision { background: #f97316; }\n")
-	b.WriteString("    .seg-e2e { background: #ef4444; }\n")
-	b.WriteString("    .seg-ciinfra { background: #eab308; }\n")
-	b.WriteString("    .seg-ciinfra .segment-label { color: #1f2937; text-shadow: none; }\n")
-	b.WriteString("    .outcome-values { color: #4b5563; font-size: 11px; text-align: right; white-space: nowrap; }\n")
+	b.WriteString("    .outcomes { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }\n")
+	b.WriteString("    .outcome-row { display: grid; grid-template-columns: 95px minmax(0, 1fr); align-items: start; gap: 12px; font-size: 12px; }\n")
+	b.WriteString("    .outcome-date { color: #374151; font-weight: 600; padding-top: 6px; }\n")
+	b.WriteString("    .outcome-main { display: flex; align-items: center; gap: 12px; min-width: 0; }\n")
+	b.WriteString("    .outcome-meta { flex: 0 0 auto; display: flex; justify-content: flex-end; }\n")
+	b.WriteString("    .outcome-total { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 700; background: #eef2ff; color: #312e81; border: 1px solid #c7d2fe; }\n")
+	b.WriteString("    .outcome-bar-shell { flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; }\n")
+	b.WriteString("    .outcome-bar { position: relative; flex: 0 0 auto; max-width: 100%; min-width: 1px; min-height: 24px; background: #f8fafc; border: 1px solid #d1d5db; border-radius: 999px; overflow: visible; }\n")
+	b.WriteString("    .outcome-bar-empty { width: 100%; display: flex; justify-content: center; align-items: center; color: #6b7280; font-size: 11px; }\n")
+	b.WriteString("    .outcome-segment-wrap { position: absolute; top: 0; bottom: 0; min-width: 1px; overflow: visible; }\n")
+	b.WriteString("    .outcome-segment-wrap:first-child { border-top-left-radius: 999px; border-bottom-left-radius: 999px; }\n")
+	b.WriteString("    .outcome-segment-wrap:last-child { border-top-right-radius: 999px; border-bottom-right-radius: 999px; }\n")
+	b.WriteString("    .outcome-segment { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-width: 1px; border: 0; padding: 0; background: transparent; color: #ffffff; cursor: pointer; overflow: hidden; }\n")
+	b.WriteString("    .outcome-segment-label { display: inline-flex; align-items: center; justify-content: center; padding: 0 4px; font-size: 10px; font-weight: 700; line-height: 1; white-space: nowrap; text-shadow: 0 1px 1px rgba(15, 23, 42, 0.35); pointer-events: none; }\n")
+	b.WriteString("    .outcome-segment-label.is-dark { color: #0f172a; text-shadow: none; }\n")
+	b.WriteString("    .outcome-segment:hover { filter: brightness(0.96); }\n")
+	b.WriteString("    .outcome-segment:focus-visible { position: relative; z-index: 1; outline: 2px solid #1d4ed8; outline-offset: -2px; }\n")
+	b.WriteString("    .seg-success { background: #5f8a69; }\n")
+	b.WriteString("    .seg-provision { background: #ad8651; }\n")
+	b.WriteString("    .seg-e2e { background: #9f676d; }\n")
+	b.WriteString("    .seg-ciinfra { background: #708092; }\n")
 	b.WriteString("    .drill-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }\n")
 	b.WriteString("    .drill-tab { border: 1px solid #d1d5db; border-radius: 999px; padding: 4px 10px; background: #f9fafb; color: #374151; font-size: 12px; cursor: pointer; }\n")
 	b.WriteString("    .drill-tab.active { background: #111827; border-color: #111827; color: #ffffff; font-weight: 700; }\n")
@@ -290,11 +299,17 @@ func buildHTML(
 	b.WriteString(frontui.ReportChromeCSS())
 	b.WriteString(frontui.StylesCSS())
 	b.WriteString(frontui.ThemeCSS())
-	b.WriteString("    body[data-chart-mode=\"count\"] .mode-percent { display: none; }\n")
-	b.WriteString("    body[data-chart-mode=\"percent\"] .mode-count { display: none; }\n")
+	b.WriteString("    .outcome-bar > .outcome-segment-wrap.inline-tooltip { display: block; position: absolute; top: 0; bottom: 0; min-width: 1px; vertical-align: initial; overflow: visible; }\n")
+	b.WriteString("    .outcome-bar > .outcome-segment-wrap.inline-tooltip:hover, .outcome-bar > .outcome-segment-wrap.inline-tooltip[data-open=\"true\"], .outcome-bar > .outcome-segment-wrap.inline-tooltip:focus-within { z-index: 3; }\n")
+	b.WriteString("    .outcome-bar > .outcome-segment-wrap.inline-tooltip .outcome-segment.inline-tooltip-trigger { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-width: 1px; background: transparent; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .outcome-date { color: #e2e8f0; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .outcome-total { background: #0f172a; border-color: #334155; color: #dbeafe; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .outcome-bar { background: #0f172a; border-color: #334155; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .outcome-bar-empty { color: #94a3b8; }\n")
+	b.WriteString("    :root[data-theme=\"dark\"] .outcome-segment:focus-visible { outline-color: #93c5fd; }\n")
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
-	b.WriteString("<body data-chart-mode=\"count\">\n")
+	b.WriteString("<body>\n")
 	b.WriteString(frontui.ReportChromeHTML(chrome))
 	b.WriteString("<main class=\"page-content\">\n")
 
@@ -307,16 +322,24 @@ func buildHTML(
 	b.WriteString("    <h2>Executive Status</h2>\n")
 	b.WriteString("    <table class=\"overview-table\">\n")
 	b.WriteString("      <thead><tr>")
-	b.WriteString(executiveHeaderHTML("Env", "Environment partition: dev, int, stg, or prod."))
-	b.WriteString(executiveHeaderHTML("Goal", "Configured success target and run scope for this environment. INT/STG/PROD use all E2E job runs. DEV uses runs after the last push of a PR that merges."))
-	b.WriteString(executiveHeaderHTML("Runs", "Number of job runs in the selected goal definition for this environment."))
-	b.WriteString(executiveHeaderHTML("Success", "Success rate on the selected goal definition: (runs - failed runs) / runs * 100."))
-	b.WriteString(executiveHeaderHTML("Gap vs target", "Difference in percentage points between current success and the configured target rate."))
-	b.WriteString(executiveHeaderHTML("Change vs prev", "How much the success rate changed compared with the immediately preceding equal-length window, using the same goal definition as this row."))
-	b.WriteString(executiveHeaderHTML("Provision success", "DEV-only provision-step estimate on runs after last push of a merged PR. INT/STG/PROD show n/a because provisioning is not part of those environments. Formula: (successful + e2e_failed) / (successful + provision_failed + e2e_failed)."))
-	b.WriteString(executiveHeaderHTML("Provision change vs prev", "DEV-only change in provision-step success, in percentage points, compared with the immediately preceding equal-length window. INT/STG/PROD show n/a."))
-	b.WriteString(executiveHeaderHTML("E2E success", "E2E-step success on the same goal definition used in this row (DEV: runs after last push of a merged PR; INT/STG/PROD: all runs). Formula: successful / (successful + e2e_failed)."))
-	b.WriteString(executiveHeaderHTML("E2E success vs prev", "Change in E2E-step success, in percentage points, compared with the immediately preceding equal-length window, using the same goal definition as this row."))
+	executiveHeaders := []struct {
+		label   string
+		tooltip string
+	}{
+		{label: "Env", tooltip: "Environment partition: dev, int, stg, or prod."},
+		{label: "Goal", tooltip: goalBasisTooltip()},
+		{label: "Runs", tooltip: "Number of job runs in the selected goal definition for this environment."},
+		{label: "Success", tooltip: "Success rate on the selected goal definition: (runs - failed runs) / runs * 100."},
+		{label: "Gap vs target", tooltip: "Difference in percentage points between current success and the configured target rate."},
+		{label: "Change vs prev", tooltip: "How much the success rate changed compared with the immediately preceding equal-length window, using the same goal definition as this row."},
+		{label: "Provision success", tooltip: executiveProvisionSuccessTooltip()},
+		{label: "Provision change vs prev", tooltip: executiveProvisionChangeTooltip()},
+		{label: "E2E success", tooltip: executiveE2ESuccessTooltip()},
+		{label: "E2E success vs prev", tooltip: executiveE2EChangeTooltip()},
+	}
+	for i, header := range executiveHeaders {
+		b.WriteString(executiveHeaderHTML(header.label, header.tooltip, tooltipPlacementForOrderedItems(i, len(executiveHeaders))))
+	}
 	b.WriteString("</tr></thead>\n")
 	b.WriteString("      <tbody>\n")
 	for _, report := range reports {
@@ -389,16 +412,9 @@ func buildHTML(
 	b.WriteString("    </table>\n")
 	b.WriteString("  </section>\n")
 
-	b.WriteString("  <div class=\"chart-controls\">\n")
-	b.WriteString("    <strong>Chart mode:</strong>\n")
-	b.WriteString("    <label><input type=\"radio\" name=\"chart-mode\" value=\"count\" checked> Absolute counts</label>\n")
-	b.WriteString("    <label><input type=\"radio\" name=\"chart-mode\" value=\"percent\"> 100% stacked percentages</label>\n")
-	b.WriteString("  </div>\n")
-
 	for _, report := range reports {
 		environment := normalizeReportEnvironment(report.Environment)
 		envLabel := strings.ToUpper(strings.TrimSpace(report.Environment))
-		envMaxRuns := maxRunCount(report.Days)
 		lanePanelID := fmt.Sprintf("drill-%s-lane", environment)
 		testsPanelID := fmt.Sprintf("drill-%s-tests", environment)
 		signaturesPanelID := fmt.Sprintf("drill-%s-signatures", environment)
@@ -416,16 +432,16 @@ func buildHTML(
 			cardsClass = "cards cards-dev"
 		}
 		b.WriteString(fmt.Sprintf("    <div class=\"%s\">\n", html.EscapeString(cardsClass)))
-		b.WriteString(cardHTML("E2E Jobs", report.Totals.RunCount))
-		b.WriteString(cardHTML("Success Rate", fmt.Sprintf("%.2f%%", successPct(report.Totals.RunCount, report.Totals.FailureCount))))
+		b.WriteString(cardHTML("E2E Jobs", report.Totals.RunCount, "", tooltipPlacementForOrderedItems(0, 4)))
+		b.WriteString(cardHTML("Success Rate", fmt.Sprintf("%.2f%%", successPct(report.Totals.RunCount, report.Totals.FailureCount)), "", tooltipPlacementForOrderedItems(1, 4)))
 		allRunsE2E := summarizeE2EStepOutcomes(report.Days)
 		if report.Environment == "dev" {
 			provisionStep := summarizeProvisionStepOutcomes(report.Days)
 			provisionStepValue := formatStepSuccessCardValue(provisionStep.TotalAttempted, provisionStep.Successful, provisionStep.Failed)
-			b.WriteString(cardHTML("Provision step success rate (Other excluded)", provisionStepValue))
-			b.WriteString(cardHTML("E2E success (runs reaching E2E)", formatStepSuccessCardValue(allRunsE2E.TotalAttempted, allRunsE2E.Successful, allRunsE2E.Failed)))
+			b.WriteString(cardHTML("Provision success", provisionStepValue, provisionSuccessTooltip(), tooltipPlacementForOrderedItems(2, 4)))
+			b.WriteString(cardHTML("E2E success", formatStepSuccessCardValue(allRunsE2E.TotalAttempted, allRunsE2E.Successful, allRunsE2E.Failed), e2eSuccessTooltip(), tooltipPlacementForOrderedItems(3, 4)))
 		} else {
-			b.WriteString(cardHTML("E2E success (runs reaching E2E)", formatStepSuccessCardValue(allRunsE2E.TotalAttempted, allRunsE2E.Successful, allRunsE2E.Failed)))
+			b.WriteString(cardHTML("E2E success", formatStepSuccessCardValue(allRunsE2E.TotalAttempted, allRunsE2E.Successful, allRunsE2E.Failed), e2eSuccessTooltip(), tooltipPlacementForOrderedItems(2, 3)))
 		}
 		b.WriteString("    </div>\n")
 		if report.Environment == "dev" {
@@ -433,112 +449,31 @@ func buildHTML(
 			postGoodProvision := summarizeProvisionStepOutcomesForGoalBasis(report)
 			postGoodE2E := summarizeE2EStepOutcomesForGoalBasis(report)
 			b.WriteString("    <div class=\"cards cards-post-good cards-dev\">\n")
-			b.WriteString(cardHTML("E2E Jobs (after last push of merged PR)", postGoodTotals.TotalRuns))
-			b.WriteString(cardHTML("Success Rate (after last push of merged PR)", fmt.Sprintf("%.2f%%", successPct(postGoodTotals.TotalRuns, postGoodTotals.FailedRuns))))
+			b.WriteString(cardHTML("E2E Jobs (after last push of merged PR)", postGoodTotals.TotalRuns, afterLastPushE2EJobsTooltip(), tooltipPlacementForOrderedItems(0, 4)))
+			b.WriteString(cardHTML("Success Rate (after last push of merged PR)", fmt.Sprintf("%.2f%%", successPct(postGoodTotals.TotalRuns, postGoodTotals.FailedRuns)), afterLastPushSuccessRateTooltip(), tooltipPlacementForOrderedItems(1, 4)))
 			b.WriteString(cardHTML(
 				"Provision success (after last push of merged PR)",
 				formatStepSuccessCardValue(postGoodProvision.TotalAttempted, postGoodProvision.Successful, postGoodProvision.Failed),
+				afterLastPushProvisionSuccessTooltip(),
+				tooltipPlacementForOrderedItems(2, 4),
 			))
 			b.WriteString(cardHTML(
 				"E2E success (after last push of merged PR)",
 				formatStepSuccessCardValue(postGoodE2E.TotalAttempted, postGoodE2E.Successful, postGoodE2E.Failed),
+				afterLastPushE2ESuccessTooltip(),
+				tooltipPlacementForOrderedItems(3, 4),
 			))
 			b.WriteString("    </div>\n")
 		}
-		b.WriteString("    <h3 class=\"chart-title\">Daily Run Outcomes</h3>\n")
-		b.WriteString("    <div class=\"legend\">\n")
-		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-success\"></span>Successful runs</span>\n")
-		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-provision\"></span>Provision failures</span>\n")
-		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-e2e\"></span>E2E failures</span>\n")
-		b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-ciinfra\"></span>Other failures</span>\n")
-		b.WriteString("    </div>\n")
-		b.WriteString("    <div class=\"outcomes\">\n")
-		for _, day := range report.Days {
-			successfulRuns, ciInfraFailedRuns, provisionFailedRuns, e2eFailedRuns := dailyRunOutcomeCounts(day.Counts)
-			totalRuns := day.Counts.RunCount
-			b.WriteString("      <div class=\"outcome-row\">")
-			b.WriteString(fmt.Sprintf(
-				"<div class=\"outcome-date\">%s</div>",
-				weeklyOutcomeDateHTML(day.Date, report.Environment, runLogDayBasePath),
-			))
-			if totalRuns <= 0 {
-				b.WriteString("<div class=\"outcome-bar outcome-bar-empty\">No runs</div>")
-			} else {
-				b.WriteString("<div class=\"outcome-bar\">")
-				b.WriteString(outcomeSegmentHTML("seg-success", successfulRuns, totalRuns, envMaxRuns, "Successful runs"))
-				b.WriteString(outcomeSegmentHTML("seg-provision", provisionFailedRuns, totalRuns, envMaxRuns, "Provision failures"))
-				b.WriteString(outcomeSegmentHTML("seg-e2e", e2eFailedRuns, totalRuns, envMaxRuns, "E2E failures"))
-				b.WriteString(outcomeSegmentHTML("seg-ciinfra", ciInfraFailedRuns, totalRuns, envMaxRuns, "Other failures"))
-				b.WriteString("</div>")
-			}
-			b.WriteString("<div class=\"outcome-values\">")
-			b.WriteString(fmt.Sprintf(
-				"<span class=\"mode-count\">S:%d &nbsp; P:%d &nbsp; E2E:%d &nbsp; Other:%d</span>",
-				successfulRuns,
-				provisionFailedRuns,
-				e2eFailedRuns,
-				ciInfraFailedRuns,
-			))
-			b.WriteString(fmt.Sprintf(
-				"<span class=\"mode-percent\">S:%.2f%% &nbsp; P:%.2f%% &nbsp; E2E:%.2f%% &nbsp; Other:%.2f%%</span>",
-				outcomePct(successfulRuns, totalRuns),
-				outcomePct(provisionFailedRuns, totalRuns),
-				outcomePct(e2eFailedRuns, totalRuns),
-				outcomePct(ciInfraFailedRuns, totalRuns),
-			))
-			b.WriteString("</div>")
-			b.WriteString("</div>\n")
-		}
-		b.WriteString("    </div>\n")
+		b.WriteString(renderOutcomeChart("Daily Run Outcomes", outcomeChartDaysFromCounts(report.Days), report.Environment, runLogDayBasePath, "Successful runs"))
 		if report.Environment == "dev" {
-			b.WriteString("    <h3 class=\"chart-title\">Daily Run Outcomes for DEV Goal Basis (after last push of merged PR)</h3>\n")
-			b.WriteString("    <div class=\"legend\">\n")
-			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-success\"></span>Successful runs (after last push of merged PR)</span>\n")
-			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-provision\"></span>Provision failures</span>\n")
-			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-e2e\"></span>E2E failures</span>\n")
-			b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-ciinfra\"></span>Other failures</span>\n")
-			b.WriteString("    </div>\n")
-			b.WriteString("    <div class=\"outcomes\">\n")
-			for _, day := range report.Days {
-				successfulRuns := day.PostGoodRunOutcomes.SuccessfulRuns
-				ciInfraFailedRuns := day.PostGoodRunOutcomes.CIInfraFailedRuns
-				provisionFailedRuns := day.PostGoodRunOutcomes.ProvisionFailedRuns
-				e2eFailedRuns := day.PostGoodRunOutcomes.E2EFailedRuns
-				totalRuns := day.PostGoodRunOutcomes.TotalRuns
-				b.WriteString("      <div class=\"outcome-row\">")
-				b.WriteString(fmt.Sprintf(
-					"<div class=\"outcome-date\">%s</div>",
-					weeklyOutcomeDateHTML(day.Date, report.Environment, runLogDayBasePath),
-				))
-				if totalRuns <= 0 {
-					b.WriteString("<div class=\"outcome-bar outcome-bar-empty\">No runs</div>")
-				} else {
-					b.WriteString("<div class=\"outcome-bar\">")
-					b.WriteString(outcomeSegmentHTML("seg-success", successfulRuns, totalRuns, envMaxRuns, "Successful runs (after last push of merged PR)"))
-					b.WriteString(outcomeSegmentHTML("seg-provision", provisionFailedRuns, totalRuns, envMaxRuns, "Provision failures"))
-					b.WriteString(outcomeSegmentHTML("seg-e2e", e2eFailedRuns, totalRuns, envMaxRuns, "E2E failures"))
-					b.WriteString(outcomeSegmentHTML("seg-ciinfra", ciInfraFailedRuns, totalRuns, envMaxRuns, "Other failures"))
-					b.WriteString("</div>")
-				}
-				b.WriteString("<div class=\"outcome-values\">")
-				b.WriteString(fmt.Sprintf(
-					"<span class=\"mode-count\">S:%d &nbsp; P:%d &nbsp; E2E:%d &nbsp; Other:%d</span>",
-					successfulRuns,
-					provisionFailedRuns,
-					e2eFailedRuns,
-					ciInfraFailedRuns,
-				))
-				b.WriteString(fmt.Sprintf(
-					"<span class=\"mode-percent\">S:%.2f%% &nbsp; P:%.2f%% &nbsp; E2E:%.2f%% &nbsp; Other:%.2f%%</span>",
-					outcomePct(successfulRuns, totalRuns),
-					outcomePct(provisionFailedRuns, totalRuns),
-					outcomePct(e2eFailedRuns, totalRuns),
-					outcomePct(ciInfraFailedRuns, totalRuns),
-				))
-				b.WriteString("</div>")
-				b.WriteString("</div>\n")
-			}
-			b.WriteString("    </div>\n")
+			b.WriteString(renderOutcomeChart(
+				"Daily Run Outcomes for DEV Goal Basis (after last push of merged PR)",
+				outcomeChartDaysFromPostGood(report.Days),
+				report.Environment,
+				runLogDayBasePath,
+				"Successful runs (after last push of merged PR)",
+			))
 		}
 		b.WriteString("    </div>\n")
 
@@ -603,26 +538,10 @@ func buildHTML(
 	}
 
 	b.WriteString("</main>\n")
+	b.WriteString(frontui.TooltipScriptTag())
 	b.WriteString(frontui.ThemeToggleScriptTag())
 	b.WriteString("<script>\n")
 	b.WriteString("(function(){\n")
-	b.WriteString("  function applyChartMode(mode) {\n")
-	b.WriteString("    document.body.setAttribute('data-chart-mode', mode);\n")
-	b.WriteString("    var attr = mode === 'percent' ? 'data-width-percent' : 'data-width-count';\n")
-	b.WriteString("    var segments = document.querySelectorAll('.outcome-segment');\n")
-	b.WriteString("    for (var i = 0; i < segments.length; i++) {\n")
-	b.WriteString("      var segment = segments[i];\n")
-	b.WriteString("      var width = segment.getAttribute(attr) || '0';\n")
-	b.WriteString("      segment.style.width = width + '%';\n")
-	b.WriteString("      var widthValue = parseFloat(width);\n")
-	b.WriteString("      if (!isFinite(widthValue)) { widthValue = 0; }\n")
-	b.WriteString("      if (widthValue < 12) {\n")
-	b.WriteString("        segment.classList.add('label-hidden');\n")
-	b.WriteString("      } else {\n")
-	b.WriteString("        segment.classList.remove('label-hidden');\n")
-	b.WriteString("      }\n")
-	b.WriteString("    }\n")
-	b.WriteString("  }\n")
 	b.WriteString("  function activateDrillTab(button) {\n")
 	b.WriteString("    if (!button) { return; }\n")
 	b.WriteString("    var group = button.closest('.drill-tabs');\n")
@@ -642,14 +561,6 @@ func buildHTML(
 	b.WriteString("      panel.hidden = panel.id !== target;\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
-	b.WriteString("  var radios = document.querySelectorAll('input[name=\"chart-mode\"]');\n")
-	b.WriteString("  for (var i = 0; i < radios.length; i++) {\n")
-	b.WriteString("    radios[i].addEventListener('change', function(e) {\n")
-	b.WriteString("      if (e.target && e.target.checked) {\n")
-	b.WriteString("        applyChartMode(e.target.value);\n")
-	b.WriteString("      }\n")
-	b.WriteString("    });\n")
-	b.WriteString("  }\n")
 	b.WriteString("  var tabs = document.querySelectorAll('.drill-tab');\n")
 	b.WriteString("  for (var k = 0; k < tabs.length; k++) {\n")
 	b.WriteString("    tabs[k].addEventListener('click', function(e) {\n")
@@ -663,7 +574,6 @@ func buildHTML(
 	b.WriteString("      activateDrillTab(firstTab);\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
-	b.WriteString("  applyChartMode('count');\n")
 	b.WriteString("})();\n")
 	b.WriteString("</script>\n")
 	b.WriteString("</body>\n</html>\n")
@@ -1055,33 +965,130 @@ func postGoodRunOutcomesByDay(days []dayReport) []runOutcomes {
 	return out
 }
 
-func maxRunCount(days []dayReport) int {
-	max := 0
-	for _, day := range days {
-		if day.Counts.RunCount > max {
-			max = day.Counts.RunCount
-		}
-	}
-	return max
+type outcomeChartDay struct {
+	Date                string
+	TotalRuns           int
+	SuccessfulRuns      int
+	ProvisionFailedRuns int
+	E2EFailedRuns       int
+	CIInfraFailedRuns   int
 }
 
-func outcomeSegmentHTML(className string, value int, total int, max int, label string) string {
-	if total <= 0 || value <= 0 || max <= 0 {
+func outcomeChartDaysFromCounts(days []dayReport) []outcomeChartDay {
+	out := make([]outcomeChartDay, 0, len(days))
+	for _, day := range days {
+		successfulRuns, ciInfraFailedRuns, provisionFailedRuns, e2eFailedRuns := dailyRunOutcomeCounts(day.Counts)
+		out = append(out, outcomeChartDay{
+			Date:                day.Date,
+			TotalRuns:           day.Counts.RunCount,
+			SuccessfulRuns:      successfulRuns,
+			ProvisionFailedRuns: provisionFailedRuns,
+			E2EFailedRuns:       e2eFailedRuns,
+			CIInfraFailedRuns:   ciInfraFailedRuns,
+		})
+	}
+	return out
+}
+
+func outcomeChartDaysFromPostGood(days []dayReport) []outcomeChartDay {
+	out := make([]outcomeChartDay, 0, len(days))
+	for _, day := range days {
+		out = append(out, outcomeChartDay{
+			Date:                day.Date,
+			TotalRuns:           day.PostGoodRunOutcomes.TotalRuns,
+			SuccessfulRuns:      day.PostGoodRunOutcomes.SuccessfulRuns,
+			ProvisionFailedRuns: day.PostGoodRunOutcomes.ProvisionFailedRuns,
+			E2EFailedRuns:       day.PostGoodRunOutcomes.E2EFailedRuns,
+			CIInfraFailedRuns:   day.PostGoodRunOutcomes.CIInfraFailedRuns,
+		})
+	}
+	return out
+}
+
+func outcomeSegmentTooltip(label string, value int, total int) string {
+	if total <= 0 {
+		return fmt.Sprintf("%s: %d runs", strings.TrimSpace(label), value)
+	}
+	return fmt.Sprintf(
+		"%s: %d of %d runs (%.1f%%)",
+		strings.TrimSpace(label),
+		value,
+		total,
+		outcomePct(value, total),
+	)
+}
+
+func outcomeSegmentHTML(leftPercent float64, widthPercent float64, visibleWidthPercent float64, className string, label string, tooltip string, placement string) string {
+	if widthPercent <= 0 {
 		return ""
 	}
-	widthCount := float64(value) * 100.0 / float64(max)
-	widthPercent := float64(value) * 100.0 / float64(total)
+	segmentColor := outcomeSegmentColor(className)
+	labelHTML := outcomeSegmentLabelHTML(className, widthPercent, visibleWidthPercent)
 	return fmt.Sprintf(
-		"<span class=\"outcome-segment %s\" style=\"width: %.6f%%\" data-width-count=\"%.6f\" data-width-percent=\"%.6f\" title=\"%s: %d (%.2f%%)\"><span class=\"segment-label\">%.1f%%</span></span>",
-		className,
-		widthCount,
-		widthCount,
+		"<div class=\"inline-tooltip align-%s outcome-segment-wrap\" data-inline-tooltip style=\"left: %.6f%%; width: %.6f%%; background: %s;\"><span tabindex=\"0\" role=\"button\" class=\"inline-tooltip-trigger outcome-segment %s\" data-tooltip-trigger aria-label=\"%s\">%s</span><span class=\"inline-tooltip-panel\" role=\"tooltip\">%s</span></div>",
+		html.EscapeString(placement),
+		leftPercent,
 		widthPercent,
-		html.EscapeString(label),
-		value,
-		widthPercent,
-		widthPercent,
+		html.EscapeString(segmentColor),
+		html.EscapeString(className),
+		html.EscapeString(tooltip),
+		labelHTML,
+		html.EscapeString(tooltip),
 	)
+}
+
+func renderOutcomeSegment(value int, total int, leftPercent float64, barWidthPercent float64, className string, label string, placement string) (string, float64) {
+	if total <= 0 || value <= 0 {
+		return "", leftPercent
+	}
+	widthPercent := outcomePct(value, total)
+	visibleWidthPercent := widthPercent * barWidthPercent / 100.0
+	tooltip := outcomeSegmentTooltip(label, value, total)
+	segmentHTML := outcomeSegmentHTML(leftPercent, widthPercent, visibleWidthPercent, className, label, tooltip, placement)
+	return segmentHTML, leftPercent + widthPercent
+}
+
+func outcomeSegmentColor(className string) string {
+	switch strings.TrimSpace(className) {
+	case "seg-success":
+		return "#5f8a69"
+	case "seg-provision":
+		return "#ad8651"
+	case "seg-e2e":
+		return "#9f676d"
+	case "seg-ciinfra":
+		return "#708092"
+	default:
+		return "transparent"
+	}
+}
+
+func outcomeSegmentLabelHTML(className string, labelPercent float64, visibleWidthPercent float64) string {
+	label := outcomeSegmentVisibleLabel(labelPercent, visibleWidthPercent)
+	if label == "" {
+		return ""
+	}
+	labelClass := "outcome-segment-label"
+	if outcomeSegmentUsesDarkLabel(className) {
+		labelClass += " is-dark"
+	}
+	return fmt.Sprintf("<span class=\"%s\">%s</span>", html.EscapeString(labelClass), html.EscapeString(label))
+}
+
+func outcomeSegmentVisibleLabel(labelPercent float64, visibleWidthPercent float64) string {
+	if visibleWidthPercent <= 10 {
+		return ""
+	}
+	return fmt.Sprintf("%d%%", int(math.Round(labelPercent)))
+}
+
+func outcomeSegmentUsesDarkLabel(className string) bool {
+	switch strings.TrimSpace(className) {
+	case "seg-provision":
+		return true
+	default:
+		return false
+	}
 }
 
 func outcomePct(value int, total int) float64 {
@@ -1091,16 +1098,125 @@ func outcomePct(value int, total int) float64 {
 	return float64(value) * 100.0 / float64(total)
 }
 
-func executiveHeaderHTML(label string, tooltip string) string {
+func executiveHeaderHTML(label string, tooltip string, placement string) string {
 	return fmt.Sprintf(
-		"<th><span class=\"exec-heading-help\" title=\"%s\">%s</span></th>",
-		html.EscapeString(strings.TrimSpace(tooltip)),
+		"<th><div class=\"exec-heading-wrap\"><span class=\"exec-heading-label\">%s</span>%s</div></th>",
 		html.EscapeString(strings.TrimSpace(label)),
+		frontui.HelpTooltipHTMLWithPlacement(strings.TrimSpace(tooltip), "exec-heading-help", placement),
 	)
 }
 
-func cardHTML(label string, value any) string {
-	return fmt.Sprintf("      <div class=\"card\"><div class=\"label\">%s</div><div class=\"value\">%v</div></div>\n", html.EscapeString(label), value)
+func cardHTML(label string, value any, tooltip string, placement string) string {
+	var b strings.Builder
+	b.WriteString("      <div class=\"card\">")
+	if strings.TrimSpace(tooltip) != "" {
+		b.WriteString("<div class=\"card-label-row\">")
+		b.WriteString(fmt.Sprintf("<div class=\"label\">%s</div>", html.EscapeString(label)))
+		b.WriteString(frontui.HelpTooltipHTMLWithPlacement(strings.TrimSpace(tooltip), "card-help", placement))
+		b.WriteString("</div>")
+	} else {
+		b.WriteString(fmt.Sprintf("<div class=\"label\">%s</div>", html.EscapeString(label)))
+	}
+	b.WriteString(fmt.Sprintf("<div class=\"value\">%v</div>", value))
+	b.WriteString("</div>\n")
+	return b.String()
+}
+
+func tooltipPlacementForOrderedItems(index int, total int) string {
+	if total <= 1 {
+		return "center"
+	}
+	if total >= 6 {
+		if index <= 1 {
+			return "start"
+		}
+		if index >= total-2 {
+			return "end"
+		}
+		return "center"
+	}
+	if index <= 0 {
+		return "start"
+	}
+	if index >= total-1 {
+		return "end"
+	}
+	return "center"
+}
+
+func outcomeChartMaxTotalRuns(days []outcomeChartDay) int {
+	maxTotalRuns := 0
+	for _, day := range days {
+		if day.TotalRuns > maxTotalRuns {
+			maxTotalRuns = day.TotalRuns
+		}
+	}
+	return maxTotalRuns
+}
+
+func outcomeRelativeBarPct(totalRuns int, maxTotalRuns int) float64 {
+	if totalRuns <= 0 || maxTotalRuns <= 0 {
+		return 0
+	}
+	return float64(totalRuns) * 100.0 / float64(maxTotalRuns)
+}
+
+func renderOutcomeChart(
+	title string,
+	days []outcomeChartDay,
+	environment string,
+	runLogDayBasePath string,
+	successLabel string,
+) string {
+	var b strings.Builder
+	maxTotalRuns := outcomeChartMaxTotalRuns(days)
+	b.WriteString(fmt.Sprintf("    <h3 class=\"chart-title\">%s</h3>\n", html.EscapeString(strings.TrimSpace(title))))
+	b.WriteString("    <div class=\"legend\">\n")
+	b.WriteString(fmt.Sprintf("      <span class=\"legend-item\"><span class=\"legend-swatch seg-success\"></span>%s</span>\n", html.EscapeString(strings.TrimSpace(successLabel))))
+	b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-provision\"></span>Provision failures</span>\n")
+	b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-e2e\"></span>E2E failures</span>\n")
+	b.WriteString("      <span class=\"legend-item\"><span class=\"legend-swatch seg-ciinfra\"></span>Other failures</span>\n")
+	b.WriteString("    </div>\n")
+	b.WriteString("    <div class=\"outcomes\">\n")
+	for _, day := range days {
+		b.WriteString("      <div class=\"outcome-row\">")
+		b.WriteString(fmt.Sprintf(
+			"<div class=\"outcome-date\">%s</div>",
+			weeklyOutcomeDateHTML(day.Date, environment, runLogDayBasePath),
+		))
+		b.WriteString("<div class=\"outcome-main\">")
+		b.WriteString(fmt.Sprintf("<div class=\"outcome-meta\"><span class=\"outcome-total\">%s</span></div>", html.EscapeString(outcomeTotalLabel(day.TotalRuns))))
+		b.WriteString("<div class=\"outcome-bar-shell\">")
+		if day.TotalRuns <= 0 {
+			b.WriteString("<div class=\"outcome-bar outcome-bar-empty\">No runs</div>")
+		} else {
+			barWidthPercent := outcomeRelativeBarPct(day.TotalRuns, maxTotalRuns)
+			currentLeft := 0.0
+			b.WriteString(fmt.Sprintf("<div class=\"outcome-bar\" style=\"width: %.6f%%;\">", barWidthPercent))
+			var segmentHTML string
+			segmentHTML, currentLeft = renderOutcomeSegment(day.SuccessfulRuns, day.TotalRuns, currentLeft, barWidthPercent, "seg-success", successLabel, "center")
+			b.WriteString(segmentHTML)
+			segmentHTML, currentLeft = renderOutcomeSegment(day.ProvisionFailedRuns, day.TotalRuns, currentLeft, barWidthPercent, "seg-provision", "Provision failures", "center")
+			b.WriteString(segmentHTML)
+			segmentHTML, currentLeft = renderOutcomeSegment(day.E2EFailedRuns, day.TotalRuns, currentLeft, barWidthPercent, "seg-e2e", "E2E failures", "center")
+			b.WriteString(segmentHTML)
+			segmentHTML, currentLeft = renderOutcomeSegment(day.CIInfraFailedRuns, day.TotalRuns, currentLeft, barWidthPercent, "seg-ciinfra", "Other failures", "center")
+			b.WriteString(segmentHTML)
+			b.WriteString("</div>")
+		}
+		b.WriteString("</div>")
+		b.WriteString("</div>")
+		b.WriteString("</div>\n")
+	}
+	b.WriteString("    </div>\n")
+	return b.String()
+}
+
+func outcomeTotalLabel(totalRuns int) string {
+	if totalRuns == 1 {
+		return "1 run"
+	}
+	return fmt.Sprintf("%d runs", totalRuns)
 }
 
 func formatStepSuccessCardValue(totalAttempted int, successful int, failed int) string {
@@ -1114,6 +1230,66 @@ func formatStepSuccessCardValue(totalAttempted int, successful int, failed int) 
 		failed = 0
 	}
 	return fmt.Sprintf("%.2f%% (%d/%d)", successPct(totalAttempted, failed), successful, totalAttempted)
+}
+
+func joinTooltipParts(parts ...string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		filtered = append(filtered, trimmed)
+	}
+	return strings.Join(filtered, " ")
+}
+
+func goalBasisTooltip() string {
+	return "Configured success target and run scope for this environment. INT/STG/PROD use all E2E job runs. DEV uses only runs that happened after the final push to a PR that later merged."
+}
+
+func afterLastPushMergedPRTooltip() string {
+	return "These DEV-only metrics include only runs that happened after the final push to a PR that later merged. This gives a view of the signal closest to what actually landed, rather than earlier trial runs from the same PR."
+}
+
+func provisionSuccessTooltip() string {
+	return "Provisioning here means infrastructure setup before E2E tests start. A run counts as provision-successful if it got past provisioning, even if it later failed during E2E. Runs that failed for 'Other' CI-infrastructure reasons are excluded because those runs never reached the provision step."
+}
+
+func e2eSuccessTooltip() string {
+	return "Among runs that reached E2E execution, this shows how many completed successfully. Provision failures and 'Other' CI-infrastructure failures are excluded because those runs never reached the E2E step."
+}
+
+func afterLastPushE2EJobsTooltip() string {
+	return joinTooltipParts(afterLastPushMergedPRTooltip(), "This card shows the number of runs in that DEV-only goal basis.")
+}
+
+func afterLastPushSuccessRateTooltip() string {
+	return joinTooltipParts(afterLastPushMergedPRTooltip(), "This card shows the overall success rate for that DEV-only goal basis.")
+}
+
+func afterLastPushProvisionSuccessTooltip() string {
+	return joinTooltipParts(afterLastPushMergedPRTooltip(), provisionSuccessTooltip())
+}
+
+func afterLastPushE2ESuccessTooltip() string {
+	return joinTooltipParts(afterLastPushMergedPRTooltip(), e2eSuccessTooltip())
+}
+
+func executiveProvisionSuccessTooltip() string {
+	return joinTooltipParts(provisionSuccessTooltip(), "DEV rows use only runs after the final push to a PR that later merged. INT/STG/PROD show n/a because provisioning is not part of those environments.")
+}
+
+func executiveProvisionChangeTooltip() string {
+	return "Change in provision success, in percentage points, compared with the previous equal-length window. Uses the same provision-success definition as the Provision success column. DEV only; INT/STG/PROD show n/a."
+}
+
+func executiveE2ESuccessTooltip() string {
+	return joinTooltipParts(e2eSuccessTooltip(), "DEV rows use only runs after the final push to a PR that later merged. INT/STG/PROD use all E2E job runs.")
+}
+
+func executiveE2EChangeTooltip() string {
+	return "Change in E2E success, in percentage points, compared with the previous equal-length window. Uses the same E2E-success definition as the E2E success column."
 }
 
 func formatGoalDefinition(targetRate float64, goalBasis string) string {
