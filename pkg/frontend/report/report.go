@@ -182,7 +182,7 @@ func validateOptions(opts Options) (validatedOptions, error) {
 	}
 	startWeek, err := postgresstore.NormalizeWeek(startDateRaw)
 	if err != nil {
-		return validatedOptions{}, fmt.Errorf("invalid --start-date %q (expected YYYY-MM-DD Sunday start): %w", startDateRaw, err)
+		return validatedOptions{}, fmt.Errorf("invalid --start-date %q (expected YYYY-MM-DD Monday start): %w", startDateRaw, err)
 	}
 	week := strings.TrimSpace(opts.Week)
 	if week == "" {

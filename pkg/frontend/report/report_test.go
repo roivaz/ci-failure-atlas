@@ -22,7 +22,7 @@ func TestGenerateHTMLWithComparisonLinksLaneOutcomeDatesToRunsPage(t *testing.T)
 
 	ctx := context.Background()
 	pool := newWeeklyTestPool(t)
-	store, err := postgresstore.New(pool, postgresstore.Options{Week: "2026-03-15"})
+	store, err := postgresstore.New(pool, postgresstore.Options{Week: "2026-03-16"})
 	if err != nil {
 		t.Fatalf("open week store: %v", err)
 	}
@@ -44,9 +44,9 @@ func TestGenerateHTMLWithComparisonLinksLaneOutcomeDatesToRunsPage(t *testing.T)
 	}
 
 	rendered, err := GenerateHTMLWithComparison(ctx, store, nil, Options{
-		StartDate:         "2026-03-15",
+		StartDate:         "2026-03-16",
 		TargetRate:        95.0,
-		Week:              "2026-03-15",
+		Week:              "2026-03-16",
 		RunLogDayBasePath: "/run-log",
 	})
 	if err != nil {
@@ -61,8 +61,8 @@ func TestGenerateHTMLWithComparisonLinksLaneOutcomeDatesToRunsPage(t *testing.T)
 func TestBuildHTMLInlinesGoalDefinitionsInExecutiveTable(t *testing.T) {
 	t.Parallel()
 
-	startDate := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
-	endDate := time.Date(2026, 3, 21, 0, 0, 0, 0, time.UTC)
+	startDate := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
+	endDate := time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)
 
 	rendered := buildHTML(
 		startDate,

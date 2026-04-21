@@ -704,8 +704,8 @@ func semanticWeekForDateWindow(startDate string, endDate string) (string, error)
 	if endValue.Before(startValue) {
 		return "", fmt.Errorf("end_date %s must be on or after start_date %s", endValue.Format("2006-01-02"), startValue.Format("2006-01-02"))
 	}
-	startWeek := startValue.AddDate(0, 0, -int(startValue.Weekday())).Format("2006-01-02")
-	endWeek := endValue.AddDate(0, 0, -int(endValue.Weekday())).Format("2006-01-02")
+	startWeek := startValue.AddDate(0, 0, -int((startValue.Weekday()+6)%7)).Format("2006-01-02")
+	endWeek := endValue.AddDate(0, 0, -int((endValue.Weekday()+6)%7)).Format("2006-01-02")
 	if startWeek != endWeek {
 		return "", fmt.Errorf("window %s..%s crosses semantic week boundaries (%s vs %s)", startValue.Format("2006-01-02"), endValue.Format("2006-01-02"), startWeek, endWeek)
 	}

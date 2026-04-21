@@ -23,7 +23,7 @@
 
 ## Invariants
 
-- Semantic weeks are Sunday-starting UTC weeks keyed by `YYYY-MM-DD`.
+- Semantic weeks are Monday-starting UTC weeks keyed by `YYYY-MM-DD`.
 - Materialization replaces a full stored semantic week; partial per-environment semantic partitions are not supported.
 - Semantic identity is driven by extracted failure-pattern text; `signature_id` is provenance/debug context, not the primary merge key.
 - The review queue is diagnostic-only runtime state; the app exposes it via `/api/review/signals/week`.

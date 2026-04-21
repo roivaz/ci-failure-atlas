@@ -25,14 +25,14 @@ workflow. Work read-only unless the user explicitly asks for implementation.
 ### Step 1 — Determine the target week
 
 - Default to the current UTC week unless the user specifies one.
-- Compute Sunday-starting UTC week boundaries.
+- Compute Monday-starting UTC week boundaries.
 - The user may ask for a specific week date or "go back N weeks."
 
 ### Step 2 — Fetch failure patterns
 
 ```
 Base URL: http://127.0.0.1:8082
-GET /api/failure-patterns/window?start_date=<sunday>&end_date=<saturday>
+GET /api/failure-patterns/window?start_date=<monday>&end_date=<sunday>
 ```
 
 If the response has zero rows across all environments, step back one week at a

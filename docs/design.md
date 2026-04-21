@@ -64,7 +64,7 @@ The architecture maps to the repository roughly like this:
 The semantic partitioning contract is explicit:
 
 - one stored semantic partition equals one UTC week
-- a week is keyed by a Sunday-starting `YYYY-MM-DD`
+- a week is keyed by a Monday-starting `YYYY-MM-DD`
 - materialization replaces the full stored week, not partial per-environment slices
 - supported environments are materialized together
 - history/navigation in the app is composed from these stored weeks
@@ -277,7 +277,7 @@ Secondary maintenance/debug commands:
    - Report, failure-patterns, run-log, and diagnostics all read from PostgreSQL-backed state.
 
 2. **Semantic weeks are canonical**
-   - The UI, materialization contract, and storage schema all agree on Sunday-starting week partitions.
+   - The UI, materialization contract, and storage schema all agree on Monday-starting week partitions.
 
 3. **Semantic identity is text-first**
    - Extracted failure-pattern text drives merge semantics; `signature_id` remains provenance only.

@@ -42,10 +42,7 @@ WHERE semantic_subdir IS NOT NULL AND semantic_subdir <> ''
 			return nil, fmt.Errorf("scan semantic week: %w", err)
 		}
 		normalizedWeek, err := NormalizeWeek(week)
-		if err != nil {
-			return nil, fmt.Errorf("scan semantic week %q: %w", week, err)
-		}
-		if normalizedWeek == "" {
+		if err != nil || normalizedWeek == "" {
 			continue
 		}
 		if _, exists := seen[normalizedWeek]; exists {

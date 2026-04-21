@@ -327,8 +327,8 @@ func resolveFailurePatternsWeekLabel(startDate time.Time, endDate time.Time, ove
 		return weekStart, nil
 	}
 
-	startWeek := startDate.AddDate(0, 0, -int(startDate.Weekday())).UTC().Format("2006-01-02")
-	endWeek := endDate.AddDate(0, 0, -int(endDate.Weekday())).UTC().Format("2006-01-02")
+	startWeek := startDate.AddDate(0, 0, -int((startDate.Weekday()+6)%7)).UTC().Format("2006-01-02")
+	endWeek := endDate.AddDate(0, 0, -int((endDate.Weekday()+6)%7)).UTC().Format("2006-01-02")
 	if startWeek != endWeek {
 		return "", fmt.Errorf("window %s..%s crosses semantic week boundaries (%s vs %s)", startDate.Format("2006-01-02"), endDate.Format("2006-01-02"), startWeek, endWeek)
 	}

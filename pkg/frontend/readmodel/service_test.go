@@ -12,8 +12,8 @@ func TestDiscoverSemanticWeeksSkipsLegacyWeeks(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	legacyStore := fixture.openWeekStore(t, "2026-03-08")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
+	legacyStore := fixture.openWeekStore(t, "2026-03-09")
+	currentStore := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := legacyStore.ReplaceMaterializedWeek(ctx, materializedWeekWithSchemaVersion(previousMaterializedWeek(), semanticcontracts.SchemaVersionV1)); err != nil {
 		t.Fatalf("seed legacy materialized week: %v", err)
@@ -26,7 +26,7 @@ func TestDiscoverSemanticWeeksSkipsLegacyWeeks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discover semantic weeks: %v", err)
 	}
-	if len(weeks) != 1 || weeks[0] != "2026-03-15" {
+	if len(weeks) != 1 || weeks[0] != "2026-03-16" {
 		t.Fatalf("unexpected loadable weeks: %+v", weeks)
 	}
 }

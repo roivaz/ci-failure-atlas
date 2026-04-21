@@ -13,8 +13,8 @@ func TestBuildFailurePatternsProjectsWeeklyRowsIntoWindow(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
-	previousStore := fixture.openWeekStore(t, "2026-03-08")
+	currentStore := fixture.openWeekStore(t, "2026-03-16")
+	previousStore := fixture.openWeekStore(t, "2026-03-09")
 
 	if err := currentStore.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed current materialized week: %v", err)
@@ -43,7 +43,7 @@ func TestBuildFailurePatternsProjectsWeeklyRowsIntoWindow(t *testing.T) {
 		t.Fatalf("build failure patterns: %v", err)
 	}
 
-	if got, want := data.Meta.AnchorWeek, "2026-03-15"; got != want {
+	if got, want := data.Meta.AnchorWeek, "2026-03-16"; got != want {
 		t.Fatalf("unexpected anchor week: got=%q want=%q", got, want)
 	}
 	if got, want := len(data.Environments), 1; got != want {
@@ -111,7 +111,7 @@ func TestBuildFailurePatternsIgnoresDeprecatedPhase3Links(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := store.ReplaceMaterializedWeek(ctx, jobHistoryMaterializedWeekWithExtraCluster()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
@@ -188,8 +188,8 @@ func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
-	nextStore := fixture.openWeekStore(t, "2026-03-22")
+	currentStore := fixture.openWeekStore(t, "2026-03-16")
+	nextStore := fixture.openWeekStore(t, "2026-03-23")
 	if err := currentStore.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed current materialized week: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 		{
 			RowID:       "row-22",
 			RunURL:      "https://prow.example.com/view/22",
-			OccurredAt:  "2026-03-22T08:00:00Z",
+			OccurredAt:  "2026-03-23T08:00:00Z",
 			SignatureID: "sig-a",
 		},
 	}
@@ -213,7 +213,7 @@ func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 		RunURL:      "https://prow.example.com/view/22",
 		JobName:     "periodic-ci",
 		Failed:      true,
-		OccurredAt:  "2026-03-22T08:00:00Z",
+		OccurredAt:  "2026-03-23T08:00:00Z",
 	})); err != nil {
 		t.Fatalf("seed cross-week runs: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 		TestName:       "should oauth",
 		TestSuite:      "suite-a",
 		SignatureID:    "sig-a",
-		OccurredAt:     "2026-03-22T08:00:00Z",
+		OccurredAt:     "2026-03-23T08:00:00Z",
 		RawText:        "OAuth timeout while waiting for cluster operator",
 		NormalizedText: "oauth timeout while waiting for cluster operator",
 	})); err != nil {
@@ -232,14 +232,14 @@ func TestBuildFailurePatternsComposesCrossWeekWindows(t *testing.T) {
 	}
 	if err := currentStore.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
 		{Environment: "dev", Date: "2026-03-16", Metric: "run_count", Value: 4},
-		{Environment: "dev", Date: "2026-03-22", Metric: "run_count", Value: 1},
+		{Environment: "dev", Date: "2026-03-23", Metric: "run_count", Value: 1},
 	}); err != nil {
 		t.Fatalf("seed cross-week metrics daily: %v", err)
 	}
 
 	data, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
 		StartDate:    "2026-03-16",
-		EndDate:      "2026-03-22",
+		EndDate:      "2026-03-23",
 		Environments: []string{"dev"},
 	})
 	if err != nil {
@@ -269,8 +269,8 @@ func TestBuildFailurePatternsDropsLegacySchemaEdgeWeek(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
-	nextStore := fixture.openWeekStore(t, "2026-03-22")
+	currentStore := fixture.openWeekStore(t, "2026-03-16")
+	nextStore := fixture.openWeekStore(t, "2026-03-23")
 
 	if err := currentStore.ReplaceMaterializedWeek(ctx, materializedWeekWithSchemaVersion(currentMaterializedWeek(), semanticcontracts.SchemaVersionV1)); err != nil {
 		t.Fatalf("seed current materialized week: %v", err)
@@ -281,13 +281,13 @@ func TestBuildFailurePatternsDropsLegacySchemaEdgeWeek(t *testing.T) {
 
 	data, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
 		StartDate:    "2026-03-16",
-		EndDate:      "2026-03-22",
+		EndDate:      "2026-03-23",
 		Environments: []string{"dev"},
 	})
 	if err != nil {
 		t.Fatalf("expected legacy edge week to be gracefully dropped: %v", err)
 	}
-	if got, want := data.Meta.AnchorWeek, "2026-03-22"; got != want {
+	if got, want := data.Meta.AnchorWeek, "2026-03-23"; got != want {
 		t.Fatalf("unexpected anchor week after dropping legacy edge: got=%q want=%q", got, want)
 	}
 }
@@ -297,8 +297,8 @@ func TestBuildFailurePatternsBadPRScoreUsesWindowReferenceSpread(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
-	nextStore := fixture.openWeekStore(t, "2026-03-22")
+	currentStore := fixture.openWeekStore(t, "2026-03-16")
+	nextStore := fixture.openWeekStore(t, "2026-03-23")
 
 	currentWeek := currentMaterializedWeek()
 	currentWeek.FailurePatterns[0].SupportCount = 1
@@ -325,7 +325,7 @@ func TestBuildFailurePatternsBadPRScoreUsesWindowReferenceSpread(t *testing.T) {
 		{
 			RowID:          "row-22",
 			RunURL:         "https://prow.example.com/view/22",
-			OccurredAt:     "2026-03-22T08:00:00Z",
+			OccurredAt:     "2026-03-23T08:00:00Z",
 			SignatureID:    "sig-a",
 			PRNumber:       4102,
 			PostGoodCommit: false,
@@ -350,7 +350,7 @@ func TestBuildFailurePatternsBadPRScoreUsesWindowReferenceSpread(t *testing.T) {
 			JobName:     "periodic-ci",
 			PRNumber:    4102,
 			Failed:      true,
-			OccurredAt:  "2026-03-22T08:00:00Z",
+			OccurredAt:  "2026-03-23T08:00:00Z",
 		},
 	}); err != nil {
 		t.Fatalf("seed cross-week runs: %v", err)
@@ -374,7 +374,7 @@ func TestBuildFailurePatternsBadPRScoreUsesWindowReferenceSpread(t *testing.T) {
 			TestName:       "should oauth",
 			TestSuite:      "suite-a",
 			SignatureID:    "sig-a",
-			OccurredAt:     "2026-03-22T08:00:00Z",
+			OccurredAt:     "2026-03-23T08:00:00Z",
 			RawText:        "OAuth timeout while waiting for cluster operator",
 			NormalizedText: "oauth timeout while waiting for cluster operator",
 		},
@@ -383,14 +383,14 @@ func TestBuildFailurePatternsBadPRScoreUsesWindowReferenceSpread(t *testing.T) {
 	}
 	if err := currentStore.UpsertMetricsDaily(ctx, []storecontracts.MetricDailyRecord{
 		{Environment: "dev", Date: "2026-03-16", Metric: "run_count", Value: 1},
-		{Environment: "dev", Date: "2026-03-22", Metric: "run_count", Value: 1},
+		{Environment: "dev", Date: "2026-03-23", Metric: "run_count", Value: 1},
 	}); err != nil {
 		t.Fatalf("seed cross-week metrics daily: %v", err)
 	}
 
 	data, err := fixture.service.BuildFailurePatterns(ctx, FailurePatternsQuery{
 		StartDate:    "2026-03-16",
-		EndDate:      "2026-03-22",
+		EndDate:      "2026-03-23",
 		Environments: []string{"dev"},
 	})
 	if err != nil {
@@ -423,7 +423,7 @@ func TestBuildFailurePatternsUsesStoredReferencesWhenClustersShareSignature(t *t
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	week := storecontracts.MaterializedWeek{
 		FailurePatterns: []semanticcontracts.FailurePatternRecord{

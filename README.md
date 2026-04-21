@@ -50,10 +50,10 @@ This runs the controller set continuously and keeps facts/state tables up to dat
 
 ```bash
 go run cmd/main.go semantic materialize \
-  --week 2026-03-29
+  --week 2026-03-30
 ```
 
-A semantic week is always a Sunday-starting UTC week in `YYYY-MM-DD` form. Materialization replaces the full stored week across all supported environments.
+A semantic week is always a Monday-starting UTC week in `YYYY-MM-DD` form. Materialization replaces the full stored week across all supported environments.
 
 If `--week` is omitted, the command defaults to the current UTC week start. For bulk refreshes, the `Makefile` also includes:
 
@@ -160,7 +160,7 @@ python -m http.server 8080 --directory site
 ## Semantic Week Contract
 
 - Semantic partitions are PostgreSQL week partitions, not free-form subdirectories.
-- A stored week must be a Sunday-starting `YYYY-MM-DD`.
+- A stored week must be a Monday-starting `YYYY-MM-DD`.
 - The review app and windowed report/failure-patterns/run-log surfaces compose over those stored weeks.
 - Partial per-environment materialization is intentionally not supported.
 
@@ -182,8 +182,8 @@ Useful local smoke commands:
 
 ```bash
 make run-controllers CONTROLLER_ENVS=dev,int,stg,prod
-make semantic-materialize SEMANTIC_WEEK=2026-03-29
-make app APP_WEEK=2026-03-22
+make semantic-materialize SEMANTIC_WEEK=2026-03-30
+make app APP_WEEK=2026-03-23
 make db-dump-remote REMOTE_PGUSER=<remote-user> REMOTE_PGPASSWORD=<remote-password> REMOTE_PGDATABASE=<remote-database> DB_DUMP_FILE=.work/cfa-prod.sql
 make db-restore-local DB_DUMP_FILE=.work/cfa-prod.sql
 make site-upload AZ_STORAGE_ACCOUNT=<storage-account-name> SITE_ROOT=site

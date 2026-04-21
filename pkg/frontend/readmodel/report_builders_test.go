@@ -15,7 +15,7 @@ func TestBuildFailurePatternReportDataIgnoresDeprecatedPhase3Links(t *testing.T)
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := store.ReplaceMaterializedWeek(ctx, jobHistoryMaterializedWeekWithExtraCluster()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
@@ -57,7 +57,7 @@ func TestBuildFailurePatternReportDataIgnoresDeprecatedPhase3Links(t *testing.T)
 	)
 
 	data, err := BuildFailurePatternReportData(ctx, store, FailurePatternReportBuildOptions{
-		Week:         "2026-03-15",
+		Week:         "2026-03-16",
 		Environments: []string{"dev"},
 	})
 	if err != nil {
@@ -86,7 +86,7 @@ func TestBuildFailurePatternReportDataProjectsSamplesAndCounts(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
@@ -99,7 +99,7 @@ func TestBuildFailurePatternReportDataProjectsSamplesAndCounts(t *testing.T) {
 	}
 
 	data, err := BuildFailurePatternReportData(ctx, store, FailurePatternReportBuildOptions{
-		Week:         "2026-03-15",
+		Week:         "2026-03-16",
 		Environments: []string{"dev"},
 	})
 	if err != nil {
@@ -129,8 +129,8 @@ func TestBuildWeeklyReportDataBuildsCurrentAndPreviousReadModels(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
-	previousStore := fixture.openWeekStore(t, "2026-03-08")
+	currentStore := fixture.openWeekStore(t, "2026-03-16")
+	previousStore := fixture.openWeekStore(t, "2026-03-09")
 
 	if err := currentStore.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed current materialized week: %v", err)
@@ -149,18 +149,18 @@ func TestBuildWeeklyReportDataBuildsCurrentAndPreviousReadModels(t *testing.T) {
 	}
 
 	data, err := BuildWeeklyReportData(ctx, currentStore, previousStore, WeeklyReportBuildOptions{
-		StartDate:  time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC),
+		StartDate:  time.Date(2026, time.March, 16, 0, 0, 0, 0, time.UTC),
 		TargetRate: 95.0,
-		Week:       "2026-03-15",
+		Week:       "2026-03-16",
 	})
 	if err != nil {
 		t.Fatalf("build weekly report data: %v", err)
 	}
 
-	if got, want := data.StartDate.Format("2006-01-02"), "2026-03-15"; got != want {
+	if got, want := data.StartDate.Format("2006-01-02"), "2026-03-16"; got != want {
 		t.Fatalf("unexpected start date: got=%q want=%q", got, want)
 	}
-	if got, want := data.EndDate.Format("2006-01-02"), "2026-03-21"; got != want {
+	if got, want := data.EndDate.Format("2006-01-02"), "2026-03-22"; got != want {
 		t.Fatalf("unexpected end date: got=%q want=%q", got, want)
 	}
 	devReport := weeklyEnvReportByName(t, data.CurrentReports, "dev")
@@ -189,7 +189,7 @@ func TestBuildWeeklyReportDataUsesStoredReferencesForTopSignatureSamples(t *test
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
+	currentStore := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := currentStore.ReplaceMaterializedWeek(ctx, sharedSignatureMaterializedWeek()); err != nil {
 		t.Fatalf("seed current materialized week: %v", err)
@@ -202,7 +202,7 @@ func TestBuildWeeklyReportDataUsesStoredReferencesForTopSignatureSamples(t *test
 			TestName:       "finalize step",
 			TestSuite:      "suite-a",
 			SignatureID:    "sig-shared",
-			OccurredAt:     "2026-03-15T08:00:00Z",
+			OccurredAt:     "2026-03-16T08:00:00Z",
 			RawText:        "failed post-install: resource not ready, name: finalize-mce-config",
 			NormalizedText: "finalize-mce-config timeout",
 		},
@@ -213,7 +213,7 @@ func TestBuildWeeklyReportDataUsesStoredReferencesForTopSignatureSamples(t *test
 			TestName:       "propagator step",
 			TestSuite:      "suite-a",
 			SignatureID:    "sig-shared",
-			OccurredAt:     "2026-03-15T08:05:00Z",
+			OccurredAt:     "2026-03-16T08:05:00Z",
 			RawText:        "resource not ready, name: grc-policy-propagator",
 			NormalizedText: "grc-policy-propagator timeout",
 		},
@@ -225,9 +225,9 @@ func TestBuildWeeklyReportDataUsesStoredReferencesForTopSignatureSamples(t *test
 	}
 
 	data, err := BuildWeeklyReportData(ctx, currentStore, nil, WeeklyReportBuildOptions{
-		StartDate:  time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC),
+		StartDate:  time.Date(2026, time.March, 16, 0, 0, 0, 0, time.UTC),
 		TargetRate: 95.0,
-		Week:       "2026-03-15",
+		Week:       "2026-03-16",
 	})
 	if err != nil {
 		t.Fatalf("build weekly report data: %v", err)
@@ -266,8 +266,8 @@ func TestBuildWeeklyReportDataRejectsMixedSchemaComparison(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	currentStore := fixture.openWeekStore(t, "2026-03-15")
-	previousStore := fixture.openWeekStore(t, "2026-03-08")
+	currentStore := fixture.openWeekStore(t, "2026-03-16")
+	previousStore := fixture.openWeekStore(t, "2026-03-09")
 
 	if err := currentStore.ReplaceMaterializedWeek(ctx, materializedWeekWithSchemaVersion(currentMaterializedWeek(), semanticcontracts.SchemaVersionV2)); err != nil {
 		t.Fatalf("seed current materialized week: %v", err)
@@ -286,9 +286,9 @@ func TestBuildWeeklyReportDataRejectsMixedSchemaComparison(t *testing.T) {
 	}
 
 	_, err := BuildWeeklyReportData(ctx, currentStore, previousStore, WeeklyReportBuildOptions{
-		StartDate:  time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC),
+		StartDate:  time.Date(2026, time.March, 16, 0, 0, 0, 0, time.UTC),
 		TargetRate: 95.0,
-		Week:       "2026-03-15",
+		Week:       "2026-03-16",
 	})
 	if err == nil {
 		t.Fatalf("expected mixed-schema weekly comparison to fail")
@@ -311,14 +311,14 @@ func weeklyEnvReportByName(t *testing.T, reports []WeeklyEnvReport, environment 
 
 func reportMetricsDaily() []storecontracts.MetricDailyRecord {
 	return []storecontracts.MetricDailyRecord{
-		{Environment: "dev", Date: "2026-03-15", Metric: "run_count", Value: 7},
-		{Environment: "dev", Date: "2026-03-15", Metric: "failure_count", Value: 2},
-		{Environment: "dev", Date: "2026-03-15", Metric: "failed_e2e_run_count", Value: 2},
-		{Environment: "dev", Date: "2026-03-15", Metric: "post_good_run_count", Value: 4},
-		{Environment: "dev", Date: "2026-03-15", Metric: "post_good_failed_e2e_jobs", Value: 1},
-		{Environment: "dev", Date: "2026-03-08", Metric: "run_count", Value: 5},
-		{Environment: "dev", Date: "2026-03-08", Metric: "failure_count", Value: 1},
-		{Environment: "dev", Date: "2026-03-08", Metric: "failed_e2e_run_count", Value: 1},
+		{Environment: "dev", Date: "2026-03-16", Metric: "run_count", Value: 7},
+		{Environment: "dev", Date: "2026-03-16", Metric: "failure_count", Value: 2},
+		{Environment: "dev", Date: "2026-03-16", Metric: "failed_e2e_run_count", Value: 2},
+		{Environment: "dev", Date: "2026-03-16", Metric: "post_good_run_count", Value: 4},
+		{Environment: "dev", Date: "2026-03-16", Metric: "post_good_failed_e2e_jobs", Value: 1},
+		{Environment: "dev", Date: "2026-03-09", Metric: "run_count", Value: 5},
+		{Environment: "dev", Date: "2026-03-09", Metric: "failure_count", Value: 1},
+		{Environment: "dev", Date: "2026-03-09", Metric: "failed_e2e_run_count", Value: 1},
 	}
 }
 
@@ -326,7 +326,7 @@ func reportTestMetadataDaily() []storecontracts.TestMetadataDailyRecord {
 	return []storecontracts.TestMetadataDailyRecord{
 		{
 			Environment:            "dev",
-			Date:                   "2026-03-15",
+			Date:                   "2026-03-16",
 			Period:                 "default",
 			TestName:               "should oauth",
 			TestSuite:              "suite-a",

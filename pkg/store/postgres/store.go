@@ -308,8 +308,8 @@ func NormalizeWeek(value string) (string, error) {
 	if parsed.Format("2006-01-02") != trimmed {
 		return "", fmt.Errorf("must use YYYY-MM-DD format")
 	}
-	if parsed.Weekday() != time.Sunday {
-		return "", fmt.Errorf("must start on Sunday")
+	if parsed.Weekday() != time.Monday {
+		return "", fmt.Errorf("must start on Monday")
 	}
 	return parsed.UTC().Format("2006-01-02"), nil
 }

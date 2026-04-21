@@ -31,23 +31,23 @@ func TestMethodsRequireContext(t *testing.T) {
 	}
 }
 
-func TestNormalizeWeekAcceptsSundayWeek(t *testing.T) {
+func TestNormalizeWeekAcceptsMonday(t *testing.T) {
 	t.Parallel()
 
-	week, err := NormalizeWeek(" 2026-03-15 ")
+	week, err := NormalizeWeek(" 2026-03-16 ")
 	if err != nil {
 		t.Fatalf("normalize week: %v", err)
 	}
-	if got, want := week, "2026-03-15"; got != want {
+	if got, want := week, "2026-03-16"; got != want {
 		t.Fatalf("unexpected normalized week: got=%q want=%q", got, want)
 	}
 }
 
-func TestNormalizeWeekRejectsNonSunday(t *testing.T) {
+func TestNormalizeWeekRejectsNonMonday(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NormalizeWeek("2026-03-16"); err == nil {
-		t.Fatalf("expected validation error for non-Sunday week")
+	if _, err := NormalizeWeek("2026-03-15"); err == nil {
+		t.Fatalf("expected validation error for non-Monday week")
 	}
 }
 
@@ -73,7 +73,7 @@ func TestMigrationsDropDeprecatedPhase3Tables(t *testing.T) {
 }
 
 func TestReplaceMaterializedWeekClearsPriorSnapshot(t *testing.T) {
-	store := newIntegrationStore(t, "2026-03-15")
+	store := newIntegrationStore(t, "2026-03-16")
 	ctx := context.Background()
 
 	if err := store.ReplaceMaterializedWeek(ctx, storecontracts.MaterializedWeek{
@@ -132,7 +132,7 @@ func TestReplaceMaterializedWeekClearsPriorSnapshot(t *testing.T) {
 }
 
 func TestGetSemanticWeekSummaryAggregatesByEnvironment(t *testing.T) {
-	store := newIntegrationStore(t, "2026-03-15")
+	store := newIntegrationStore(t, "2026-03-16")
 	ctx := context.Background()
 
 	if err := store.ReplaceMaterializedWeek(ctx, storecontracts.MaterializedWeek{

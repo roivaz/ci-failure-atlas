@@ -11,7 +11,7 @@ The materialization command does **not** fetch source data directly. Controllers
 
 ## Materialization Unit
 
-The canonical unit is one Sunday-starting UTC week:
+The canonical unit is one Monday-starting UTC week:
 
 - key format: `YYYY-MM-DD`
 - time range: `[week_start, week_start + 7d)`
@@ -21,7 +21,7 @@ The canonical unit is one Sunday-starting UTC week:
 The operational entrypoints are:
 
 ```bash
-make semantic-materialize SEMANTIC_WEEK=2026-04-12
+make semantic-materialize SEMANTIC_WEEK=2026-04-13
 make semantic-backfill SEMANTIC_WEEKS=8
 ```
 
@@ -278,7 +278,7 @@ For practical review guidance, see `docs/semantic-materialization-review-agent-p
 
 ```bash
 # Materialize one week
-make semantic-materialize SEMANTIC_WEEK=2026-04-12
+make semantic-materialize SEMANTIC_WEEK=2026-04-13
 
 # Backfill multiple weeks
 make semantic-backfill SEMANTIC_WEEKS=8

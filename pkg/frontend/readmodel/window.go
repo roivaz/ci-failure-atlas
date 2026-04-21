@@ -215,7 +215,7 @@ func weekStartForDate(value time.Time) time.Time {
 		return time.Time{}
 	}
 	date := time.Date(value.UTC().Year(), value.UTC().Month(), value.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	return date.AddDate(0, 0, -int(date.Weekday())).UTC()
+	return date.AddDate(0, 0, -int((date.Weekday()+6)%7)).UTC()
 }
 
 func filterAvailableWeeks(requested []string, available []string) []string {

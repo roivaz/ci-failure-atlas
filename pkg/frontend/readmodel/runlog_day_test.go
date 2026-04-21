@@ -14,7 +14,7 @@ func TestBuildRunLogDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
@@ -34,7 +34,7 @@ func TestBuildRunLogDayBuildsMatchedAndUnmatchedRuns(t *testing.T) {
 		t.Fatalf("build job history day: %v", err)
 	}
 
-	if got, want := data.Meta.AnchorWeek, "2026-03-15"; got != want {
+	if got, want := data.Meta.AnchorWeek, "2026-03-16"; got != want {
 		t.Fatalf("unexpected anchor week: got=%q want=%q", got, want)
 	}
 	environment := jobHistoryEnvironmentByName(t, data, "dev")
@@ -103,7 +103,7 @@ func TestBuildRunLogDayHandlesMultipleSignaturesOnOneRun(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := store.ReplaceMaterializedWeek(ctx, jobHistoryMaterializedWeekWithExtraCluster()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
@@ -181,7 +181,7 @@ func TestBuildRunLogDayUsesStoredReferencesWhenClustersShareSignature(t *testing
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := store.ReplaceMaterializedWeek(ctx, sharedSignatureMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
@@ -267,7 +267,7 @@ func TestBuildRunLogDayFlagsFailedRunsWithoutRawRows(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
@@ -312,7 +312,7 @@ func TestBuildRunLogDayUsesWeeklySemanticBadPRScore(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)

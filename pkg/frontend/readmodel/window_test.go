@@ -18,33 +18,33 @@ func TestFilterAvailableWeeks(t *testing.T) {
 	}{
 		{
 			name:      "all available",
-			requested: []string{"2026-03-08", "2026-03-15"},
-			available: []string{"2026-03-08", "2026-03-15"},
-			want:      []string{"2026-03-08", "2026-03-15"},
+			requested: []string{"2026-03-09", "2026-03-16"},
+			available: []string{"2026-03-09", "2026-03-16"},
+			want:      []string{"2026-03-09", "2026-03-16"},
 		},
 		{
 			name:      "trailing missing",
-			requested: []string{"2026-03-08", "2026-03-15"},
-			available: []string{"2026-03-08"},
-			want:      []string{"2026-03-08"},
+			requested: []string{"2026-03-09", "2026-03-16"},
+			available: []string{"2026-03-09"},
+			want:      []string{"2026-03-09"},
 		},
 		{
 			name:      "leading missing",
-			requested: []string{"2026-03-08", "2026-03-15"},
-			available: []string{"2026-03-15"},
-			want:      []string{"2026-03-15"},
+			requested: []string{"2026-03-09", "2026-03-16"},
+			available: []string{"2026-03-16"},
+			want:      []string{"2026-03-16"},
 		},
 		{
 			name:      "none available",
-			requested: []string{"2026-03-08", "2026-03-15"},
-			available: []string{"2026-03-01"},
+			requested: []string{"2026-03-09", "2026-03-16"},
+			available: []string{"2026-03-02"},
 			want:      []string{},
 		},
 		{
 			name:      "middle of three available",
-			requested: []string{"2026-03-08", "2026-03-15", "2026-03-22"},
-			available: []string{"2026-03-15"},
-			want:      []string{"2026-03-15"},
+			requested: []string{"2026-03-09", "2026-03-16", "2026-03-23"},
+			available: []string{"2026-03-16"},
+			want:      []string{"2026-03-16"},
 		},
 	}
 
@@ -73,18 +73,18 @@ func TestInteriorGap(t *testing.T) {
 		want  string
 	}{
 		{name: "empty", weeks: nil, want: ""},
-		{name: "single", weeks: []string{"2026-03-08"}, want: ""},
-		{name: "contiguous two", weeks: []string{"2026-03-08", "2026-03-15"}, want: ""},
-		{name: "contiguous three", weeks: []string{"2026-03-08", "2026-03-15", "2026-03-22"}, want: ""},
+		{name: "single", weeks: []string{"2026-03-09"}, want: ""},
+		{name: "contiguous two", weeks: []string{"2026-03-09", "2026-03-16"}, want: ""},
+		{name: "contiguous three", weeks: []string{"2026-03-09", "2026-03-16", "2026-03-23"}, want: ""},
 		{
 			name:  "gap in middle of three",
-			weeks: []string{"2026-03-08", "2026-03-22"},
-			want:  "2026-03-15",
+			weeks: []string{"2026-03-09", "2026-03-23"},
+			want:  "2026-03-16",
 		},
 		{
 			name:  "gap in middle of four",
-			weeks: []string{"2026-03-01", "2026-03-08", "2026-03-22"},
-			want:  "2026-03-15",
+			weeks: []string{"2026-03-02", "2026-03-09", "2026-03-23"},
+			want:  "2026-03-16",
 		},
 	}
 
@@ -105,7 +105,7 @@ func TestResolveWindowTrailingEdgeWeekMissing(t *testing.T) {
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
 
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestResolveWindowTrailingEdgeWeekMissing(t *testing.T) {
 	if got, want := len(scope.SemanticWeeks), 1; got != want {
 		t.Fatalf("semantic weeks: got=%d want=%d", got, want)
 	}
-	if got, want := scope.SemanticWeeks[0], "2026-03-15"; got != want {
+	if got, want := scope.SemanticWeeks[0], "2026-03-16"; got != want {
 		t.Fatalf("semantic week: got=%q want=%q", got, want)
 	}
 	if got, want := scope.StartDate, "2026-03-16"; got != want {
@@ -137,7 +137,7 @@ func TestResolveWindowLeadingEdgeWeekMissing(t *testing.T) {
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
 
-	store := fixture.openWeekStore(t, "2026-03-22")
+	store := fixture.openWeekStore(t, "2026-03-23")
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestResolveWindowLeadingEdgeWeekMissing(t *testing.T) {
 	if got, want := len(scope.SemanticWeeks), 1; got != want {
 		t.Fatalf("semantic weeks: got=%d want=%d", got, want)
 	}
-	if got, want := scope.SemanticWeeks[0], "2026-03-22"; got != want {
+	if got, want := scope.SemanticWeeks[0], "2026-03-23"; got != want {
 		t.Fatalf("semantic week: got=%q want=%q", got, want)
 	}
 	if got, want := scope.StartDate, "2026-03-16"; got != want {
@@ -169,8 +169,8 @@ func TestResolveWindowInteriorGapFails(t *testing.T) {
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
 
-	firstStore := fixture.openWeekStore(t, "2026-03-08")
-	thirdStore := fixture.openWeekStore(t, "2026-03-22")
+	firstStore := fixture.openWeekStore(t, "2026-03-09")
+	thirdStore := fixture.openWeekStore(t, "2026-03-23")
 	if err := firstStore.ReplaceMaterializedWeek(ctx, previousMaterializedWeek()); err != nil {
 		t.Fatalf("seed first week: %v", err)
 	}
@@ -185,8 +185,8 @@ func TestResolveWindowInteriorGapFails(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected interior gap to cause failure")
 	}
-	if !strings.Contains(err.Error(), "2026-03-15") {
-		t.Fatalf("expected error to mention missing interior week 2026-03-15, got=%v", err)
+	if !strings.Contains(err.Error(), "2026-03-16") {
+		t.Fatalf("expected error to mention missing interior week 2026-03-16, got=%v", err)
 	}
 }
 
@@ -211,7 +211,7 @@ func TestResolveWindowSprintWithTrailingFutureWeek(t *testing.T) {
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
 
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestResolveWindowBothEdgesMissing(t *testing.T) {
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
 
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestResolveWindowMultipleAvailableWeeksNoClamping(t *testing.T) {
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
 
-	for _, week := range []string{"2026-03-08", "2026-03-15"} {
+	for _, week := range []string{"2026-03-09", "2026-03-16"} {
 		store := fixture.openWeekStore(t, week)
 		if err := store.ReplaceMaterializedWeek(ctx, currentMaterializedWeek()); err != nil {
 			t.Fatalf("seed %s: %v", week, err)

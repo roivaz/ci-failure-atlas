@@ -40,7 +40,7 @@ func NewSemanticCommand() (*cobra.Command, error) {
 		Short: "Materialize one semantic week or all stored semantic weeks from facts in PostgreSQL.",
 		Args:  cobra.NoArgs,
 		Example: strings.TrimSpace(`
-cfa semantic materialize --week 2026-03-29
+cfa semantic materialize --week 2026-03-30
 cfa semantic materialize --all
 `),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -187,6 +187,6 @@ func printMaterializeSummary(cmd *cobra.Command, scope materializeScope, result 
 
 func currentMaterializeWeekLabel(now time.Time) string {
 	normalized := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	offset := int(normalized.Weekday())
+	offset := int((normalized.Weekday() + 6) % 7)
 	return normalized.AddDate(0, 0, -offset).Format(semanticWeekFormat)
 }

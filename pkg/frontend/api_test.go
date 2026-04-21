@@ -58,7 +58,7 @@ func TestHandleReviewRoutesRemoved(t *testing.T) {
 		t.Fatalf("unexpected /review status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/review/actions/links", strings.NewReader("week=2026-03-15"))
+	req = httptest.NewRequest(http.MethodPost, "/review/actions/links", strings.NewReader("week=2026-03-16"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
@@ -120,7 +120,7 @@ func TestHandleAPIFailurePatternsReturnsJSON(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newHandlerFixture(t)
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, reviewAPIMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -245,8 +245,8 @@ func TestHandleFailurePatternsPageWindowRendersHTML(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newHandlerFixture(t)
-	targetStore := fixture.openWeekStore(t, "2026-03-15")
-	laterStore := fixture.openWeekStore(t, "2026-03-22")
+	targetStore := fixture.openWeekStore(t, "2026-03-16")
+	laterStore := fixture.openWeekStore(t, "2026-03-23")
 	if err := targetStore.ReplaceMaterializedWeek(ctx, reviewAPIMaterializedWeek()); err != nil {
 		t.Fatalf("seed target materialized week: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestHandleFailurePatternsPageDefaultsToFullWeekWindow(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newHandlerFixture(t)
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, reviewAPIMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestHandleFailurePatternsPageDefaultsToFullWeekWindow(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/failure-patterns?week=2026-03-15", nil)
+	req := httptest.NewRequest(http.MethodGet, "/failure-patterns?week=2026-03-16", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -365,10 +365,10 @@ func TestHandleFailurePatternsPageDefaultsToFullWeekWindow(t *testing.T) {
 		t.Fatalf("unexpected status code: got=%d want=%d body=%s", got, want, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	if !strings.Contains(body, `name="start_date" value="2026-03-15"`) {
+	if !strings.Contains(body, `name="start_date" value="2026-03-16"`) {
 		t.Fatalf("expected default start_date in body, got %q", body)
 	}
-	if !strings.Contains(body, `name="end_date" value="2026-03-21"`) {
+	if !strings.Contains(body, `name="end_date" value="2026-03-22"`) {
 		t.Fatalf("expected default end_date in body, got %q", body)
 	}
 	if !strings.Contains(body, "Apply") {
@@ -381,7 +381,7 @@ func TestHandleAPIRunsDayReturnsJSON(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newHandlerFixture(t)
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, jobHistoryAPIMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -536,7 +536,7 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newHandlerFixture(t)
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, jobHistoryAPIMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -625,7 +625,7 @@ func TestHandleRunsPageRendersHTML(t *testing.T) {
 	if !strings.Contains(body, "#123 (open)") {
 		t.Fatalf("expected open PR state label in body, got %q", body)
 	}
-	if !strings.Contains(body, "/failure-patterns?") || !strings.Contains(body, "start_date=2026-03-15") || !strings.Contains(body, "end_date=2026-03-21") {
+	if !strings.Contains(body, "/failure-patterns?") || !strings.Contains(body, "start_date=2026-03-16") || !strings.Contains(body, "end_date=2026-03-22") {
 		t.Fatalf("expected anchor-week failure-pattern link in body, got %q", body)
 	}
 }
@@ -635,7 +635,7 @@ func TestHandleAPIReviewSignalsWeekReturnsJSON(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newHandlerFixture(t)
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, reviewAPIMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
@@ -647,7 +647,7 @@ func TestHandleAPIReviewSignalsWeekReturnsJSON(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/review/signals/week?week=2026-03-15", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/review/signals/week?week=2026-03-16", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -662,7 +662,7 @@ func TestHandleAPIReviewSignalsWeekReturnsJSON(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got, want := payload.Week, "2026-03-15"; got != want {
+	if got, want := payload.Week, "2026-03-16"; got != want {
 		t.Fatalf("unexpected week: got=%q want=%q", got, want)
 	}
 	if got, want := payload.Timezone, "UTC"; got != want {

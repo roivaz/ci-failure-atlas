@@ -13,16 +13,16 @@ func TestBuildReviewSignalsWeekMatchesCurrentFailurePatterns(t *testing.T) {
 
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t, "")
-	store := fixture.openWeekStore(t, "2026-03-15")
+	store := fixture.openWeekStore(t, "2026-03-16")
 	if err := store.ReplaceMaterializedWeek(ctx, reviewSignalsMaterializedWeek()); err != nil {
 		t.Fatalf("seed materialized week: %v", err)
 	}
 
-	data, err := fixture.service.BuildReviewSignalsWeek(ctx, "2026-03-15")
+	data, err := fixture.service.BuildReviewSignalsWeek(ctx, "2026-03-16")
 	if err != nil {
 		t.Fatalf("build review signals week: %v", err)
 	}
-	if got, want := data.Week, "2026-03-15"; got != want {
+	if got, want := data.Week, "2026-03-16"; got != want {
 		t.Fatalf("unexpected week: got=%q want=%q", got, want)
 	}
 	if got, want := data.Timezone, "UTC"; got != want {

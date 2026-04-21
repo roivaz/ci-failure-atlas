@@ -8,7 +8,7 @@ import (
 
 func CurrentWeekStart(now time.Time) time.Time {
 	normalized := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	offset := int(normalized.Weekday())
+	offset := int((normalized.Weekday() + 6) % 7)
 	return normalized.AddDate(0, 0, -offset)
 }
 

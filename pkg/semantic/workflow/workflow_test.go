@@ -50,7 +50,7 @@ func newTestStore(t *testing.T) storecontracts.Store {
 	}
 
 	store, err := postgresstore.New(pool, postgresstore.Options{
-		Week: "2026-03-15",
+		Week: "2026-03-16",
 	})
 	if err != nil {
 		t.Fatalf("create postgres store: %v", err)
@@ -379,11 +379,11 @@ func TestRunPhase2BuildsFailurePatternsAndMergedReview(t *testing.T) {
 	}
 }
 
-func TestMaterializeWeekRejectsNonSunday(t *testing.T) {
+func TestMaterializeWeekRejectsNonMonday(t *testing.T) {
 	t.Parallel()
 
-	if _, err := MaterializeWeek(context.Background(), newTestStore(t), time.Date(2026, time.March, 16, 10, 0, 0, 0, time.UTC)); err == nil {
-		t.Fatalf("expected validation error for non-Sunday materialization week")
+	if _, err := MaterializeWeek(context.Background(), newTestStore(t), time.Date(2026, time.March, 15, 10, 0, 0, 0, time.UTC)); err == nil {
+		t.Fatalf("expected validation error for non-Monday materialization week")
 	}
 }
 

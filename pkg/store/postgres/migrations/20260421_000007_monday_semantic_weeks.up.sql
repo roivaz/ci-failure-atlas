@@ -1,8 +1,14 @@
 ALTER TABLE cfa_sem_global_clusters
-  ALTER COLUMN semantic_subdir DROP DEFAULT;
+  DROP CONSTRAINT IF EXISTS cfa_sem_global_clusters_semantic_subdir_week_chk;
 
 ALTER TABLE cfa_sem_review_queue
-  ALTER COLUMN semantic_subdir DROP DEFAULT;
+  DROP CONSTRAINT IF EXISTS cfa_sem_review_queue_semantic_subdir_week_chk;
+
+DELETE FROM cfa_sem_global_clusters
+  WHERE EXTRACT(DOW FROM to_date(semantic_subdir, 'YYYY-MM-DD')) != 1;
+
+DELETE FROM cfa_sem_review_queue
+  WHERE EXTRACT(DOW FROM to_date(semantic_subdir, 'YYYY-MM-DD')) != 1;
 
 ALTER TABLE cfa_sem_global_clusters
   ADD CONSTRAINT cfa_sem_global_clusters_semantic_subdir_week_chk

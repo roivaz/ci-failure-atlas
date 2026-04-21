@@ -23,10 +23,10 @@ func TestReportHrefIncludesWindowAndMode(t *testing.T) {
 func TestViewHrefIncludesWeekQuery(t *testing.T) {
 	t.Parallel()
 
-	if got, want := viewHref("/report", "2026-03-15"), "/report?week=2026-03-15"; got != want {
+	if got, want := viewHref("/report", "2026-03-16"), "/report?week=2026-03-16"; got != want {
 		t.Fatalf("unexpected report href: got=%q want=%q", got, want)
 	}
-	if got, want := viewHref("/failure-patterns", "2026-03-15"), "/failure-patterns?week=2026-03-15"; got != want {
+	if got, want := viewHref("/failure-patterns", "2026-03-16"), "/failure-patterns?week=2026-03-16"; got != want {
 		t.Fatalf("unexpected failure-pattern href: got=%q want=%q", got, want)
 	}
 }
@@ -51,7 +51,7 @@ func TestNormalizeReportPageModeDefaultsToReport(t *testing.T) {
 func TestHandleLegacyGlobalRedirectsToFailurePatterns(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "/global?week=2026-03-15", nil)
+	req := httptest.NewRequest(http.MethodGet, "/global?week=2026-03-16", nil)
 	recorder := httptest.NewRecorder()
 
 	(&handler{}).handleLegacyGlobalRedirect(recorder, req)
@@ -59,7 +59,7 @@ func TestHandleLegacyGlobalRedirectsToFailurePatterns(t *testing.T) {
 	if got, want := recorder.Code, http.StatusMovedPermanently; got != want {
 		t.Fatalf("unexpected status code: got=%d want=%d", got, want)
 	}
-	if got, want := recorder.Header().Get("Location"), "/failure-patterns?week=2026-03-15"; got != want {
+	if got, want := recorder.Header().Get("Location"), "/failure-patterns?week=2026-03-16"; got != want {
 		t.Fatalf("unexpected redirect target: got=%q want=%q", got, want)
 	}
 }
@@ -76,12 +76,12 @@ func TestAnchorWeekDateRange(t *testing.T) {
 		wantEnd       string
 	}{
 		{
-			name:          "valid anchor week returns Sun-Sat range",
-			anchorWeek:    "2026-03-15",
+			name:          "valid anchor week returns Mon-Sun range",
+			anchorWeek:    "2026-03-16",
 			fallbackStart: "2026-03-18",
 			fallbackEnd:   "2026-03-18",
-			wantStart:     "2026-03-15",
-			wantEnd:       "2026-03-21",
+			wantStart:     "2026-03-16",
+			wantEnd:       "2026-03-22",
 		},
 		{
 			name:          "empty anchor week falls back",

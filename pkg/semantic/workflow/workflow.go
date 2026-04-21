@@ -195,8 +195,8 @@ func normalizeWeekStart(value time.Time) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("week start is required")
 	}
 	normalized := time.Date(value.UTC().Year(), value.UTC().Month(), value.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	if normalized.Weekday() != time.Sunday {
-		return time.Time{}, fmt.Errorf("week start %q must be a Sunday", normalized.Format("2006-01-02"))
+	if normalized.Weekday() != time.Monday {
+		return time.Time{}, fmt.Errorf("week start %q must be a Monday", normalized.Format("2006-01-02"))
 	}
 	return normalized, nil
 }
