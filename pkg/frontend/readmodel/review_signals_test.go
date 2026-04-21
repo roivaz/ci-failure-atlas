@@ -28,14 +28,18 @@ func TestBuildReviewSignalsWeekMatchesCurrentFailurePatterns(t *testing.T) {
 	if got, want := data.Timezone, "UTC"; got != want {
 		t.Fatalf("unexpected timezone: got=%q want=%q", got, want)
 	}
-	if got, want := data.TotalSignals, 2; got != want {
-		t.Fatalf("unexpected total signal count: got=%d want=%d", got, want)
-	}
 	if got, want := data.SignalsByReason["low_confidence_evidence"], 1; got != want {
 		t.Fatalf("unexpected low-confidence signal count: got=%d want=%d", got, want)
 	}
 	if got, want := data.SignalsByReason["ambiguous_provider_merge"], 1; got != want {
 		t.Fatalf("unexpected ambiguous-provider signal count: got=%d want=%d", got, want)
+	}
+	if got := data.SignalsByReason["new_pattern"]; got != 2 {
+		t.Fatalf("expected 2 new_pattern signals for first-seen patterns, got=%d", got)
+	}
+	expectedTotal := 4
+	if got := data.TotalSignals; got != expectedTotal {
+		t.Fatalf("unexpected total signal count: got=%d want=%d", got, expectedTotal)
 	}
 
 	rowsByReason := map[string]ReviewSignalRow{}

@@ -46,20 +46,30 @@ func DailyDensitySparkline(references []RunReference, windowDays int, endAnchor 
 	return frontreadmodel.DailyDensitySparkline(references, windowDays, endAnchor)
 }
 
+type FailureCategory = frontreadmodel.FailureCategory
+
+func ClassifyFailurePattern(row FailurePatternRow) (FailureCategory, []string) {
+	return frontreadmodel.ClassifyFailurePattern(row)
+}
+
+func CategoryRank(c FailureCategory) int {
+	return frontreadmodel.CategoryRank(c)
+}
+
+func CategoryLabel(c FailureCategory) string {
+	return frontreadmodel.CategoryLabel(c)
+}
+
+func CategoryClass(c FailureCategory) string {
+	return frontreadmodel.CategoryClass(c)
+}
+
 func BadPRScoreAndReasons(row FailurePatternRow) (int, []string) {
 	return frontreadmodel.BadPRScoreAndReasons(row)
 }
 
-func FlakeScoreAndReasons(row FailurePatternRow) (int, []string) {
-	return frontreadmodel.FlakeScoreAndReasons(row)
-}
-
 func SortRowsByDefaultPriority(rows []FailurePatternRow) {
 	frontreadmodel.SortRowsByDefaultPriority(rows)
-}
-
-func SortRowsByBadPRScore(rows []FailurePatternRow) {
-	frontreadmodel.SortRowsByBadPRScore(rows)
 }
 
 func affectedJobCount(row FailurePatternRow) int {
@@ -134,30 +144,15 @@ func maxInt(a int, b int) int {
 	return b
 }
 
-func flakeScoreClass(score int) string {
-	switch {
-	case score >= 10:
-		return "flake-high"
-	case score >= 5:
-		return "flake-medium"
-	default:
-		return "flake-low"
-	}
-}
-
-func flakeScoreLabel(score int) string {
-	switch {
-	case score >= 10:
-		return "High"
-	case score >= 5:
-		return "Medium"
-	default:
-		return "Low"
-	}
-}
-
 func sortRowsByDefaultPriorityWithImpact(rows []FailurePatternRow, impactTotalJobs int) {
 	sort.Slice(rows, func(i, j int) bool {
+		catI, _ := ClassifyFailurePattern(rows[i])
+		catJ, _ := ClassifyFailurePattern(rows[j])
+		rankI := CategoryRank(catI)
+		rankJ := CategoryRank(catJ)
+		if rankI != rankJ {
+			return rankI < rankJ
+		}
 		impactI := impactShare(rowJobsAffected(rows[i]), impactTotalJobs)
 		impactJ := impactShare(rowJobsAffected(rows[j]), impactTotalJobs)
 		if impactI != impactJ {
@@ -167,11 +162,6 @@ func sortRowsByDefaultPriorityWithImpact(rows []FailurePatternRow, impactTotalJo
 		jobsJ := rowJobsAffected(rows[j])
 		if jobsI != jobsJ {
 			return jobsI > jobsJ
-		}
-		flakeI, _ := FlakeScoreAndReasons(rows[i])
-		flakeJ, _ := FlakeScoreAndReasons(rows[j])
-		if flakeI != flakeJ {
-			return flakeI > flakeJ
 		}
 		if rows[i].OccurrenceShare != rows[j].OccurrenceShare {
 			return rows[i].OccurrenceShare > rows[j].OccurrenceShare
@@ -295,6 +285,7 @@ const (
 	sortKeyJobsAffected     = "jobs_affected"
 	sortKeyAfterLastPush    = "after_last_push"
 	sortKeyFlakeScore       = "flake_score"
+	sortKeyCategory         = "category"
 	sortKeyShare            = "share"
 	sortKeyImpact           = "impact"
 	sortKeyManualCluster    = "manual_cluster"
@@ -327,6 +318,11 @@ func StylesCSS() string {
 		"    .flake-high { color: #166534; }",
 		"    .flake-medium { color: #92400e; }",
 		"    .flake-low { color: #6b7280; }",
+		"    .category-label { font-weight: 700; }",
+		"    .category-regression { color: #991b1b; }",
+		"    .category-flake { color: #92400e; }",
+		"    .category-noise { color: #6b7280; }",
+		"    .category-indeterminate { color: #374151; }",
 		"    .bad-pr-flag { display: inline-flex; align-items: center; justify-content: center; margin-right: 6px; color: #dc2626; font-weight: 700; }",
 		"    .failure-patterns-header-help { display: inline-flex; align-items: center; justify-content: center; margin-left: 5px; width: 14px; height: 14px; border-radius: 999px; border: 1px solid #93c5fd; color: #1d4ed8; background: #eff6ff; font-size: 10px; font-weight: 700; cursor: help; vertical-align: middle; }",
 		"    .trend-svg { display: block; }",
@@ -901,7 +897,7 @@ func RenderTable(rows []FailurePatternRow, options TableOptions) string {
 	headers = append(headers,
 		renderSortableHeaderCell("Runs affected", sortKeyJobsAffected, "Number of distinct job runs where this failure pattern was detected.", initialSortKey, initialSortDirection),
 		renderSortableHeaderCell("Impact", sortKeyImpact, "Percentage of all job runs in this environment affected by this failure pattern during the selected window.", initialSortKey, initialSortDirection),
-		renderSortableHeaderCell("Flake signal", sortKeyFlakeScore, "Whether this failure pattern looks like an ongoing flake or a PR-specific regression. High = strong flake signal across multiple days or runs. Low = likely caused by the PR under test.", initialSortKey, initialSortDirection),
+		renderSortableHeaderCell("Signal", sortKeyCategory, "Classification of this failure pattern: Regression (likely caused by a specific PR), Flake (intermittent failure spread across days), Noise (low-quality or generic pattern), or Indeterminate.", initialSortKey, initialSortDirection),
 	)
 	if opts.ShowCount {
 		headers = append(headers, renderSortableHeaderCell("Count", sortKeyCount, "", initialSortKey, initialSortDirection))
@@ -1232,27 +1228,6 @@ func FormatCounts(values []int) string {
 	return strings.Join(parts, ",")
 }
 
-func formatBadPRReason(reason string) string {
-	switch strings.TrimSpace(reason) {
-	case "post-good=0":
-		return "no runs after the PR's last push"
-	default:
-		return reason
-	}
-}
-
-func FormatBadPRTooltip(reasons []string) string {
-	base := "This failure pattern appears to be caused by the PR under test"
-	if len(reasons) == 0 {
-		return base + "."
-	}
-	translated := make([]string, 0, len(reasons))
-	for _, r := range reasons {
-		translated = append(translated, formatBadPRReason(r))
-	}
-	return base + " — " + strings.Join(translated, "; ") + "."
-}
-
 func normalizedOptions(options TableOptions) TableOptions {
 	opts := options
 	if strings.TrimSpace(opts.GitHubRepoOwner) == "" {
@@ -1308,7 +1283,7 @@ func normalizedOptions(options TableOptions) TableOptions {
 
 func isSortableKey(value string) bool {
 	switch strings.TrimSpace(value) {
-	case sortKeyCount, sortKeyJobsAffected, sortKeyImpact, sortKeyAfterLastPush, sortKeyFlakeScore, sortKeyShare, sortKeyManualCluster:
+	case sortKeyCount, sortKeyJobsAffected, sortKeyImpact, sortKeyAfterLastPush, sortKeyFlakeScore, sortKeyCategory, sortKeyShare, sortKeyManualCluster:
 		return true
 	default:
 		return false
@@ -1353,9 +1328,12 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 	isFlagged := len(row.QualityNoteLabels) > 0 || len(row.ReviewNoteLabels) > 0
 	hasReviewFlags := len(row.ReviewNoteLabels) > 0
 	summaryText := html.EscapeString(cleanInline(phrase, 180))
-	badPRScore, badPRReasons := BadPRScoreAndReasons(row)
-	if badPRScore == 3 {
-		tooltip := FormatBadPRTooltip(badPRReasons)
+	category, categoryReasons := ClassifyFailurePattern(row)
+	catLabel := CategoryLabel(category)
+	catClass := CategoryClass(category)
+	catRank := CategoryRank(category)
+	if category == frontreadmodel.CategoryRegression {
+		tooltip := "Likely regression — " + strings.Join(categoryReasons, "; ")
 		summaryText = fmt.Sprintf(
 			"<span class=\"bad-pr-flag\" title=\"%s\" aria-label=\"%s\">⚠</span>%s",
 			html.EscapeString(tooltip),
@@ -1372,25 +1350,23 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 		jobsAffected,
 		maxInt(opts.ImpactTotalJobs, 0),
 	)
-	flakeScore, flakeReasons := FlakeScoreAndReasons(row)
-	flakeLabel := flakeScoreLabel(flakeScore)
-	flakeCellTitle := fmt.Sprintf("Flake signal: %s (score %d/14)", flakeLabel, flakeScore)
-	if len(flakeReasons) > 0 {
-		flakeCellTitle = fmt.Sprintf("%s — %s", flakeCellTitle, strings.Join(flakeReasons, "; "))
+	categoryCellTitle := fmt.Sprintf("Signal: %s", catLabel)
+	if len(categoryReasons) > 0 {
+		categoryCellTitle = fmt.Sprintf("%s — %s", categoryCellTitle, strings.Join(categoryReasons, "; "))
 	}
-	flakeClass := flakeScoreClass(flakeScore)
 	manualSortValue := strings.TrimSpace(row.ManualIssueID)
 	if manualSortValue == "" {
 		manualSortValue = "~" + strings.ToLower(strings.TrimSpace(row.Environment)) + "|" + strings.TrimSpace(row.FailurePatternID)
 	}
 	b.WriteString(fmt.Sprintf(
-		"        <tr class=\"failure-pattern-row\" data-row-id=\"%s\" data-sort-count=\"%d\" data-sort-post-good=\"%d\" data-sort-jobs=\"%d\" data-sort-impact=\"%.6f\" data-sort-flake=\"%d\" data-sort-share=\"%.6f\" data-sort-environment=\"%s\" data-sort-phrase=\"%s\" data-sort-cluster=\"%s\" data-sort-manual=\"%s\" data-filter-env=\"%s\" data-filter-lane=\"%s\" data-filter-search=\"%s\" data-filter-flagged=\"%t\" data-filter-review=\"%t\">",
+		"        <tr class=\"failure-pattern-row\" data-row-id=\"%s\" data-sort-count=\"%d\" data-sort-post-good=\"%d\" data-sort-jobs=\"%d\" data-sort-impact=\"%.6f\" data-sort-category=\"%d\" data-sort-flake=\"%d\" data-sort-share=\"%.6f\" data-sort-environment=\"%s\" data-sort-phrase=\"%s\" data-sort-cluster=\"%s\" data-sort-manual=\"%s\" data-filter-env=\"%s\" data-filter-lane=\"%s\" data-filter-search=\"%s\" data-filter-flagged=\"%t\" data-filter-review=\"%t\">",
 		html.EscapeString(strings.TrimSpace(rowID)),
 		row.Occurrences,
 		postGoodCount,
 		jobsAffected,
 		impactPercent,
-		flakeScore,
+		catRank,
+		catRank,
 		row.OccurrenceShare,
 		html.EscapeString(strings.ToLower(strings.TrimSpace(row.Environment))),
 		html.EscapeString(strings.TrimSpace(row.FailurePattern)),
@@ -1424,13 +1400,13 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 	if successDetails := successDetailsFromSearchQuery(row.SearchQuery); successDetails != "" {
 		signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(successDetails)))
 	}
-	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">Flake signal: %s</div>", html.EscapeString(flakeLabel)))
+	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">Signal: %s</div>", html.EscapeString(catLabel)))
 	signatureDetails.WriteString("</details></td>")
 	b.WriteString(signatureDetails.String())
 	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(laneValue)))
 	b.WriteString(fmt.Sprintf("<td>%d</td>", jobsAffected))
 	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"impact-score %s\">%s</span></td>", html.EscapeString(impactTitle), impactScoreClass(impactPercent), html.EscapeString(impactLabel)))
-	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"flake-score %s\">%s</span></td>", html.EscapeString(flakeCellTitle), flakeClass, html.EscapeString(flakeLabel)))
+	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"category-label %s\">%s</span></td>", html.EscapeString(categoryCellTitle), catClass, html.EscapeString(catLabel)))
 	if opts.ShowCount {
 		b.WriteString(fmt.Sprintf("<td>%d</td>", row.Occurrences))
 	}
@@ -1709,11 +1685,11 @@ func renderLinkedChildrenDetails(children []FailurePatternRow, opts TableOptions
 			phrase = "(unknown evidence)"
 		}
 		jobsAffected := affectedJobCount(child)
-		flakeScore, flakeReasons := FlakeScoreAndReasons(child)
-		childFlakeLabel := flakeScoreLabel(flakeScore)
-		childFlakeTitle := fmt.Sprintf("Flake signal: %s (score %d/14)", childFlakeLabel, flakeScore)
-		if len(flakeReasons) > 0 {
-			childFlakeTitle = fmt.Sprintf("%s — %s", childFlakeTitle, strings.Join(flakeReasons, "; "))
+		childCategory, childCatReasons := ClassifyFailurePattern(child)
+		childCatLabel := CategoryLabel(childCategory)
+		childFlakeTitle := fmt.Sprintf("Signal: %s", childCatLabel)
+		if len(childCatReasons) > 0 {
+			childFlakeTitle = fmt.Sprintf("%s — %s", childFlakeTitle, strings.Join(childCatReasons, "; "))
 		}
 		b.WriteString("<details class=\"linked-child-toggle linked-failure-pattern-item\">")
 		b.WriteString("<summary>")
@@ -1736,7 +1712,7 @@ func renderLinkedChildrenDetails(children []FailurePatternRow, opts TableOptions
 			jobsAffected,
 		))
 		b.WriteString("</summary>")
-		b.WriteString(fmt.Sprintf("<div class=\"muted\">Flake signal: %s</div>", html.EscapeString(childFlakeLabel)))
+		b.WriteString(fmt.Sprintf("<div class=\"muted\">Signal: %s</div>", html.EscapeString(childCatLabel)))
 		if opts.ShowLinkedChildQuality || opts.ShowLinkedChildReview {
 			b.WriteString("<div class=\"linked-failure-pattern-item-flags\">")
 			if opts.ShowLinkedChildQuality {

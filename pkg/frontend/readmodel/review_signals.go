@@ -8,6 +8,7 @@ import (
 	"time"
 
 	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
+	semhistory "ci-failure-atlas/pkg/semantic/history"
 	semanticquery "ci-failure-atlas/pkg/semantic/query"
 )
 
@@ -77,21 +78,22 @@ func (s *Service) BuildReviewSignalsWeek(ctx context.Context, requestedWeek stri
 		return ReviewSignalsWeekSnapshot{}, err
 	}
 
-	previousWeekCanonicals := loadPreviousWeekCanonicals(ctx, s, window.PreviousWeek)
+	historyResolver, err := s.BuildHistoryResolverForWeek(ctx, week, weekData.WeekSchemaVersion)
+	if err != nil {
+		return ReviewSignalsWeekSnapshot{}, fmt.Errorf("build history resolver for review signals: %w", err)
+	}
 
 	sourceClusters := append([]semanticcontracts.FailurePatternRecord(nil), weekData.SourceFailurePatterns...)
 	rows := make([]ReviewSignalRow, 0, len(weekData.ReviewQueue))
 	signalsByReason := map[string]int{}
 
-	if len(previousWeekCanonicals) > 0 {
-		newPatternRows := crossWeekNewPatternSignals(weekData.SourceFailurePatterns, previousWeekCanonicals)
-		for i := range newPatternRows {
-			reason := newPatternRows[i].Reason
-			if reason != "" {
-				signalsByReason[reason]++
-			}
-			rows = append(rows, newPatternRows[i])
+	newPatternRows := crossWeekNewPatternSignals(weekData.SourceFailurePatterns, historyResolver, window.PreviousWeek)
+	for i := range newPatternRows {
+		reason := newPatternRows[i].Reason
+		if reason != "" {
+			signalsByReason[reason]++
 		}
+		rows = append(rows, newPatternRows[i])
 	}
 
 	for _, item := range weekData.ReviewQueue {
@@ -316,56 +318,47 @@ func reviewSignalSeverityRank(severity string) int {
 	}
 }
 
-// loadPreviousWeekCanonicals attempts to load the set of canonical failure
-// phrases from the previous week (keyed by environment+lowered canonical).
-// Returns nil without error if the previous week is unavailable.
-func loadPreviousWeekCanonicals(ctx context.Context, s *Service, previousWeek string) map[string]struct{} {
-	if strings.TrimSpace(previousWeek) == "" || s == nil {
-		return nil
-	}
-	prevStore, err := s.OpenStoreForWeek(previousWeek)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = prevStore.Close() }()
-	prevData, err := semanticquery.LoadWeekData(ctx, prevStore, semanticquery.LoadWeekDataOptions{})
-	if err != nil {
-		return nil
-	}
-	canonicals := make(map[string]struct{}, len(prevData.SourceFailurePatterns))
-	for _, fp := range prevData.SourceFailurePatterns {
-		key := strings.ToLower(strings.TrimSpace(normalizeEnvironment(fp.Environment) +
-			"|" + strings.TrimSpace(fp.CanonicalEvidencePhrase)))
-		if key != "|" {
-			canonicals[key] = struct{}{}
-		}
-	}
-	return canonicals
-}
-
 // crossWeekNewPatternSignals generates review signals for failure patterns
-// that appear in the current week but not in the previous week. These
-// are patterns newly emerged since last week.
+// that are genuinely new (absent from the entire history horizon) or that
+// have recurred after a gap (present in history but absent in the
+// immediately previous week).
 func crossWeekNewPatternSignals(
 	currentPatterns []semanticcontracts.FailurePatternRecord,
-	previousCanonicals map[string]struct{},
+	historyResolver semhistory.FailurePatternHistoryResolver,
+	previousWeek string,
 ) []ReviewSignalRow {
-	if len(previousCanonicals) == 0 {
+	if historyResolver == nil {
 		return nil
 	}
 	rows := make([]ReviewSignalRow, 0)
 	for _, fp := range currentPatterns {
 		env := normalizeEnvironment(fp.Environment)
 		canonical := strings.TrimSpace(fp.CanonicalEvidencePhrase)
-		key := strings.ToLower(env + "|" + canonical)
-		if _, found := previousCanonicals[key]; found {
+		searchQuery := strings.TrimSpace(fp.SearchQueryPhrase)
+
+		presence := historyResolver.PresenceFor(semhistory.FailurePatternKey{
+			Environment: env,
+			Phrase:      canonical,
+			SearchQuery: searchQuery,
+		})
+
+		var reason string
+		var severity string
+		switch {
+		case presence.PriorWeeksPresent == 0:
+			reason = "new_pattern"
+			severity = "medium"
+			if fp.SupportCount >= 5 {
+				severity = "high"
+			}
+		case !isInPriorWeek(presence.PriorWeekStarts, previousWeek):
+			reason = "recurrence"
+			severity = "low"
+		default:
 			continue
 		}
-		severity := "low"
-		if fp.SupportCount >= 5 {
-			severity = "medium"
-		}
-		refs := make([]ReviewSignalReference, 0)
+
+		refs := make([]ReviewSignalReference, 0, len(fp.References))
 		for _, ref := range fp.References {
 			refs = append(refs, ReviewSignalReference{
 				RowID:          strings.TrimSpace(ref.RowID),
@@ -380,10 +373,10 @@ func crossWeekNewPatternSignals(
 			Environment:                          env,
 			ReviewItemID:                         "crossweek-" + strings.TrimSpace(fp.Phase2ClusterID),
 			Phase:                                "crossweek",
-			Reason:                               "new_this_week",
+			Reason:                               reason,
 			Severity:                             severity,
 			ProposedFailurePattern:               canonical,
-			ProposedSearchQuery:                  strings.TrimSpace(fp.SearchQueryPhrase),
+			ProposedSearchQuery:                  searchQuery,
 			ProposedSearchQuerySourceRunURL:      strings.TrimSpace(fp.SearchQuerySourceRunURL),
 			ProposedSearchQuerySourceSignatureID: strings.TrimSpace(fp.SearchQuerySourceSignatureID),
 			SourcePhase1ClusterIDs:               reviewSignalCopyStrings(fp.MemberPhase1ClusterIDs),
@@ -392,4 +385,17 @@ func crossWeekNewPatternSignals(
 		})
 	}
 	return rows
+}
+
+func isInPriorWeek(priorWeekStarts []string, previousWeek string) bool {
+	trimmedPrev := strings.TrimSpace(previousWeek)
+	if trimmedPrev == "" {
+		return false
+	}
+	for _, w := range priorWeekStarts {
+		if strings.TrimSpace(w) == trimmedPrev {
+			return true
+		}
+	}
+	return false
 }

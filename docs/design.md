@@ -130,8 +130,8 @@ The following user-facing terms are used consistently across all report and fail
 | **Occurrences** | support count, matched failure support, total signature support | The number of individual CI failures matching a given pattern within the selected window. |
 | **Runs affected** | jobs affected | The number of distinct job runs exhibiting a given failure pattern. |
 | **Run impact** | impact | Percentage of all job runs in the environment affected by this pattern (`runs affected / total runs`). |
-| **Flake signal** | flake score (0–14) | Heuristic indicator of whether a failure looks like an ongoing flake rather than a PR-introduced regression. Displayed as **Low / Medium / High** (color-coded); numeric score stays in the hover tooltip. |
-| **After last push of merged PR** | after last push, PostGoodCount | Runs that occurred after the last push of a PR that eventually merged. High count = strong flake signal. Used as an input to flake signal scoring; no dedicated main-table column. |
+| **Signal** | flake score, flake signal, bad PR | Categorical classification of each failure pattern: **Regression** (likely caused by a specific PR), **Flake** (recurring intermittent failure), **Noise** (low-quality extraction), or **Indeterminate** (insufficient data). Displayed as a color-coded label with reasons in the hover tooltip. |
+| **After last push of merged PR** | after last push, PostGoodCount | Runs that occurred after the last push of a PR that eventually merged. Used as an input to regression detection; no dedicated main-table column. |
 | **Failed at** | lane | Where in the job run the failure occurred: `provision`, `e2e`, or `other`. |
 | **Also in** | seen in | Other environments where the same failure pattern was also detected during the selected window. |
 
@@ -154,9 +154,7 @@ The following user-facing terms are used consistently across all report and fail
 
 ### What Not to Expose in User-Facing Views
 
-- Raw flake score number (0–14) as the primary cell value — use the High/Medium/Low label; keep the score in the tooltip.
-- Full flake signal scoring breakdown in the expanded detail row — the label alone is sufficient there; the breakdown is in the column hover tooltip.
-- Bad PR score and reasons in the expanded detail row — this is already factored into the flake signal.
+- Numeric scores for signals — use the categorical label (Regression / Flake / Noise / Indeterminate); classification reasons appear in the column hover tooltip only.
 - Quality flag badges (`context type stub leaked`, `source deserialization/no-output error`, `struct/object fragment`, etc.) — internal diagnostics only.
 - `Failure-pattern threshold` summary card — remove entirely.
 - Internal names such as `signature`, `support`, `lane`, `matched failure support` — use the table above.
@@ -205,7 +203,7 @@ Identity across weeks follows explicit rules:
 The field contract also stays explicit:
 
 - window-local fields are recomputed across the requested range, for example runs affected, impact, seen-in, references, and samples
-- week-anchored heuristics such as flake score, trend, and after-last-push stay anchored to a contributing semantic week rather than pretending a multi-week window is itself a stored semantic partition
+- signal inputs (scoring references, trend, after-last-push, prior-weeks-present) are derived from a signal horizon — the union of the presentation window and at least 3 prior weeks — ensuring stable classification regardless of the user's selected date range
 
 ## Local Runtime Model
 

@@ -234,64 +234,113 @@ func BadPRScoreAndReasons(row FailurePatternRow) (int, []string) {
 		score++
 		reasons = append(reasons, "only seen in one PR")
 	}
+	if row.PriorWeeksPresent > 0 {
+		score = 0
+		reasons = append(reasons, fmt.Sprintf("seen in %d prior week(s), unlikely new regression", row.PriorWeeksPresent))
+	}
 	return score, reasons
 }
 
-func FlakeScoreAndReasons(row FailurePatternRow) (int, []string) {
-	score := 0
-	reasons := make([]string, 0, 7)
+type FailureCategory string
 
-	jobsAffected := rowJobsAffected(row)
-	jobPoints := flakeAffectedJobPoints(jobsAffected)
-	if jobPoints > 0 {
-		score += jobPoints
-		reasons = append(reasons, fmt.Sprintf("jobs affected +%d", jobPoints))
+const (
+	CategoryRegression    FailureCategory = "regression"
+	CategoryFlake         FailureCategory = "flake"
+	CategoryNoise         FailureCategory = "noise"
+	CategoryIndeterminate FailureCategory = "indeterminate"
+)
+
+func CategoryRank(c FailureCategory) int {
+	switch c {
+	case CategoryRegression:
+		return 0
+	case CategoryFlake:
+		return 1
+	case CategoryNoise:
+		return 2
+	case CategoryIndeterminate:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func CategoryLabel(c FailureCategory) string {
+	switch c {
+	case CategoryRegression:
+		return "Regression"
+	case CategoryFlake:
+		return "Flake"
+	case CategoryNoise:
+		return "Noise"
+	case CategoryIndeterminate:
+		return "Indeterminate"
+	default:
+		return string(c)
+	}
+}
+
+func CategoryClass(c FailureCategory) string {
+	switch c {
+	case CategoryRegression:
+		return "category-regression"
+	case CategoryFlake:
+		return "category-flake"
+	case CategoryNoise:
+		return "category-noise"
+	case CategoryIndeterminate:
+		return "category-indeterminate"
+	default:
+		return "category-indeterminate"
+	}
+}
+
+func ClassifyFailurePattern(row FailurePatternRow) (FailureCategory, []string) {
+	badPRScore, badPRReasons := BadPRScoreAndReasons(row)
+	if badPRScore > 0 && row.PriorWeeksPresent == 0 {
+		return CategoryRegression, badPRReasons
 	}
 
-	postGoodPoints := flakePostGoodPoints(rowPostGoodCount(row))
-	if postGoodPoints > 0 {
-		score += postGoodPoints
-		reasons = append(reasons, fmt.Sprintf("after last push +%d", postGoodPoints))
-	}
-
-	spreadPoints := flakeSpreadPoints(row.TrendCounts)
-	if spreadPoints > 0 {
-		score += spreadPoints
-		reasons = append(reasons, fmt.Sprintf("daily spread +%d", spreadPoints))
-	}
-
-	recentPoints := flakeRecentPoints(rowScoreReferences(row), row.TrendRange)
-	if recentPoints > 0 {
-		score += recentPoints
-		reasons = append(reasons, fmt.Sprintf("recent occurrence +%d", recentPoints))
-	}
-
-	historyPoints := flakeHistoryWeeksPoints(row.PriorWeeksPresent)
-	if historyPoints > 0 {
-		score += historyPoints
-		reason := fmt.Sprintf("present in %d prior week", row.PriorWeeksPresent)
-		if row.PriorWeeksPresent != 1 {
-			reason += "s"
+	trendActiveDays := countActiveDays(row.TrendCounts)
+	if row.PriorWeeksPresent >= 2 && trendActiveDays >= 3 {
+		return CategoryFlake, []string{
+			fmt.Sprintf("present in %d prior week(s)", row.PriorWeeksPresent),
+			fmt.Sprintf("spread across %d days", trendActiveDays),
 		}
-		reasons = append(reasons, fmt.Sprintf("%s +%d", reason, historyPoints))
 	}
 
-	badPRScore, _ := BadPRScoreAndReasons(row)
-	if badPRScore > 0 {
-		score -= badPRScore
-		reasons = append(reasons, fmt.Sprintf("likely bad PR -%d", badPRScore))
+	qualityIssues := QualityIssueCodes(row.FailurePattern)
+	if len(qualityIssues) > 0 {
+		labels := make([]string, 0, len(qualityIssues))
+		for _, code := range qualityIssues {
+			labels = append(labels, QualityIssueLabel(code))
+		}
+		return CategoryNoise, labels
 	}
 
-	if score < 0 {
-		score = 0
+	reasons := make([]string, 0, 3)
+	if row.PriorWeeksPresent > 0 {
+		reasons = append(reasons, fmt.Sprintf("seen in %d prior week(s)", row.PriorWeeksPresent))
+	} else {
+		reasons = append(reasons, "no prior history")
 	}
-	if score > 14 {
-		score = 14
+	if trendActiveDays > 0 {
+		reasons = append(reasons, fmt.Sprintf("active %d day(s)", trendActiveDays))
 	}
 	if len(reasons) == 0 {
-		reasons = append(reasons, "no strong flake signals")
+		reasons = append(reasons, "insufficient data")
 	}
-	return score, reasons
+	return CategoryIndeterminate, reasons
+}
+
+func countActiveDays(counts []int) int {
+	active := 0
+	for _, c := range counts {
+		if c > 0 {
+			active++
+		}
+	}
+	return active
 }
 
 func affectedJobCount(row FailurePatternRow) int {
@@ -373,157 +422,19 @@ func maxInt(a int, b int) int {
 	return b
 }
 
-func flakeAffectedJobPoints(jobsAffected int) int {
-	switch {
-	case jobsAffected >= 12:
-		return 3
-	case jobsAffected >= 6:
-		return 2
-	case jobsAffected >= 3:
-		return 1
-	default:
-		return 0
-	}
-}
-
-func flakePostGoodPoints(postGoodCount int) int {
-	switch {
-	case postGoodCount >= 8:
-		return 3
-	case postGoodCount >= 4:
-		return 2
-	case postGoodCount >= 1:
-		return 1
-	default:
-		return 0
-	}
-}
-
-func flakeSpreadPoints(counts []int) int {
-	if len(counts) == 0 {
-		return 0
-	}
-	total := 0
-	activeDays := 0
-	maxDaily := 0
-	for _, count := range counts {
-		if count <= 0 {
-			continue
-		}
-		total += count
-		activeDays++
-		if count > maxDaily {
-			maxDaily = count
-		}
-	}
-	if total <= 0 || activeDays <= 0 {
-		return 0
-	}
-	concentration := float64(maxDaily) / float64(total)
-	switch {
-	case activeDays >= 5 && concentration <= 0.5:
-		return 2
-	case activeDays >= 3 && concentration <= 0.75:
-		return 1
-	default:
-		return 0
-	}
-}
-
-func flakeRecentPoints(references []RunReference, trendRange string) int {
-	latest, ok := latestReferenceTimestamp(references)
-	if !ok {
-		return 0
-	}
-	anchor, ok := trendRangeEndAnchor(trendRange)
-	if !ok {
-		return 0
-	}
-	if latest.After(anchor) {
-		latest = anchor
-	}
-	age := anchor.Sub(latest)
-	if age < 0 {
-		return 0
-	}
-	switch {
-	case age <= 24*time.Hour:
-		return 2
-	case age <= 48*time.Hour:
-		return 1
-	default:
-		return 0
-	}
-}
-
-func flakeHistoryWeeksPoints(priorWeeksPresent int) int {
-	if priorWeeksPresent <= 0 {
-		return 0
-	}
-	if priorWeeksPresent > 4 {
-		return 4
-	}
-	return priorWeeksPresent
-}
-
-func latestReferenceTimestamp(references []RunReference) (time.Time, bool) {
-	var latest time.Time
-	for _, reference := range references {
-		ts, ok := ParseReferenceTimestamp(reference.OccurredAt)
-		if !ok {
-			continue
-		}
-		if latest.IsZero() || ts.After(latest) {
-			latest = ts
-		}
-	}
-	if latest.IsZero() {
-		return time.Time{}, false
-	}
-	return latest, true
-}
-
-func trendRangeEndAnchor(trendRange string) (time.Time, bool) {
-	parts := strings.Split(strings.TrimSpace(trendRange), "..")
-	if len(parts) != 2 {
-		return time.Time{}, false
-	}
-	endLabel := strings.TrimSuffix(strings.TrimSpace(parts[1]), " UTC")
-	endDay, err := time.Parse("2006-01-02", strings.TrimSpace(endLabel))
-	if err != nil {
-		return time.Time{}, false
-	}
-	return endDay.UTC().Add(24 * time.Hour), true
-}
-
-func flakeScoreClass(score int) string {
-	switch {
-	case score >= 10:
-		return "flake-high"
-	case score >= 5:
-		return "flake-medium"
-	default:
-		return "flake-low"
-	}
-}
-
-func flakeScoreLabel(score int) string {
-	switch {
-	case score >= 10:
-		return "High"
-	case score >= 5:
-		return "Medium"
-	default:
-		return "Low"
-	}
-}
-
 func SortRowsByDefaultPriority(rows []FailurePatternRow) {
 	sortRowsByDefaultPriorityWithImpact(rows, totalAffectedJobs(rows))
 }
 
 func sortRowsByDefaultPriorityWithImpact(rows []FailurePatternRow, impactTotalJobs int) {
 	sort.Slice(rows, func(i, j int) bool {
+		catI, _ := ClassifyFailurePattern(rows[i])
+		catJ, _ := ClassifyFailurePattern(rows[j])
+		rankI := CategoryRank(catI)
+		rankJ := CategoryRank(catJ)
+		if rankI != rankJ {
+			return rankI < rankJ
+		}
 		impactI := impactShare(rowJobsAffected(rows[i]), impactTotalJobs)
 		impactJ := impactShare(rowJobsAffected(rows[j]), impactTotalJobs)
 		if impactI != impactJ {
@@ -534,11 +445,6 @@ func sortRowsByDefaultPriorityWithImpact(rows []FailurePatternRow, impactTotalJo
 		if jobsI != jobsJ {
 			return jobsI > jobsJ
 		}
-		flakeI, _ := FlakeScoreAndReasons(rows[i])
-		flakeJ, _ := FlakeScoreAndReasons(rows[j])
-		if flakeI != flakeJ {
-			return flakeI > flakeJ
-		}
 		if rows[i].OccurrenceShare != rows[j].OccurrenceShare {
 			return rows[i].OccurrenceShare > rows[j].OccurrenceShare
 		}
@@ -549,34 +455,6 @@ func sortRowsByDefaultPriorityWithImpact(rows []FailurePatternRow, impactTotalJo
 		postGoodJ := rowPostGoodCount(rows[j])
 		if postGoodI != postGoodJ {
 			return postGoodI > postGoodJ
-		}
-		if strings.TrimSpace(rows[i].Environment) != strings.TrimSpace(rows[j].Environment) {
-			return strings.TrimSpace(rows[i].Environment) < strings.TrimSpace(rows[j].Environment)
-		}
-		if strings.TrimSpace(rows[i].FailurePattern) != strings.TrimSpace(rows[j].FailurePattern) {
-			return strings.TrimSpace(rows[i].FailurePattern) < strings.TrimSpace(rows[j].FailurePattern)
-		}
-		return strings.TrimSpace(rows[i].FailurePatternID) < strings.TrimSpace(rows[j].FailurePatternID)
-	})
-}
-
-func SortRowsByBadPRScore(rows []FailurePatternRow) {
-	sort.Slice(rows, func(i, j int) bool {
-		scoreI, _ := BadPRScoreAndReasons(rows[i])
-		scoreJ, _ := BadPRScoreAndReasons(rows[j])
-		if scoreI != scoreJ {
-			return scoreI < scoreJ
-		}
-		if rows[i].Occurrences != rows[j].Occurrences {
-			return rows[i].Occurrences > rows[j].Occurrences
-		}
-		postGoodI := rowPostGoodCount(rows[i])
-		postGoodJ := rowPostGoodCount(rows[j])
-		if postGoodI != postGoodJ {
-			return postGoodI > postGoodJ
-		}
-		if rows[i].OccurrenceShare != rows[j].OccurrenceShare {
-			return rows[i].OccurrenceShare > rows[j].OccurrenceShare
 		}
 		if strings.TrimSpace(rows[i].Environment) != strings.TrimSpace(rows[j].Environment) {
 			return strings.TrimSpace(rows[i].Environment) < strings.TrimSpace(rows[j].Environment)

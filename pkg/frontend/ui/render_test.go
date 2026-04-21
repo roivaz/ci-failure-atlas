@@ -54,137 +54,100 @@ func TestBadPRScoreAndReasonsIncludesAllSignals(t *testing.T) {
 	}
 }
 
-func TestSortRowsByBadPRScore(t *testing.T) {
+func TestClassifyFailurePatternRegression(t *testing.T) {
 	t.Parallel()
 
-	rows := []FailurePatternRow{
-		{
-			Environment:        "dev",
-			FailurePattern:     "score-three",
-			Occurrences:        100,
-			AfterLastPushCount: 0,
-			AffectedRuns: []RunReference{
-				{RunURL: "https://prow.example/run/1", PRNumber: 10, OccurredAt: "2026-03-07T10:00:00Z"},
-			},
-		},
-		{
-			Environment:        "dev",
-			FailurePattern:     "score-zero",
-			Occurrences:        1,
-			AfterLastPushCount: 1,
-			AffectedRuns: []RunReference{
-				{RunURL: "https://prow.example/run/2", PRNumber: 20, OccurredAt: "2026-03-07T09:00:00Z"},
-			},
-		},
-		{
-			Environment:        "int",
-			FailurePattern:     "score-one",
-			Occurrences:        50,
-			AfterLastPushCount: 0,
-			AffectedRuns: []RunReference{
-				{RunURL: "https://prow.example/run/3", PRNumber: 0, OccurredAt: "2026-03-07T08:00:00Z"},
-			},
-		},
-	}
-
-	SortRowsByBadPRScore(rows)
-
-	if rows[0].FailurePattern != "score-zero" {
-		t.Fatalf("expected score-zero first, got %q", rows[0].FailurePattern)
-	}
-	if rows[1].FailurePattern != "score-one" {
-		t.Fatalf("expected score-one second, got %q", rows[1].FailurePattern)
-	}
-	if rows[2].FailurePattern != "score-three" {
-		t.Fatalf("expected score-three last, got %q", rows[2].FailurePattern)
-	}
-}
-
-func TestFlakeScoreAndReasonsIncludesRequestedSignals(t *testing.T) {
-	t.Parallel()
-
-	score, reasons := FlakeScoreAndReasons(FailurePatternRow{
-		Environment:        "dev",
-		AfterLastPushCount: 5,
-		TrendCounts:        []int{1, 1, 1, 1, 1, 1, 1},
-		TrendRange:         "2026-03-01..2026-03-07",
-		PriorWeeksPresent:  2,
-		AffectedRuns: []RunReference{
-			{RunURL: "https://prow.example/run/1", PRNumber: 4201, OccurredAt: "2026-03-06T02:00:00Z"},
-			{RunURL: "https://prow.example/run/2", PRNumber: 4202, OccurredAt: "2026-03-07T12:00:00Z"},
-			{RunURL: "https://prow.example/run/3", PRNumber: 4203, OccurredAt: "2026-03-05T12:00:00Z"},
-			{RunURL: "https://prow.example/run/4", PRNumber: 4204, OccurredAt: "2026-03-04T12:00:00Z"},
-			{RunURL: "https://prow.example/run/5", PRNumber: 4205, OccurredAt: "2026-03-03T12:00:00Z"},
-			{RunURL: "https://prow.example/run/6", PRNumber: 4206, OccurredAt: "2026-03-02T12:00:00Z"},
-		},
-	})
-	if score <= 0 {
-		t.Fatalf("expected positive flake score, got %d", score)
-	}
-	for _, expected := range []string{
-		"jobs affected",
-		"after last push",
-		"daily spread",
-		"recent occurrence",
-		"present in 2 prior weeks",
-	} {
-		found := false
-		for _, reason := range reasons {
-			if strings.Contains(reason, expected) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected reason containing %q, got %v", expected, reasons)
-		}
-	}
-}
-
-func TestFlakeScoreAndReasonsAggregatedRowsUseLinkedPostGoodAndScoringAffectedRuns(t *testing.T) {
-	t.Parallel()
-
-	score, reasons := FlakeScoreAndReasons(FailurePatternRow{
+	category, reasons := ClassifyFailurePattern(FailurePatternRow{
 		Environment:        "dev",
 		AfterLastPushCount: 0,
-		TrendCounts:        []int{1, 1, 1, 1, 1, 1, 1},
-		TrendRange:         "2026-03-01..2026-03-07",
+		PriorWeeksPresent:  0,
 		AffectedRuns: []RunReference{
-			{RunURL: "https://prow.example/run/stale", PRNumber: 4100, OccurredAt: "2026-03-01T00:00:00Z"},
-		},
-		ScoringReferences: []RunReference{
-			{RunURL: "https://prow.example/run/recent", PRNumber: 4101, OccurredAt: "2026-03-07T23:30:00Z"},
-			{RunURL: "https://prow.example/run/older", PRNumber: 4102, OccurredAt: "2026-03-04T12:00:00Z"},
-		},
-		LinkedPatterns: []FailurePatternRow{
-			{
-				AfterLastPushCount: 1,
-				AffectedRuns:       []RunReference{{RunURL: "https://prow.example/child/1", OccurredAt: "2026-03-06T12:00:00Z"}},
-			},
-			{
-				AfterLastPushCount: 2,
-				AffectedRuns:       []RunReference{{RunURL: "https://prow.example/child/2", OccurredAt: "2026-03-07T12:00:00Z"}},
-			},
+			{RunURL: "https://prow.example/run/1", PRNumber: 4313, OccurredAt: "2026-03-07T10:00:00Z"},
 		},
 	})
-	if score <= 0 {
-		t.Fatalf("expected positive flake score, got %d", score)
+	if category != "regression" {
+		t.Fatalf("expected regression, got %q", category)
 	}
-	expectedSnippets := []string{
-		"after last push",
-		"recent occurrence",
+	if len(reasons) == 0 {
+		t.Fatalf("expected reasons for regression")
 	}
-	for _, snippet := range expectedSnippets {
-		found := false
-		for _, reason := range reasons {
-			if strings.Contains(reason, snippet) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected reason containing %q, got %v", snippet, reasons)
-		}
+}
+
+func TestClassifyFailurePatternFlake(t *testing.T) {
+	t.Parallel()
+
+	category, reasons := ClassifyFailurePattern(FailurePatternRow{
+		Environment:        "dev",
+		AfterLastPushCount: 5,
+		PriorWeeksPresent:  3,
+		TrendCounts:        []int{1, 0, 1, 0, 1, 0, 1},
+		AffectedRuns: []RunReference{
+			{RunURL: "https://prow.example/run/1", PRNumber: 4201, OccurredAt: "2026-03-07T10:00:00Z"},
+			{RunURL: "https://prow.example/run/2", PRNumber: 4202, OccurredAt: "2026-03-06T10:00:00Z"},
+		},
+	})
+	if category != "flake" {
+		t.Fatalf("expected flake, got %q", category)
+	}
+	if len(reasons) == 0 {
+		t.Fatalf("expected reasons for flake classification")
+	}
+}
+
+func TestClassifyFailurePatternNoise(t *testing.T) {
+	t.Parallel()
+
+	category, _ := ClassifyFailurePattern(FailurePatternRow{
+		Environment:        "dev",
+		FailurePattern:     "failure",
+		AfterLastPushCount: 1,
+		PriorWeeksPresent:  0,
+		AffectedRuns: []RunReference{
+			{RunURL: "https://prow.example/run/1", PRNumber: 4201, OccurredAt: "2026-03-07T10:00:00Z"},
+			{RunURL: "https://prow.example/run/2", PRNumber: 4202, OccurredAt: "2026-03-06T10:00:00Z"},
+		},
+	})
+	if category != "noise" {
+		t.Fatalf("expected noise for generic phrase, got %q", category)
+	}
+}
+
+func TestClassifyFailurePatternIndeterminate(t *testing.T) {
+	t.Parallel()
+
+	category, reasons := ClassifyFailurePattern(FailurePatternRow{
+		Environment:        "dev",
+		FailurePattern:     "some specific error: context deadline exceeded in foo bar",
+		AfterLastPushCount: 2,
+		PriorWeeksPresent:  1,
+		TrendCounts:        []int{1, 0, 0, 0, 0, 0, 0},
+		AffectedRuns: []RunReference{
+			{RunURL: "https://prow.example/run/1", PRNumber: 4201, OccurredAt: "2026-03-07T10:00:00Z"},
+			{RunURL: "https://prow.example/run/2", PRNumber: 4202, OccurredAt: "2026-03-06T10:00:00Z"},
+		},
+	})
+	if category != "indeterminate" {
+		t.Fatalf("expected indeterminate, got %q", category)
+	}
+	if len(reasons) == 0 {
+		t.Fatalf("expected reasons for indeterminate classification")
+	}
+}
+
+func TestClassifyFailurePatternRegressionNotTriggeredWithPriorHistory(t *testing.T) {
+	t.Parallel()
+
+	category, _ := ClassifyFailurePattern(FailurePatternRow{
+		Environment:        "dev",
+		FailurePattern:     "context deadline exceeded in provisioning step",
+		AfterLastPushCount: 0,
+		PriorWeeksPresent:  2,
+		AffectedRuns: []RunReference{
+			{RunURL: "https://prow.example/run/1", PRNumber: 4313, OccurredAt: "2026-03-07T10:00:00Z"},
+		},
+	})
+	if category == "regression" {
+		t.Fatalf("expected non-regression category when PriorWeeksPresent > 0, got regression")
 	}
 }
 
@@ -211,47 +174,34 @@ func TestRenderTableShowsBadPRIndicator(t *testing.T) {
 	if !strings.Contains(html, "<span class=\"bad-pr-flag\"") {
 		t.Fatalf("expected bad-pr flag icon in rendered table")
 	}
-	if !strings.Contains(html, "This failure pattern appears to be caused by the PR under test") {
-		t.Fatalf("expected tooltip to describe PR-caused failure, got %q", html)
-	}
-	if !strings.Contains(html, "no runs after the PR&#39;s last push") && !strings.Contains(html, "no runs after the PR's last push") {
-		t.Fatalf("expected tooltip to include translated reason, got %q", html)
-	}
-	if strings.Contains(html, "bad PR score:") {
-		t.Fatalf("expected bad-pr score details to be removed from expanded view, got %q", html)
+	if !strings.Contains(html, "Likely regression") {
+		t.Fatalf("expected tooltip to describe regression classification, got %q", html)
 	}
 }
 
-func TestRenderTableDoesNotShowBadPRIndicatorForScoreTwo(t *testing.T) {
+func TestRenderTableDoesNotShowRegressionIndicatorWhenPatternHasPriorHistory(t *testing.T) {
 	t.Parallel()
 
-	html := RenderTable([]FailurePatternRow{
+	rendered := RenderTable([]FailurePatternRow{
 		{
 			Environment:        "dev",
-			FailurePattern:     "provision flake",
+			FailurePattern:     "provision flake with some unique text here",
 			Occurrences:        4,
 			OccurrenceShare:    25,
 			AfterLastPushCount: 0,
+			PriorWeeksPresent:  2,
 			AffectedRuns: []RunReference{
 				{
 					RunURL:     "https://prow.example/run/1",
 					PRNumber:   4313,
 					OccurredAt: "2026-03-07T10:00:00Z",
 				},
-				{
-					RunURL:     "https://prow.example/run/2",
-					PRNumber:   0,
-					OccurredAt: "2026-03-07T09:00:00Z",
-				},
 			},
 		},
 	}, TableOptions{})
 
-	if strings.Contains(html, "<span class=\"bad-pr-flag\"") {
-		t.Fatalf("expected no bad-pr icon for score 2/3")
-	}
-	if strings.Contains(html, "bad PR score:") {
-		t.Fatalf("expected bad-pr score details to be removed from expanded view, got %q", html)
+	if strings.Contains(rendered, "<span class=\"bad-pr-flag\"") {
+		t.Fatalf("expected no regression indicator for pattern with prior history")
 	}
 }
 
@@ -274,7 +224,7 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 		"Failed at",
 		"data-sort-key=\"jobs_affected\"",
 		"data-sort-key=\"impact\"",
-		"data-sort-key=\"flake_score\"",
+		"data-sort-key=\"category\"",
 		"<th>Trend</th>",
 		"<th>Also in",
 		"title=\"Percentage of all job runs in this environment affected by this failure pattern during the selected window.\"",
@@ -298,10 +248,10 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 	laneHeader := strings.Index(headerRow, "Failed at")
 	jobsAffectedHeader := strings.Index(headerRow, "data-sort-key=\"jobs_affected\"")
 	impactHeader := strings.Index(headerRow, "data-sort-key=\"impact\"")
-	flakeScoreHeader := strings.Index(headerRow, "data-sort-key=\"flake_score\"")
+	categoryHeader := strings.Index(headerRow, "data-sort-key=\"category\"")
 	trendHeader := strings.Index(headerRow, "<th>Trend</th>")
 	seenInHeader := strings.Index(headerRow, "<th>Also in")
-	if !(signatureHeader < laneHeader && laneHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < flakeScoreHeader && flakeScoreHeader < trendHeader && trendHeader < seenInHeader) {
+	if !(signatureHeader < laneHeader && laneHeader < jobsAffectedHeader && jobsAffectedHeader < impactHeader && impactHeader < categoryHeader && categoryHeader < trendHeader && trendHeader < seenInHeader) {
 		t.Fatalf("unexpected shared header order in rendered table")
 	}
 	if strings.Contains(html, "data-sort-key=\"count\"") || strings.Contains(html, "data-sort-key=\"after_last_push\"") || strings.Contains(html, "data-sort-key=\"share\"") {
@@ -312,10 +262,10 @@ func TestRenderTableUsesSharedHeaderLabelsAndOrder(t *testing.T) {
 func TestRenderTableIncludesClientSortingAndVisibilityConfiguration(t *testing.T) {
 	t.Parallel()
 
-	html := RenderTable([]FailurePatternRow{
-		{FailurePattern: "one", Occurrences: 3, OccurrenceShare: 50, AfterLastPushCount: 1},
-		{FailurePattern: "two", Occurrences: 2, OccurrenceShare: 30, AfterLastPushCount: 0},
-		{FailurePattern: "three", Occurrences: 1, OccurrenceShare: 20, AfterLastPushCount: 0},
+	rendered := RenderTable([]FailurePatternRow{
+		{FailurePattern: "context deadline exceeded in provisioning step alpha", Occurrences: 3, OccurrenceShare: 50, AfterLastPushCount: 1},
+		{FailurePattern: "context deadline exceeded in provisioning step beta", Occurrences: 2, OccurrenceShare: 30, AfterLastPushCount: 1},
+		{FailurePattern: "context deadline exceeded in provisioning step gamma", Occurrences: 1, OccurrenceShare: 20, AfterLastPushCount: 1},
 	}, TableOptions{
 		LoadedRowsLimit:    2,
 		InitialVisibleRows: 1,
@@ -330,11 +280,11 @@ func TestRenderTableIncludesClientSortingAndVisibilityConfiguration(t *testing.T
 		"data-parent-row-id=\"failure-pattern-row-0\"",
 		"button.failure-patterns-sort-button",
 	} {
-		if !strings.Contains(html, snippet) {
+		if !strings.Contains(rendered, snippet) {
 			t.Fatalf("expected rendered table to contain %q", snippet)
 		}
 	}
-	if strings.Contains(html, "three") {
+	if strings.Contains(rendered, "gamma") {
 		t.Fatalf("expected loaded rows limit to omit third row")
 	}
 }
@@ -620,7 +570,7 @@ func TestRenderTableLinkedRowsRenderChildExpandersInDetailRow(t *testing.T) {
 		"child phrase two",
 		"name=\"unlink_child\" value=\"dev|phase2-dev-1\"",
 		"runs affected: 1",
-		"Flake signal:",
+		"Signal:",
 		"Full failure examples (1)",
 		"Affected runs (1)",
 	} {
@@ -708,7 +658,7 @@ func TestRenderTableHidesCountAfterShareByDefaultAndShowsImpact(t *testing.T) {
 	required := []string{
 		"data-sort-key=\"jobs_affected\"",
 		"data-sort-key=\"impact\"",
-		"data-sort-key=\"flake_score\"",
+		"data-sort-key=\"category\"",
 	}
 	for _, snippet := range required {
 		if !strings.Contains(rendered, snippet) {

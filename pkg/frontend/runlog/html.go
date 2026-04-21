@@ -274,11 +274,10 @@ func runLogDayBadPRFlagHTML(row frontservice.JobHistoryRunRow) string {
 		return ""
 	}
 	score, reasons := runLogDayBadPRScoreAndReasons(row)
-	if score != 3 {
+	if score <= 0 {
 		return ""
 	}
-	tooltip := frontui.FormatBadPRTooltip(reasons)
-	_ = score
+	tooltip := "Likely regression — " + strings.Join(reasons, "; ")
 	return fmt.Sprintf(
 		"<span class=\"bad-pr-flag\" title=\"%s\" aria-label=\"%s\">⚠</span>",
 		html.EscapeString(tooltip),

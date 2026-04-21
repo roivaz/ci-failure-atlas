@@ -119,18 +119,27 @@ func (s *Service) BuildFailurePatterns(ctx context.Context, query FailurePattern
 		return FailurePatternsData{}, err
 	}
 	requestedEnvironments := normalizeStringSlice(query.Environments)
-	weeklyDataByWeek := make(map[string]FailurePatternReportData, len(scope.SemanticWeeks))
+
+	allWeeks := scope.SignalHorizonWeeks
+	if len(allWeeks) == 0 {
+		allWeeks = scope.SemanticWeeks
+	}
+	presentationWeekSet := make(map[string]struct{}, len(scope.SemanticWeeks))
+	for _, w := range scope.SemanticWeeks {
+		presentationWeekSet[w] = struct{}{}
+	}
+
+	weeklyDataByWeek := make(map[string]FailurePatternReportData, len(allWeeks))
 	targetEnvironmentSet := map[string]struct{}{}
 	windowSchemaVersion := ""
-	for _, week := range scope.SemanticWeeks {
+	for _, week := range allWeeks {
 		store, err := s.OpenStoreForWeek(week)
 		if err != nil {
 			return FailurePatternsData{}, err
 		}
 		weeklyData, err := BuildFailurePatternReportData(ctx, store, FailurePatternReportBuildOptions{
-			Week:                week,
-			Environments:        requestedEnvironments,
-			HistoryHorizonWeeks: s.historyWeeks,
+			Week:         week,
+			Environments: requestedEnvironments,
 		})
 		if err == nil {
 			err = semanticcontracts.RequireCompatibleWeekSchemas(
@@ -142,17 +151,14 @@ func (s *Service) BuildFailurePatterns(ctx context.Context, query FailurePattern
 		if err == nil && strings.TrimSpace(windowSchemaVersion) == "" {
 			windowSchemaVersion = weeklyData.WeekSchemaVersion
 		}
-		if err == nil {
-			weeklyData.HistoryResolver, err = s.BuildHistoryResolverForWeek(ctx, week, weeklyData.WeekSchemaVersion)
-			if err != nil {
-				err = fmt.Errorf("build failure-pattern history resolver for %s: %w", week, err)
-			}
-		}
 		_ = store.Close()
 		if err != nil {
 			return FailurePatternsData{}, fmt.Errorf("build weekly failure-pattern data for window week %s: %w", week, err)
 		}
 		weeklyDataByWeek[week] = weeklyData
+		if _, inPresentation := presentationWeekSet[week]; !inPresentation {
+			continue
+		}
 		if len(requestedEnvironments) > 0 {
 			for _, environment := range requestedEnvironments {
 				targetEnvironmentSet[environment] = struct{}{}
@@ -162,6 +168,23 @@ func (s *Service) BuildFailurePatterns(ctx context.Context, query FailurePattern
 		for _, environment := range weeklyData.TargetEnvironments {
 			targetEnvironmentSet[normalizeEnvironment(environment)] = struct{}{}
 		}
+	}
+
+	anchorWeek := scope.AnchorWeek
+	anchorSchemaVersion := windowSchemaVersion
+	if data, ok := weeklyDataByWeek[anchorWeek]; ok {
+		anchorSchemaVersion = data.WeekSchemaVersion
+	}
+	historyResolver, err := s.BuildHistoryResolverForWeek(ctx, anchorWeek, anchorSchemaVersion)
+	if err != nil {
+		return FailurePatternsData{}, fmt.Errorf("build signal-horizon history resolver: %w", err)
+	}
+
+	signalHorizonRefs := buildSignalHorizonReferences(allWeeks, weeklyDataByWeek)
+	signalHorizonTrendAnchor := failurePatternsTrendAnchor(anchorWeek)
+	signalHorizonDays := len(allWeeks) * 7
+	if signalHorizonDays < 21 {
+		signalHorizonDays = 21
 	}
 
 	targetEnvironments := sortedStringSet(targetEnvironmentSet)
@@ -202,7 +225,7 @@ func (s *Service) BuildFailurePatterns(ctx context.Context, query FailurePattern
 				continue
 			}
 			facts := failurePatternsFactsForWeek(factsByEnvironment[environment], week)
-			row, ok := buildFailurePatternsRow(cluster, facts, weeklyData.HistoryResolver, trendAnchor, week)
+			row, ok := buildFailurePatternsRow(cluster, facts, historyResolver, trendAnchor, week)
 			if !ok {
 				continue
 			}
@@ -215,6 +238,14 @@ func (s *Service) BuildFailurePatterns(ctx context.Context, query FailurePattern
 				continue
 			}
 			rowsByEnvironment[environment][row.MergeKey] = mergeFailurePatternsRows(existing, row, facts.RunsByURL)
+		}
+	}
+
+	for environment, rowMap := range rowsByEnvironment {
+		for mergeKey, row := range rowMap {
+			enriched := enrichRowFromSignalHorizon(row, signalHorizonRefs, signalHorizonTrendAnchor, signalHorizonDays)
+			rowMap[mergeKey] = enriched
+			_ = environment
 		}
 	}
 
@@ -1152,4 +1183,98 @@ func windowedImpactShare(jobsAffected int, totalRuns int) float64 {
 		return 0
 	}
 	return (float64(jobsAffected) * 100.0) / float64(totalRuns)
+}
+
+type signalHorizonRefSet struct {
+	byMergeKey map[string][]FailurePatternReportReference
+}
+
+func buildSignalHorizonReferences(
+	weeks []string,
+	weeklyDataByWeek map[string]FailurePatternReportData,
+) signalHorizonRefSet {
+	byMergeKey := map[string][]FailurePatternReportReference{}
+	for _, week := range weeks {
+		data, ok := weeklyDataByWeek[week]
+		if !ok {
+			continue
+		}
+		for _, cluster := range data.FailurePatternClusters {
+			key := failurePatternsMergeKeyForCluster(cluster)
+			if key == "" {
+				continue
+			}
+			for _, ref := range cluster.References {
+				byMergeKey[key] = append(byMergeKey[key], FailurePatternReportReference{
+					RowID:          strings.TrimSpace(ref.RowID),
+					RunURL:         strings.TrimSpace(ref.RunURL),
+					OccurredAt:     strings.TrimSpace(ref.OccurredAt),
+					SignatureID:    strings.TrimSpace(ref.SignatureID),
+					PRNumber:       ref.PRNumber,
+					PostGoodCommit: ref.PostGoodCommit,
+				})
+			}
+		}
+	}
+	for key := range byMergeKey {
+		byMergeKey[key] = deduplicateSignalHorizonRefs(byMergeKey[key])
+	}
+	return signalHorizonRefSet{byMergeKey: byMergeKey}
+}
+
+func deduplicateSignalHorizonRefs(refs []FailurePatternReportReference) []FailurePatternReportReference {
+	seen := map[string]struct{}{}
+	out := make([]FailurePatternReportReference, 0, len(refs))
+	for _, ref := range refs {
+		key := failurePatternsReferenceDedupKey(ref)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, ref)
+	}
+	sortWindowedReferences(out)
+	return out
+}
+
+func enrichRowFromSignalHorizon(
+	row FailurePatternsRow,
+	horizonRefs signalHorizonRefSet,
+	trendAnchor time.Time,
+	trendDays int,
+) FailurePatternsRow {
+	horizonRefsForRow := horizonRefs.byMergeKey[row.MergeKey]
+	if len(horizonRefsForRow) == 0 {
+		return row
+	}
+	enriched := row
+	enriched.ScoringReferences = append([]FailurePatternReportReference(nil), horizonRefsForRow...)
+	enriched.WeeklyPostGoodCount = windowedPostGoodCount(enriched.ScoringReferences)
+
+	if counts, trendRange, ok := buildWindowedTrendN(horizonRefsForRow, trendAnchor, trendDays); ok {
+		enriched.TrendCounts = counts
+		enriched.TrendRange = trendRange
+	}
+
+	for i, child := range enriched.LinkedChildren {
+		childHorizonRefs := horizonRefs.byMergeKey[child.MergeKey]
+		if len(childHorizonRefs) > 0 {
+			enriched.LinkedChildren[i].ScoringReferences = append([]FailurePatternReportReference(nil), childHorizonRefs...)
+			enriched.LinkedChildren[i].WeeklyPostGoodCount = windowedPostGoodCount(enriched.LinkedChildren[i].ScoringReferences)
+		}
+	}
+	return enriched
+}
+
+func buildWindowedTrendN(references []FailurePatternReportReference, trendAnchor time.Time, days int) ([]int, string, bool) {
+	if trendAnchor.IsZero() || days <= 0 {
+		return nil, "", false
+	}
+	if _, counts, trendRange, ok := DailyDensitySparkline(toWindowedHTMLRunReferences(references), days, trendAnchor); ok {
+		return append([]int(nil), counts...), trendRange, true
+	}
+	return nil, "", false
 }
