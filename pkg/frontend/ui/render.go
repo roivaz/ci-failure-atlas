@@ -2108,10 +2108,25 @@ func renderProwJobCell(row RunReference) string {
 	if runURL == "" {
 		return "<span class=\"muted\">n/a</span>"
 	}
+	label := prowJobIDFromURL(runURL)
 	return fmt.Sprintf(
-		"<a href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">prow job</a>",
+		"<a href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">%s</a>",
 		html.EscapeString(runURL),
+		html.EscapeString(label),
 	)
+}
+
+func prowJobIDFromURL(rawURL string) string {
+	if i := strings.LastIndex(rawURL, "/"); i >= 0 && i < len(rawURL)-1 {
+		candidate := rawURL[i+1:]
+		for _, c := range candidate {
+			if c < '0' || c > '9' {
+				return "prow job"
+			}
+		}
+		return candidate
+	}
+	return "prow job"
 }
 
 func cleanInline(input string, max int) string {
