@@ -342,6 +342,10 @@ func StylesCSS() string {
 		"    .card-help { width: 16px; height: 16px; font-size: 10px; }",
 		"    .exec-heading-label { display: inline-flex; align-items: center; }",
 		"    .failure-patterns-header-help:hover, .exec-heading-help:hover, .card-help:hover { background: #dbeafe; border-color: #60a5fa; }",
+		"    .tooltip-content-trigger { justify-content: flex-start; gap: 4px; line-height: inherit; }",
+		"    .tooltip-content-trigger .signal-icon { margin-right: 0; }",
+		"    .tooltip-trend-trigger { line-height: 0; }",
+		"    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }",
 		"    .trend-svg { display: block; }",
 		"    details { margin: 2px 0; }",
 		"    details summary { cursor: pointer; color: #1d4ed8; }",
@@ -1069,11 +1073,39 @@ func HelpTooltipHTMLWithPlacement(tooltip string, triggerClass string, placement
 		classes += " " + trimmedClass
 	}
 	triggerHTML := fmt.Sprintf(
-		"<button type=\"button\" class=\"%s\" data-tooltip-trigger aria-label=\"More information: %s\"><span aria-hidden=\"true\">i</span></button>",
+		"<button type=\"button\" class=\"%s\" data-tooltip-trigger><span aria-hidden=\"true\">i</span>%s</button>",
 		html.EscapeString(classes),
-		html.EscapeString(strings.TrimSpace(tooltip)),
+		srOnlyHTML("More information"),
 	)
 	return InlineTooltipHTML(triggerHTML, tooltip, "", "", placement)
+}
+
+func srOnlyHTML(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	return fmt.Sprintf("<span class=\"sr-only\">%s</span>", html.EscapeString(trimmed))
+}
+
+func TriggerTooltipHTML(contentHTML string, tooltip string, accessibleLabel string, triggerClass string, wrapperClass string, wrapperStyle string, placement string) string {
+	trimmedTooltip := strings.TrimSpace(tooltip)
+	trimmedContent := strings.TrimSpace(contentHTML)
+	if trimmedTooltip == "" || trimmedContent == "" {
+		return trimmedContent
+	}
+	triggerClasses := []string{"inline-tooltip-trigger"}
+	if trimmedClass := strings.TrimSpace(triggerClass); trimmedClass != "" {
+		triggerClasses = append(triggerClasses, trimmedClass)
+	}
+	hiddenLabelHTML := srOnlyHTML(accessibleLabel)
+	triggerHTML := fmt.Sprintf(
+		"<span tabindex=\"0\" role=\"button\" class=\"%s\" data-tooltip-trigger>%s%s</span>",
+		html.EscapeString(strings.Join(triggerClasses, " ")),
+		trimmedContent,
+		hiddenLabelHTML,
+	)
+	return InlineTooltipHTML(triggerHTML, trimmedTooltip, wrapperClass, wrapperStyle, placement)
 }
 
 func renderTooltipHeaderCellWithPlacement(label string, tooltip string, placement string) string {
@@ -1366,18 +1398,55 @@ func FormatCounts(values []int) string {
 	return strings.Join(parts, ",")
 }
 
-func signalIconHTML(category FailureCategory, priorWeeksPresent int) string {
+func signalIconContentHTML(className string, glyph string) string {
+	return fmt.Sprintf(
+		"<span class=\"signal-icon %s\" aria-hidden=\"true\">%s</span>",
+		html.EscapeString(strings.TrimSpace(className)),
+		html.EscapeString(strings.TrimSpace(glyph)),
+	)
+}
+
+func signalIconTooltipHTML(className string, glyph string, tooltip string) string {
+	return TriggerTooltipHTML(
+		signalIconContentHTML(className, glyph),
+		tooltip,
+		"Show signal details",
+		"",
+		"",
+		"",
+		tooltipPlacementCenter,
+	)
+}
+
+func signalIconsPlainHTML(category FailureCategory, priorWeeksPresent int) string {
 	var icons strings.Builder
 	switch category {
 	case frontreadmodel.CategoryRegression:
-		icons.WriteString("<span class=\"signal-icon signal-regression\" title=\"Likely regression\">⚠</span>")
+		icons.WriteString(signalIconContentHTML("signal-regression", "⚠"))
 	case frontreadmodel.CategoryFlake:
-		icons.WriteString("<span class=\"signal-icon signal-flake\" title=\"Intermittent flake\">↻</span>")
+		icons.WriteString(signalIconContentHTML("signal-flake", "↻"))
 	}
 	if category != frontreadmodel.CategoryRegression && priorWeeksPresent == 0 {
-		icons.WriteString("<span class=\"signal-icon signal-new\" title=\"New failure pattern — no prior history\">★</span>")
+		icons.WriteString(signalIconContentHTML("signal-new", "★"))
 	}
 	return icons.String()
+}
+
+func categoryTooltipText(category FailureCategory, catLabel string, categoryReasons []string, priorWeeksPresent int) string {
+	parts := []string{fmt.Sprintf("Signal: %s", strings.TrimSpace(catLabel))}
+	if len(categoryReasons) > 0 {
+		parts = append(parts, strings.Join(categoryReasons, "; "))
+	}
+	if category != frontreadmodel.CategoryRegression && priorWeeksPresent == 0 {
+		parts = append(parts, "New failure pattern — no prior history")
+	}
+	return strings.Join(parts, " — ")
+}
+
+func signalSummaryTooltipHTML(category FailureCategory, priorWeeksPresent int, catClass string, catLabel string, tooltip string, placement string) string {
+	content := signalIconsPlainHTML(category, priorWeeksPresent) +
+		fmt.Sprintf("<span class=\"category-label %s\">%s</span>", html.EscapeString(strings.TrimSpace(catClass)), html.EscapeString(strings.TrimSpace(catLabel)))
+	return TriggerTooltipHTML(content, tooltip, "", "tooltip-content-trigger", "", "", placement)
 }
 
 func normalizedOptions(options TableOptions) TableOptions {
@@ -1487,9 +1556,8 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 	if category == frontreadmodel.CategoryRegression {
 		tooltip := "Likely regression — " + strings.Join(categoryReasons, "; ")
 		summaryText = fmt.Sprintf(
-			"<span class=\"signal-icon signal-regression\" title=\"%s\" aria-label=\"%s\">⚠</span>%s",
-			html.EscapeString(tooltip),
-			html.EscapeString(tooltip),
+			"%s%s",
+			signalIconTooltipHTML("signal-regression", "⚠", tooltip),
 			summaryText,
 		)
 	}
@@ -1502,11 +1570,7 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 		jobsAffected,
 		maxInt(opts.ImpactTotalJobs, 0),
 	)
-	signalIconsHTML := signalIconHTML(category, row.PriorWeeksPresent)
-	categoryCellTitle := fmt.Sprintf("Signal: %s", catLabel)
-	if len(categoryReasons) > 0 {
-		categoryCellTitle = fmt.Sprintf("%s — %s", categoryCellTitle, strings.Join(categoryReasons, "; "))
-	}
+	categoryCellTitle := categoryTooltipText(category, catLabel, categoryReasons, row.PriorWeeksPresent)
 	manualSortValue := strings.TrimSpace(row.ManualIssueID)
 	if manualSortValue == "" {
 		manualSortValue = "~" + strings.ToLower(strings.TrimSpace(row.Environment)) + "|" + strings.TrimSpace(row.FailurePatternID)
@@ -1553,13 +1617,30 @@ func renderMainRow(row FailurePatternRow, rowID string, opts TableOptions) strin
 	if successDetails := successDetailsFromSearchQuery(row.SearchQuery); successDetails != "" {
 		signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">%s</div>", html.EscapeString(successDetails)))
 	}
-	signatureDetails.WriteString(fmt.Sprintf("<div class=\"muted\">Signal: %s%s</div>", signalIconsHTML, html.EscapeString(catLabel)))
+	signatureDetails.WriteString(fmt.Sprintf(
+		"<div class=\"muted\">Signal: %s</div>",
+		signalSummaryTooltipHTML(category, row.PriorWeeksPresent, catClass, catLabel, categoryCellTitle, tooltipPlacementStart),
+	))
 	signatureDetails.WriteString("</details></td>")
 	b.WriteString(signatureDetails.String())
 	b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(laneValue)))
 	b.WriteString(fmt.Sprintf("<td>%d</td>", jobsAffected))
-	b.WriteString(fmt.Sprintf("<td title=\"%s\"><span class=\"impact-score %s\">%s</span></td>", html.EscapeString(impactTitle), impactScoreClass(impactPercent), html.EscapeString(impactLabel)))
-	b.WriteString(fmt.Sprintf("<td title=\"%s\">%s<span class=\"category-label %s\">%s</span></td>", html.EscapeString(categoryCellTitle), signalIconsHTML, catClass, html.EscapeString(catLabel)))
+	b.WriteString(fmt.Sprintf(
+		"<td>%s</td>",
+		TriggerTooltipHTML(
+			fmt.Sprintf("<span class=\"impact-score %s\">%s</span>", impactScoreClass(impactPercent), html.EscapeString(impactLabel)),
+			impactTitle,
+			"",
+			"",
+			"",
+			"",
+			tooltipPlacementCenter,
+		),
+	))
+	b.WriteString(fmt.Sprintf(
+		"<td>%s</td>",
+		signalSummaryTooltipHTML(category, row.PriorWeeksPresent, catClass, catLabel, categoryCellTitle, tooltipPlacementEnd),
+	))
 	if opts.ShowCount {
 		b.WriteString(fmt.Sprintf("<td>%d</td>", row.Occurrences))
 	}
@@ -1674,17 +1755,19 @@ func renderTrendCell(row FailurePatternRow) string {
 	if len(row.TrendCounts) > 0 {
 		tooltip := trendTooltip(row.TrendCounts, row.TrendRange)
 		return fmt.Sprintf(
-			"<td title=\"%s\">%s</td>",
-			html.EscapeString(tooltip),
-			renderTrendBarsSVG(row.TrendCounts, tooltip),
+			"<td>%s</td>",
+			TriggerTooltipHTML(renderTrendBarsSVG(row.TrendCounts), tooltip, "Show trend details", "tooltip-trend-trigger", "", "", tooltipPlacementEnd),
 		)
 	}
 	if row.TrendSparkline != "" {
+		tooltip := strings.TrimSpace(FormatCounts(row.TrendCounts))
+		rangeLabel := strings.TrimSpace(row.TrendRange)
+		if rangeLabel != "" {
+			tooltip = fmt.Sprintf("%s (%s)", tooltip, rangeLabel)
+		}
 		return fmt.Sprintf(
-			"<td title=\"%s (%s)\">%s</td>",
-			html.EscapeString(FormatCounts(row.TrendCounts)),
-			html.EscapeString(row.TrendRange),
-			html.EscapeString(row.TrendSparkline),
+			"<td>%s</td>",
+			TriggerTooltipHTML(html.EscapeString(row.TrendSparkline), tooltip, "Show trend details", "", "", "", tooltipPlacementEnd),
 		)
 	}
 	return "<td>n/a</td>"
@@ -1722,7 +1805,7 @@ func trendTooltip(counts []int, dateRange string) string {
 	return strings.TrimSpace(FormatCounts(counts))
 }
 
-func renderTrendBarsSVG(counts []int, ariaLabel string) string {
+func renderTrendBarsSVG(counts []int) string {
 	if len(counts) == 0 {
 		return "<span class=\"muted\">n/a</span>"
 	}
@@ -1744,12 +1827,11 @@ func renderTrendBarsSVG(counts []int, ariaLabel string) string {
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(
-		"<svg class=\"trend-svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" role=\"img\" aria-label=\"%s\">",
+		"<svg class=\"trend-svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" aria-hidden=\"true\" focusable=\"false\">",
 		chartWidth,
 		chartHeight,
 		chartWidth,
 		chartHeight,
-		html.EscapeString(strings.TrimSpace(ariaLabel)),
 	))
 	b.WriteString(fmt.Sprintf(
 		"<line x1=\"0\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#d1d5db\" stroke-width=\"1\"/>",
@@ -1865,8 +1947,11 @@ func renderLinkedChildrenDetails(children []FailurePatternRow, opts TableOptions
 			jobsAffected,
 		))
 		b.WriteString("</summary>")
-		childSignalIcons := signalIconHTML(childCategory, child.PriorWeeksPresent)
-		b.WriteString(fmt.Sprintf("<div class=\"muted\">Signal: %s%s</div>", childSignalIcons, html.EscapeString(childCatLabel)))
+		childSignalTooltip := categoryTooltipText(childCategory, childCatLabel, childCatReasons, child.PriorWeeksPresent)
+		b.WriteString(fmt.Sprintf(
+			"<div class=\"muted\">Signal: %s</div>",
+			signalSummaryTooltipHTML(childCategory, child.PriorWeeksPresent, CategoryClass(childCategory), childCatLabel, childSignalTooltip, tooltipPlacementStart),
+		))
 		if opts.ShowLinkedChildQuality || opts.ShowLinkedChildReview {
 			b.WriteString("<div class=\"linked-failure-pattern-item-flags\">")
 			if opts.ShowLinkedChildQuality {

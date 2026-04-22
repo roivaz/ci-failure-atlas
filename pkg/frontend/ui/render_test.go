@@ -711,6 +711,52 @@ func TestRenderTableHidesCountAfterShareByDefaultAndShowsImpact(t *testing.T) {
 	}
 }
 
+func TestRenderTableUsesInlineTooltipsForSignalImpactAndTrendCells(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderTable([]FailurePatternRow{
+		{
+			Environment:        "dev",
+			FailurePattern:     "deadline exceeded in provisioning step",
+			FailurePatternID:   "cluster-1",
+			Occurrences:        1,
+			OccurrenceShare:    100,
+			AfterLastPushCount: 0,
+			PriorWeeksPresent:  0,
+			TrendCounts:        []int{0, 1, 0, 1, 0, 1, 0},
+			TrendRange:         "2026-03-01..2026-03-07",
+			AffectedRuns: []RunReference{
+				{RunURL: "https://prow.example/run/1", PRNumber: 4313, OccurredAt: "2026-03-07T10:00:00Z"},
+			},
+		},
+	}, TableOptions{IncludeTrend: true})
+
+	for _, snippet := range []string{
+		`data-inline-tooltip`,
+		`role="tooltip">1 of 1 job runs affected</span>`,
+		`role="tooltip">Signal: Regression`,
+		`role="tooltip">Mar 1: 0 · Mar 2: 1 · Mar 3: 0 · Mar 4: 1 · Mar 5: 0 · Mar 6: 1 · Mar 7: 0</span>`,
+		`role="tooltip">Likely regression`,
+		`class="inline-tooltip-trigger tooltip-trend-trigger"`,
+		`<svg class="trend-svg" width="54" height="18" viewBox="0 0 54 18" aria-hidden="true" focusable="false">`,
+		`<span class="sr-only">Show trend details</span>`,
+		`<span class="sr-only">Show signal details</span>`,
+	} {
+		if !strings.Contains(rendered, snippet) {
+			t.Fatalf("expected rendered table to contain %q", snippet)
+		}
+	}
+	if strings.Contains(rendered, `title="`) {
+		t.Fatalf("did not expect native title tooltips in rendered table: %q", rendered)
+	}
+	if strings.Contains(rendered, `role="img"`) || strings.Contains(rendered, `<svg class="trend-svg" width="54" height="18" viewBox="0 0 54 18" aria-label=`) {
+		t.Fatalf("did not expect the trend SVG itself to carry a browser-hoverable accessible label: %q", rendered)
+	}
+	if strings.Contains(rendered, `data-tooltip-trigger aria-label=`) || strings.Contains(rendered, `aria-label="Likely regression`) || strings.Contains(rendered, `aria-label="Signal: Regression`) || strings.Contains(rendered, `aria-label="Mar 1: 0 · Mar 2: 1`) {
+		t.Fatalf("did not expect tooltip trigger text to be embedded as aria-label on rendered table triggers: %q", rendered)
+	}
+}
+
 func TestRenderTableDerivesFailedAtFilterFromContributingTests(t *testing.T) {
 	t.Parallel()
 
