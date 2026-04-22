@@ -20,7 +20,7 @@ import (
 
 const (
 	sourceProwRunsReconcileInterval = 2 * time.Minute
-	sourceProwRunsReplayWindow      = 30 * time.Minute
+	sourceProwRunsReplayWindow      = 1 * time.Hour
 )
 
 type sourceProwRunsController struct {
@@ -238,7 +238,7 @@ func (c *sourceProwRunsController) syncEnvironment(ctx context.Context, environm
 		"fetched_total", fetchStats.FetchedBuilds,
 		"matched_completed", len(jobs),
 		"upserted_runs", len(runRecords),
-		"since_completion", since.Format(time.RFC3339),
+		"since_start", since.Format(time.RFC3339),
 	)
 	return nil
 }
@@ -310,7 +310,7 @@ func mapProwJobToRunRecord(prowBaseURL string, environment string, job prowjobs.
 	if jobName == "" {
 		return contracts.RunRecord{}, false
 	}
-	if !prowjobs.IsTerminalState(job.Status.State) || job.Status.CompletionTime.IsZero() || job.Status.StartTime.IsZero() {
+	if !prowjobs.IsTerminalState(job.Status.State) || job.Status.StartTime.IsZero() {
 		return contracts.RunRecord{}, false
 	}
 
@@ -341,21 +341,21 @@ func mapProwJobToRunRecord(prowBaseURL string, environment string, job prowjobs.
 }
 
 func shouldStopPagingJobHistory(jobs []prowjobs.Job, since time.Time) bool {
-	var oldestTerminalCompletion time.Time
-	foundTerminalCompletion := false
+	var oldestTerminalStart time.Time
+	foundTerminalStart := false
 
 	for _, job := range jobs {
-		if !prowjobs.IsTerminalState(job.Status.State) || job.Status.CompletionTime.IsZero() {
+		if !prowjobs.IsTerminalState(job.Status.State) || job.Status.StartTime.IsZero() {
 			continue
 		}
-		completedAt := job.Status.CompletionTime.UTC()
-		if !foundTerminalCompletion || completedAt.Before(oldestTerminalCompletion) {
-			oldestTerminalCompletion = completedAt
-			foundTerminalCompletion = true
+		startedAt := job.Status.StartTime.UTC()
+		if !foundTerminalStart || startedAt.Before(oldestTerminalStart) {
+			oldestTerminalStart = startedAt
+			foundTerminalStart = true
 		}
 	}
 
-	return foundTerminalCompletion && oldestTerminalCompletion.Before(since.UTC())
+	return foundTerminalStart && oldestTerminalStart.Before(since.UTC())
 }
 
 func filterCompletedJobsByNameAndSince(jobs []prowjobs.Job, jobName string, since time.Time) []prowjobs.Job {
@@ -369,10 +369,10 @@ func filterCompletedJobsByNameAndSince(jobs []prowjobs.Job, jobName string, sinc
 		if strings.TrimSpace(job.Spec.Job) != normalizedJobName {
 			continue
 		}
-		if !prowjobs.IsTerminalState(job.Status.State) || job.Status.CompletionTime.IsZero() {
+		if !prowjobs.IsTerminalState(job.Status.State) || job.Status.StartTime.IsZero() {
 			continue
 		}
-		if job.Status.CompletionTime.UTC().Before(since.UTC()) {
+		if job.Status.StartTime.UTC().Before(since.UTC()) {
 			continue
 		}
 		filtered = append(filtered, job)
@@ -383,12 +383,12 @@ func filterCompletedJobsByNameAndSince(jobs []prowjobs.Job, jobName string, sinc
 func computeNextProwRunsCheckpoint(previous time.Time, jobs []prowjobs.Job) time.Time {
 	next := previous.UTC()
 	for _, job := range jobs {
-		if job.Status.CompletionTime.IsZero() {
+		if job.Status.StartTime.IsZero() {
 			continue
 		}
-		completedAt := job.Status.CompletionTime.UTC()
-		if completedAt.After(next) {
-			next = completedAt
+		startedAt := job.Status.StartTime.UTC()
+		if startedAt.After(next) {
+			next = startedAt
 		}
 	}
 	if next.IsZero() {

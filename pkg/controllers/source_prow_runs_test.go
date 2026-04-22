@@ -112,6 +112,32 @@ func TestMapProwJobToRunRecordDropsAbortedJob(t *testing.T) {
 	}
 }
 
+func TestMapProwJobToRunRecordKeepsTerminalJobWithoutCompletionTime(t *testing.T) {
+	t.Parallel()
+
+	job := prowjobs.Job{
+		Spec: prowjobs.JobSpec{
+			Job: "pull-ci-Azure-ARO-HCP-main-e2e-parallel",
+			Refs: &prowjobs.Refs{
+				Pulls: []prowjobs.Pull{{Number: 4313, SHA: "abc123"}},
+			},
+		},
+		Status: prowjobs.JobStatus{
+			State:     "failure",
+			URL:       "gs://test-platform-results/pr-logs/pull/Azure_ARO-HCP/4313/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488",
+			StartTime: mustParseRFC3339(t, "2026-04-20T10:00:00Z"),
+		},
+	}
+
+	record, ok := mapProwJobToRunRecord("https://prow.ci.openshift.org", "dev", job)
+	if !ok {
+		t.Fatalf("expected terminal job without completion time to still map")
+	}
+	if record.OccurredAt != "2026-04-20T10:00:00Z" {
+		t.Fatalf("unexpected occurred_at: got=%q", record.OccurredAt)
+	}
+}
+
 func TestListCompletedJobsSincePagesUntilCutoff(t *testing.T) {
 	t.Parallel()
 
@@ -209,8 +235,8 @@ func TestListCompletedJobsSincePagesUntilCutoff(t *testing.T) {
 	if jobs[0].Status.URL != "https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/Azure_ARO-HCP/4313/pull-ci-Azure-ARO-HCP-main-e2e-parallel/2029578186907455488" {
 		t.Fatalf("unexpected resolved run URL: got=%q", jobs[0].Status.URL)
 	}
-	if jobs[1].Status.CompletionTime.Before(since) {
-		t.Fatalf("expected all returned jobs to satisfy the cutoff: got completion=%s since=%s", jobs[1].Status.CompletionTime.Format(time.RFC3339), since.Format(time.RFC3339))
+	if jobs[1].Status.StartTime.Before(since) {
+		t.Fatalf("expected all returned jobs to satisfy the start-time cutoff: got start=%s since=%s", jobs[1].Status.StartTime.Format(time.RFC3339), since.Format(time.RFC3339))
 	}
 	for _, job := range jobs {
 		if job.Status.State == "aborted" || job.Status.State == "pending" {
@@ -234,6 +260,73 @@ func TestShouldStopPagingJobHistoryIgnoresPendingJobs(t *testing.T) {
 	}
 	if shouldStopPagingJobHistory(jobs, since) {
 		t.Fatalf("expected paging to continue when a page has only non-terminal jobs")
+	}
+}
+
+func TestFilterCompletedJobsByNameAndSinceUsesStartTime(t *testing.T) {
+	t.Parallel()
+
+	since := mustParseRFC3339(t, "2026-04-22T18:00:00Z")
+	jobs := []prowjobs.Job{
+		{
+			Spec: prowjobs.JobSpec{Job: "pull-ci-Azure-ARO-HCP-main-e2e-parallel"},
+			Status: prowjobs.JobStatus{
+				State:          "failure",
+				StartTime:      mustParseRFC3339(t, "2026-04-22T17:45:00Z"),
+				CompletionTime: mustParseRFC3339(t, "2026-04-22T19:10:00Z"),
+			},
+		},
+		{
+			Spec: prowjobs.JobSpec{Job: "pull-ci-Azure-ARO-HCP-main-e2e-parallel"},
+			Status: prowjobs.JobStatus{
+				State:          "failure",
+				StartTime:      mustParseRFC3339(t, "2026-04-22T18:05:00Z"),
+				CompletionTime: mustParseRFC3339(t, "2026-04-22T18:07:00Z"),
+			},
+		},
+	}
+
+	filtered := filterCompletedJobsByNameAndSince(jobs, "pull-ci-Azure-ARO-HCP-main-e2e-parallel", since)
+	if len(filtered) != 1 {
+		t.Fatalf("unexpected filtered job count: got=%d want=1", len(filtered))
+	}
+	if !filtered[0].Status.StartTime.Equal(mustParseRFC3339(t, "2026-04-22T18:05:00Z")) {
+		t.Fatalf("expected filter to use start time cutoff, got start=%s", filtered[0].Status.StartTime.Format(time.RFC3339))
+	}
+}
+
+func TestComputeNextProwRunsCheckpointUsesStartTime(t *testing.T) {
+	t.Parallel()
+
+	previous := mustParseRFC3339(t, "2026-04-22T18:00:00Z")
+	jobs := []prowjobs.Job{
+		{
+			Status: prowjobs.JobStatus{
+				State:          "failure",
+				StartTime:      mustParseRFC3339(t, "2026-04-22T18:32:18Z"),
+				CompletionTime: mustParseRFC3339(t, "2026-04-22T19:01:07Z"),
+			},
+		},
+		{
+			Status: prowjobs.JobStatus{
+				State:          "failure",
+				StartTime:      mustParseRFC3339(t, "2026-04-22T18:32:22Z"),
+				CompletionTime: mustParseRFC3339(t, "2026-04-22T19:02:18Z"),
+			},
+		},
+		{
+			Status: prowjobs.JobStatus{
+				State:          "failure",
+				StartTime:      mustParseRFC3339(t, "2026-04-22T18:27:55Z"),
+				CompletionTime: mustParseRFC3339(t, "2026-04-22T19:36:06Z"),
+			},
+		},
+	}
+
+	got := computeNextProwRunsCheckpoint(previous, jobs)
+	want := mustParseRFC3339(t, "2026-04-22T18:32:22Z")
+	if !got.Equal(want) {
+		t.Fatalf("checkpoint should advance by latest start time: got=%s want=%s", got.Format(time.RFC3339), want.Format(time.RFC3339))
 	}
 }
 
