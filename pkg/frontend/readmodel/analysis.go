@@ -222,23 +222,16 @@ func BadPRScoreAndReasons(row FailurePatternRow) (int, []string) {
 	if rowPostGoodCount(row) > 0 {
 		return 0, nil
 	}
-
-	score := 1
-	reasons := []string{"post-good=0"}
-
-	if isOnlySeenInDev(row) {
-		score++
-		reasons = append(reasons, "only seen in DEV")
+	if !isOnlySeenInDev(row) {
+		return 0, nil
 	}
-	if isSingleKnownPR(row) {
-		score++
-		reasons = append(reasons, "only seen in one PR")
+	if !isSingleKnownPR(row) {
+		return 0, nil
 	}
 	if row.PriorWeeksPresent > 0 {
-		score = 0
-		reasons = append(reasons, fmt.Sprintf("seen in %d prior week(s), unlikely new regression", row.PriorWeeksPresent))
+		return 0, nil
 	}
-	return score, reasons
+	return 3, []string{"post-good=0", "only seen in DEV", "only seen in one PR"}
 }
 
 type FailureCategory string

@@ -54,6 +54,40 @@ func TestBadPRScoreAndReasonsIncludesAllSignals(t *testing.T) {
 	}
 }
 
+func TestBadPRScoreRejectsMultiplePRs(t *testing.T) {
+	t.Parallel()
+
+	score, _ := BadPRScoreAndReasons(FailurePatternRow{
+		Environment:        "dev",
+		AfterLastPushCount: 0,
+		AlsoIn:             nil,
+		AffectedRuns: []RunReference{
+			{RunURL: "https://prow.example/run/1", PRNumber: 4313, OccurredAt: "2026-03-07T10:00:00Z"},
+			{RunURL: "https://prow.example/run/2", PRNumber: 4314, OccurredAt: "2026-03-07T11:00:00Z"},
+			{RunURL: "https://prow.example/run/3", PRNumber: 4315, OccurredAt: "2026-03-07T12:00:00Z"},
+		},
+	})
+	if score != 0 {
+		t.Fatalf("expected score 0 when multiple PRs trigger the same pattern, got %d", score)
+	}
+}
+
+func TestBadPRScoreRejectsNonDevEnvironment(t *testing.T) {
+	t.Parallel()
+
+	score, _ := BadPRScoreAndReasons(FailurePatternRow{
+		Environment:        "int",
+		AfterLastPushCount: 0,
+		AlsoIn:             nil,
+		AffectedRuns: []RunReference{
+			{RunURL: "https://prow.example/run/1", PRNumber: 4313, OccurredAt: "2026-03-07T10:00:00Z"},
+		},
+	})
+	if score != 0 {
+		t.Fatalf("expected score 0 for non-dev environment, got %d", score)
+	}
+}
+
 func TestClassifyFailurePatternRegression(t *testing.T) {
 	t.Parallel()
 
