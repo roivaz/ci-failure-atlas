@@ -55,6 +55,16 @@ var (
 	reCommandErrorLine            = regexp.MustCompile(`(?im)^Command Error:\s*[^\n]+$`)
 	reQuotaRequiredAvailable      = regexp.MustCompile(`(?i)\brequired\s+['"]?\d+['"]?\s*,\s*available\s+['"]?\d+['"]?\b`)
 	reWrapperStepErroredContainer = regexp.MustCompile(`(?i)step errored`)
+	reModelDiffSummary            = regexp.MustCompile(`(?i)operation result model did not match expected model[^\n]*`)
+	reX509CertificateMismatch     = regexp.MustCompile(`(?i)tls: failed to verify certificate: x509: certificate is valid for [^\n]+, not [^\n]+`)
+	reTimedOutAfterDuration       = regexp.MustCompile(`(?i)^timed out after [0-9]+(?:\.[0-9]+)?s\.$`)
+	reTimedOutAssertionWrapper    = regexp.MustCompile(`(?i)^fail \[[^\]]*\]:\s*(timed out after [0-9]+(?:\.[0-9]+)?s\.)$`)
+	rePlaceholderAssertionValue   = regexp.MustCompile(`^<[^>\n]+>:\s*\.{3}\s*$`)
+	reStructuredFieldLine         = regexp.MustCompile(`^[+-]?\s*[A-Za-z_][A-Za-z0-9_]+:\s+.*(?:,\s*|\{\s*)$`)
+	reLogfmtReleaseStatusDesc     = regexp.MustCompile(`(?i)level=info[^\n]*msg="determined release status\."[^\n]*description="((?:\\.|[^"])*)"`)
+	reCleanupWorkflowTarget       = regexp.MustCompile(`(?i)(ordered cleanup workflow failed for )([a-z0-9-]+)(:)`)
+	reCleanupWorkflowMethodURL    = regexp.MustCompile(`(?i):\s*(?:GET|POST|PUT|PATCH|DELETE)\s+<url>`)
+	reCleanupWorkflowResourceName = regexp.MustCompile(`(?i)(failed deleting )([a-z0-9-]+)( \([^)]+\):)`)
 
 	// Dial-TCP address: normalize raw IPs left behind after URL masking.
 	reCleanDialTCPAddress = regexp.MustCompile(`\bdial tcp \d{1,3}(?:\.\d{1,3}){3}:\d+\b`)
@@ -74,7 +84,7 @@ var (
 	// HCP API / reserved hostnames (e.g. api.<cluster>.<stamp>.<region>.aroapp-hcp.io).
 	// These appear in x509 certificate-mismatch error text and are cluster/stamp-
 	// specific; normalize so the same class of cert error merges across clusters.
-	reCleanHCPApiHost = regexp.MustCompile(`(?i)\b(?:api|reserved)\.[a-z0-9][a-z0-9.-]*\.aroapp-hcp\.io\b`)
+	reCleanHCPApiHost = regexp.MustCompile(`(?i)\b(?:api\.[a-z0-9][a-z0-9.-]*|reserved(?:\.[a-z0-9][a-z0-9.-]*)?)\.aroapp-hcp(?:\.azure-test\.net|\.io)\b`)
 	// OCP version strings like openshift-v4.22.0-candidate (the version number
 	// is instance-specific; normalize so the same class of error merges).
 	reCleanOCPVersion = regexp.MustCompile(`\bopenshift-v[0-9]+\.[0-9]+\.[0-9]+-[a-z]+\b`)
@@ -250,8 +260,11 @@ func extractEvidence(text string) extractedEvidence {
 	provider := providerAnchor(raw)
 	assertionContext := extractAssertionContext(raw)
 	if assertionContext != "" {
-		canonical := cleanCanonical(assertionContext)
-		searchPhrase := chooseSearchPhrase(raw, []string{assertionContext, canonical})
+		canonical := normalizeExtractedCanonical(cleanCanonical(assertionContext))
+		searchPhrase := ""
+		if strings.Contains(raw, assertionContext) {
+			searchPhrase = chooseSearchPhrase(raw, []string{assertionContext, canonical})
+		}
 		return extractedEvidence{
 			CanonicalEvidencePhrase: canonical,
 			SearchQueryPhrase:       searchPhrase,
@@ -261,6 +274,7 @@ func extractEvidence(text string) extractedEvidence {
 	}
 
 	logfmtErr := extractLogfmtStepError(raw)
+	releaseStatusDescription := extractLogfmtReleaseStatusDescription(raw)
 	picked := ""
 	for _, pattern := range normalizePickPatterns {
 		if match := pattern.FindString(raw); match != "" {
@@ -271,6 +285,9 @@ func extractEvidence(text string) extractedEvidence {
 
 	if logfmtErr != "" && (picked == "" || isStructuredStepWrapperPick(picked)) {
 		picked = logfmtErr
+	}
+	if releaseStatusDescription != "" && (picked == "" || isReleaseStatusWrapperPick(picked)) {
+		picked = releaseStatusDescription
 	}
 
 	// Prow entrypoint JSON lines are single-line structured logs whose only
@@ -329,6 +346,9 @@ func extractEvidence(text string) extractedEvidence {
 			}
 		}
 	}
+	if certMismatch := bestX509CertificateMismatchDetail(raw); certMismatch != "" && shouldPreferX509CertificateMismatchDetail(picked) {
+		picked = certMismatch
+	}
 
 	if strings.EqualFold(strings.TrimSpace(picked), "cluster provisioning failed") {
 		if codePick := regexp.MustCompile(`(?i)ERROR CODE:\s*[A-Za-z0-9_]+`).FindString(raw); codePick != "" {
@@ -347,7 +367,7 @@ func extractEvidence(text string) extractedEvidence {
 	if code == "" {
 		code = rootAzureErrorCode(raw)
 	}
-	canonical := cleanCanonical(picked)
+	canonical := normalizeExtractedCanonical(cleanCanonical(picked))
 
 	if code != "" && isGenericCode(code) {
 		leafCode, leafMessage = extractLeafAzureDetail(raw, code)
@@ -471,6 +491,10 @@ func cleanCanonical(value string) string {
 	text := value
 	text = strings.ReplaceAll(text, "\r", " ")
 	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, `\r`, " ")
+	text = strings.ReplaceAll(text, `\n`, " ")
+	text = strings.ReplaceAll(text, `\t`, " ")
+	text = strings.ReplaceAll(text, `\"`, `"`)
 	text = reCleanFmtWrap.ReplaceAllString(text, " ")
 	text = reCleanHexAddress.ReplaceAllString(text, " ")
 	text = reCleanGoFileLine.ReplaceAllString(text, " ")
@@ -516,6 +540,61 @@ func cleanCanonical(value string) string {
 	return text
 }
 
+func normalizeExtractedCanonical(value string) string {
+	normalized := normalizeTimedOutAfterDuration(value)
+	normalized = stripTransportURLPrefixForTLSMismatch(normalized)
+	normalized = stripReleaseFailureWrapper(normalized)
+	normalized = normalizeCleanupWorkflowDeletion(normalized)
+	return normalized
+}
+
+func normalizeTimedOutAfterDuration(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if !reTimedOutAfterDuration.MatchString(trimmed) {
+		return trimmed
+	}
+	return "Timed out after <duration>s."
+}
+
+func stripTransportURLPrefixForTLSMismatch(value string) string {
+	trimmed := strings.TrimSpace(value)
+	lowered := strings.ToLower(trimmed)
+	const marker = `tls: failed to verify certificate:`
+	if strings.HasPrefix(lowered, `get "<url>`) {
+		if idx := strings.Index(lowered, marker); idx >= 0 {
+			return strings.TrimSpace(trimmed[idx:])
+		}
+	}
+	return trimmed
+}
+
+func stripReleaseFailureWrapper(value string) string {
+	trimmed := strings.TrimSpace(value)
+	lowered := strings.ToLower(trimmed)
+	const helmPrefix = "error running helm release deployment step, failed to deploy helm release:"
+	if strings.HasPrefix(lowered, helmPrefix) {
+		return strings.TrimSpace(trimmed[len(helmPrefix):])
+	}
+	if strings.HasPrefix(lowered, `release "`) {
+		if idx := strings.Index(lowered, `" failed: `); idx >= 0 {
+			return strings.TrimSpace(trimmed[idx+len(`" failed: `):])
+		}
+	}
+	return trimmed
+}
+
+func normalizeCleanupWorkflowDeletion(value string) string {
+	trimmed := strings.TrimSpace(value)
+	lowered := strings.ToLower(trimmed)
+	if !strings.Contains(lowered, "ordered cleanup workflow failed for") || !strings.Contains(lowered, "failed deleting") {
+		return trimmed
+	}
+	normalized := reCleanupWorkflowTarget.ReplaceAllString(trimmed, `${1}<cleanup-target>${3}`)
+	normalized = reCleanupWorkflowResourceName.ReplaceAllString(normalized, `${1}<cleanup-resource>${3}`)
+	normalized = reCleanupWorkflowMethodURL.ReplaceAllString(normalized, ": <url>")
+	return collapseWS(normalized)
+}
+
 func truncateCanonical(value string, max int) string {
 	trimmed := strings.TrimSpace(value)
 	if max <= 0 || len(trimmed) <= max {
@@ -537,6 +616,12 @@ func extractAssertionContext(text string) string {
 	}
 	if successContext := extractGomegaSuccessFailureContext(text); successContext != "" {
 		return successContext
+	}
+	if modelDiffSummary := extractModelDiffSummaryContext(text); modelDiffSummary != "" {
+		return modelDiffSummary
+	}
+	if placeholderEquality := extractPlaceholderOnlyEqualityAssertionContext(text); placeholderEquality != "" {
+		return placeholderEquality
 	}
 
 	lines := strings.Split(text, "\n")
@@ -566,6 +651,7 @@ func extractAssertionContext(text string) string {
 			if isNoiseAssertionContextLine(candidate) {
 				continue
 			}
+			candidate = unwrapTimedOutAssertionWrapper(candidate)
 			if reAssertionErrorSignal.MatchString(candidate) {
 				return candidate
 			}
@@ -575,6 +661,68 @@ func extractAssertionContext(text string) string {
 		}
 		if best != "" {
 			return best
+		}
+	}
+	return ""
+}
+
+func unwrapTimedOutAssertionWrapper(value string) string {
+	trimmed := strings.TrimSpace(value)
+	match := reTimedOutAssertionWrapper.FindStringSubmatch(trimmed)
+	if len(match) <= 1 {
+		return trimmed
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func extractModelDiffSummaryContext(text string) string {
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		candidate := collapseWS(line)
+		if candidate == "" {
+			continue
+		}
+		if reModelDiffSummary.MatchString(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func extractPlaceholderOnlyEqualityAssertionContext(text string) string {
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		if !strings.HasPrefix(strings.ToLower(collapseWS(line)), "to equal") {
+			continue
+		}
+		sawPlaceholderValue := false
+		sawMeaningfulContext := false
+		start := maxInt(0, index-4)
+		stop := minInt(len(lines), index+5)
+		for i := start; i < stop; i++ {
+			if i == index {
+				continue
+			}
+			candidate := strings.TrimSpace(lines[i])
+			if candidate == "" {
+				continue
+			}
+			normalized := strings.ToLower(collapseWS(candidate))
+			if normalized == "expected" || isAssertionTail(candidate) || isWrapperNoiseLine(candidate) {
+				continue
+			}
+			if isPlaceholderAssertionValueLine(candidate) {
+				sawPlaceholderValue = true
+				continue
+			}
+			if isStructBoundaryLine(candidate) || isStructFieldNoiseLine(candidate) {
+				continue
+			}
+			sawMeaningfulContext = true
+			break
+		}
+		if sawPlaceholderValue && !sawMeaningfulContext {
+			return "assertion failed: expected values to equal"
 		}
 	}
 	return ""
@@ -608,7 +756,7 @@ func extractEventuallyFailureContext(text string) string {
 			if isNoiseAssertionContextLine(candidate) || isEventuallyWrapperLine(candidate) || isTimedOutAfterLine(candidate) {
 				continue
 			}
-			return candidate
+			return unwrapTimedOutAssertionWrapper(candidate)
 		}
 	}
 	return ""
@@ -733,6 +881,9 @@ func isNoiseAssertionContextLine(line string) bool {
 	if strings.HasPrefix(lowered, "fail [") && strings.HasSuffix(lowered, ": expected") {
 		return true
 	}
+	if isStructFieldNoiseLine(normalized) {
+		return true
+	}
 	return strings.HasPrefix(normalized, "<") || strings.HasPrefix(normalized, "{") || strings.HasPrefix(normalized, "}")
 }
 
@@ -782,6 +933,18 @@ func extractLogfmtStepError(raw string) string {
 		return refined
 	}
 	return value
+}
+
+func extractLogfmtReleaseStatusDescription(raw string) string {
+	match := reLogfmtReleaseStatusDesc.FindStringSubmatch(raw)
+	if len(match) <= 1 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func isReleaseStatusWrapperPick(value string) bool {
+	return strings.Contains(strings.ToLower(collapseWS(value)), `msg="determined release status."`)
 }
 
 func safeSearchFromText(text string) string {
@@ -1247,6 +1410,9 @@ func isStructFieldNoiseLine(line string) bool {
 	if strings.Contains(normalized, "<context.") && strings.Contains(normalized, "{") {
 		return true
 	}
+	if isPlaceholderAssertionValueLine(trimmed) || reStructuredFieldLine.MatchString(trimmed) {
+		return true
+	}
 	return strings.HasPrefix(trimmed, "<*") && strings.Contains(trimmed, "{")
 }
 
@@ -1259,10 +1425,32 @@ func isStatusBannerLine(line string) bool {
 
 func isStructuredStepWrapperPick(value string) bool {
 	normalized := strings.ToLower(collapseWS(value))
-	return strings.HasPrefix(normalized, "error running image mirror step, failed to execute shell command:") ||
-		strings.HasPrefix(normalized, "error running helm release deployment step, failed to deploy helm release:") ||
-		strings.HasPrefix(normalized, "error running shell step, failed to execute shell command:") ||
-		strings.HasPrefix(normalized, "failed to run arm step:")
+	return strings.Contains(normalized, "error running image mirror step, failed to execute shell command:") ||
+		strings.Contains(normalized, "error running helm release deployment step, failed to deploy helm release:") ||
+		strings.Contains(normalized, "error running shell step, failed to execute shell command:") ||
+		strings.Contains(normalized, "failed to run arm step:")
+}
+
+func isPlaceholderAssertionValueLine(line string) bool {
+	return rePlaceholderAssertionValue.MatchString(strings.TrimSpace(line))
+}
+
+func bestX509CertificateMismatchDetail(text string) string {
+	match := reX509CertificateMismatch.FindString(text)
+	if match == "" {
+		return ""
+	}
+	return collapseWS(match)
+}
+
+func shouldPreferX509CertificateMismatchDetail(picked string) bool {
+	normalized := strings.ToLower(collapseWS(picked))
+	if normalized == "" {
+		return true
+	}
+	return strings.HasPrefix(normalized, "verifybasicaccess failed:") ||
+		strings.HasPrefix(normalized, "verifyallapiservicesavailable failed:") ||
+		(strings.HasPrefix(normalized, `get "`) && strings.Contains(normalized, "tls: failed to verify certificate:"))
 }
 
 func isStepSetupNoiseLine(lowered string) bool {

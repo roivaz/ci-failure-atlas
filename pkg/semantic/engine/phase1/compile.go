@@ -176,6 +176,7 @@ func Compile(
 		fallbackCanonical := compactTextForPhrase(joinCandidateFallback(acc.Rows), 220)
 		canonicalPhrase, canonicalHadFallback, canonicalHadConflict := pickPrimaryPhrase(acc.CanonicalCandidates, fallbackCanonical)
 		canonicalPhrase = refineCanonicalPhrase(canonicalPhrase, acc.Rows)
+		canonicalPhrase = contextualizeCanonicalWithTestName(canonicalPhrase, acc.TestName)
 		if canonicalHadFallback {
 			acc.ReasonSet["missing_canonical_candidate"] = struct{}{}
 		}
@@ -195,7 +196,9 @@ func Compile(
 		searchPhrase, sourceRunURL, sourceSignatureID, sourceFound := resolveSearchPhrase(references, searchPhrase, canonicalPhrase, acc.Rows)
 		if !sourceFound {
 			sourceRunURL, sourceSignatureID, searchPhrase, sourceFound = fallbackSearchSource(acc.Rows)
-			acc.ReasonSet["search_query_source_not_found"] = struct{}{}
+			if !sourceFound {
+				acc.ReasonSet["search_query_source_not_found"] = struct{}{}
+			}
 		}
 		if rePlaceholderToken.MatchString(searchPhrase) {
 			acc.ReasonSet["placeholder_in_search_query"] = struct{}{}
@@ -503,6 +506,10 @@ func fallbackSearchSource(rows []semanticcontracts.Phase1WorksetRecord) (string,
 		}
 		text := sourceTextForSearch(row)
 		phrase := deriveConciseLiteralSearchPhrase(text, "")
+		if phrase != "" && strings.Contains(text, phrase) {
+			return runURL, signatureID, phrase, true
+		}
+		phrase = literalFailureWrapperSearchPhrase(text)
 		if phrase == "" || !strings.Contains(text, phrase) {
 			continue
 		}
@@ -550,6 +557,23 @@ func literalSearchPhraseFromText(text string) string {
 	return compactLiteralWindow(token, 220)
 }
 
+func literalFailureWrapperSearchPhrase(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		token := strings.TrimSpace(line)
+		if token == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(token), "fail [") {
+			continue
+		}
+		if !strings.Contains(token, ":") {
+			continue
+		}
+		return compactLiteralWindow(token, 220)
+	}
+	return ""
+}
+
 func refineCanonicalPhrase(canonical string, rows []semanticcontracts.Phase1WorksetRecord) string {
 	current := strings.TrimSpace(canonical)
 	if !isWeakCanonicalPhrase(current) {
@@ -567,6 +591,26 @@ func refineCanonicalPhrase(canonical string, rows []semanticcontracts.Phase1Work
 		return compactTextForPhrase(refined, 220)
 	}
 	return current
+}
+
+func contextualizeCanonicalWithTestName(canonical string, testName string) string {
+	current := strings.TrimSpace(canonical)
+	name := strings.TrimSpace(testName)
+	if current == "" || name == "" {
+		return current
+	}
+	if !isGenericAssertionCanonical(current) && !isGenericTimedOutCanonical(current) {
+		return current
+	}
+	return compactTextForPhrase(name+": "+current, 220)
+}
+
+func isGenericAssertionCanonical(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), "assertion failed: expected values to equal")
+}
+
+func isGenericTimedOutCanonical(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), "Timed out after <duration>s.")
 }
 
 func isWeakCanonicalPhrase(value string) bool {
@@ -590,7 +634,7 @@ func isNoisySearchPhrase(value string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	switch lower {
-	case "error", "failed", "deploymentfailed", "internalservererror", "conflict", "badrequest", "multipleerrorsoccurred", "unexpected error", "operation failed", "context deadline exceeded", "cluster provisioning failed":
+	case "failure", "error", "failed", "deploymentfailed", "internalservererror", "conflict", "badrequest", "multipleerrorsoccurred", "unexpected error", "operation failed", "context deadline exceeded", "cluster provisioning failed":
 		return true
 	default:
 		return len(trimmed) > 220
@@ -651,7 +695,18 @@ func compactTextForPhrase(value string, max int) string {
 }
 
 func buildFallbackSearchPhrase(rows []semanticcontracts.Phase1WorksetRecord) string {
-	return compactTextForPhrase(joinCandidateFallback(rows), 160)
+	source := joinCandidateFallback(rows)
+	if source == "" {
+		return ""
+	}
+	if literal := literalSearchPhraseFromText(source); literal != "" && !isUnsafeFallbackSearchPhrase(literal) {
+		return compactTextForPhrase(literal, 160)
+	}
+	fallback := compactTextForPhrase(source, 160)
+	if isUnsafeFallbackSearchPhrase(fallback) {
+		return ""
+	}
+	return fallback
 }
 
 func joinCandidateFallback(rows []semanticcontracts.Phase1WorksetRecord) string {
@@ -669,6 +724,19 @@ func joinCandidateFallback(rows []semanticcontracts.Phase1WorksetRecord) string 
 		}
 	}
 	return ""
+}
+
+func isUnsafeFallbackSearchPhrase(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return true
+	}
+	return containsPlaceholderToken(trimmed) ||
+		isAssertionTail(trimmed) ||
+		isWrapperNoiseLine(trimmed) ||
+		isStructFieldNoiseLine(trimmed) ||
+		isStatusBannerLine(trimmed) ||
+		isNoisySearchPhrase(trimmed)
 }
 
 func hasAmbiguousProviderMergeFromRows(rows []semanticcontracts.Phase1WorksetRecord, canonical string, search string) bool {
@@ -868,11 +936,13 @@ var nearDuplicateSuppressPrefixes = []string{
 	"error running image mirror step",
 	"error running shell step",
 	"error running arm step",
+	"resource not ready, name:",
+	"failed post-install: resource not ready, name:",
 }
 
 func sharesStructuredErrorPrefix(a, b string) bool {
 	for _, prefix := range nearDuplicateSuppressPrefixes {
-		if strings.HasPrefix(a, prefix) && strings.HasPrefix(b, prefix) {
+		if strings.Contains(a, prefix) && strings.Contains(b, prefix) {
 			return true
 		}
 	}

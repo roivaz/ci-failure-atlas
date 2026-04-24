@@ -1,6 +1,7 @@
 package phase1
 
 import (
+	semanticcontracts "ci-failure-atlas/pkg/semantic/contracts"
 	"strings"
 	"testing"
 )
@@ -801,6 +802,250 @@ func TestExtractEvidenceNormalizesLongHCPApiHostnameBeforeTruncation(t *testing.
 	}
 }
 
+func TestExtractEvidencePrefersCertMismatchDetailAcrossVerifyWrappers(t *testing.T) {
+	t.Parallel()
+
+	rawA := `VerifyAllAPIServicesAvailable failed: failed to list all APIServices: Get "https://api.i2o7e9m2u0f5e5k.kyxh.uksouth.aroapp-hcp.azure-test.net:443/apis/apiregistration.k8s.io/v1/apiservices": tls: failed to verify certificate: x509: certificate is valid for api.i2o7e9m2u0f5e5k.zser.uksouth.aroapp-hcp.azure-test.net, reserved.aroapp-hcp.azure-test.net, not api.i2o7e9m2u0f5e5k.kyxh.uksouth.aroapp-hcp.azure-test.net`
+	rawB := `VerifyBasicAccess failed: failed to list services: Get "https://api.m4s3u7n2e5l1m2p.nay8.uksouth.aroapp-hcp.azure-test.net:443/api/v1/namespaces/default/services": tls: failed to verify certificate: x509: certificate is valid for api.m4s3u7n2e5l1m2p.kj53.uksouth.aroapp-hcp.azure-test.net, reserved.aroapp-hcp.azure-test.net, not api.m4s3u7n2e5l1m2p.nay8.uksouth.aroapp-hcp.azure-test.net`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if gotA != gotB {
+		t.Fatalf("cert mismatch variants should canonicalize identically across wrapper differences:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+	if !strings.Contains(gotA, "tls: failed to verify certificate") || !strings.Contains(gotA, "<hcp-api-host>") {
+		t.Fatalf("expected canonical phrase to keep the leaf cert mismatch detail with normalized hosts, got=%q", gotA)
+	}
+	lowered := strings.ToLower(gotA)
+	if strings.Contains(lowered, "verifybasicaccess failed") || strings.Contains(lowered, "verifyallapiservicesavailable failed") {
+		t.Fatalf("expected wrapper-specific Verify* text to be excluded from canonical phrase, got=%q", gotA)
+	}
+}
+
+func TestExtractEvidenceUsesModelDiffSummaryInsteadOfStructFieldLine(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/cluster_autoscaling.go:141]: Expected
+    operation result model did not match expected model for type *armredhatopenshifthcp.HcpOpenShiftCluster:
+      NodeDrainTimeoutMinutes: nil,
+    to equal
+      <string>: ...`
+
+	evidence := extractEvidence(raw)
+	lowered := strings.ToLower(evidence.CanonicalEvidencePhrase)
+	if !strings.Contains(lowered, "operation result model did not match expected model") {
+		t.Fatalf("expected canonical phrase to use the model-diff summary, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+	if strings.Contains(lowered, "nodedraintimeoutminutes") {
+		t.Fatalf("expected canonical phrase to skip interior struct-field lines, got=%q", evidence.CanonicalEvidencePhrase)
+	}
+}
+
+func TestExtractEvidenceUsesStableLabelForPlaceholderOnlyEqualityAssertion(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/mise_routing.go:89]: Expected
+    <string>: ...
+to equal
+    <string>: ...`
+
+	evidence := extractEvidence(raw)
+	if got, want := evidence.CanonicalEvidencePhrase, "assertion failed: expected values to equal"; got != want {
+		t.Fatalf("unexpected canonical for placeholder-only equality assertion: got=%q want=%q", got, want)
+	}
+	if evidence.SearchQueryPhrase != "" {
+		t.Fatalf("expected placeholder-only equality assertion to avoid a placeholder search query, got=%q", evidence.SearchQueryPhrase)
+	}
+}
+
+func TestBuildFallbackSearchPhraseSkipsPlaceholderOnlyAssertionBlock(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/mise_routing.go:89]: Expected
+    <string>: ...
+to equal
+    <string>: ...`
+
+	got := buildFallbackSearchPhrase([]semanticcontracts.Phase1WorksetRecord{{RawText: raw}})
+	if got != "" {
+		t.Fatalf("expected placeholder-only assertion block to produce no fallback search phrase, got=%q", got)
+	}
+}
+
+func TestExtractEvidenceNormalizesTimedOutAfterPrecision(t *testing.T) {
+	t.Parallel()
+
+	rawA := `fail [github.com/Azure/ARO-HCP/test/e2e/exporter_metrics.go:114]: Timed out after 1800.001s.
+Expected
+    <bool>: false
+to be true`
+	rawB := `fail [github.com/Azure/ARO-HCP/test/e2e/exporter_metrics.go:114]: Timed out after 1800.002s.
+Expected
+    <bool>: false
+to be true`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	want := "Timed out after <duration>s."
+	if gotA != want {
+		t.Fatalf("unexpected canonical for first timeout variant: got=%q want=%q", gotA, want)
+	}
+	if gotB != want {
+		t.Fatalf("unexpected canonical for second timeout variant: got=%q want=%q", gotB, want)
+	}
+}
+
+func TestExtractEvidenceStripsTransportGetWrapperFromTLSMismatch(t *testing.T) {
+	t.Parallel()
+
+	rawA := `Get "https://api.i2o7e9m2u0f5e5k.kyxh.uksouth.aroapp-hcp.azure-test.net:443/apis/apiregistration.k8s.io/v1/apiservices": tls: failed to verify certificate: x509: certificate is valid for api.i2o7e9m2u0f5e5k.zser.uksouth.aroapp-hcp.azure-test.net, reserved.aroapp-hcp.azure-test.net, not api.i2o7e9m2u0f5e5k.kyxh.uksouth.aroapp-hcp.azure-test.net`
+	rawB := `tls: failed to verify certificate: x509: certificate is valid for api.m4s3u7n2e5l1m2p.kj53.uksouth.aroapp-hcp.azure-test.net, reserved.aroapp-hcp.azure-test.net, not api.m4s3u7n2e5l1m2p.nay8.uksouth.aroapp-hcp.azure-test.net`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if gotA != gotB {
+		t.Fatalf("transport wrapped and plain TLS mismatch variants should canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+	if strings.Contains(strings.ToLower(gotA), `get "<url>`) {
+		t.Fatalf("expected transport Get wrapper to be stripped from canonical phrase, got=%q", gotA)
+	}
+	if !strings.HasPrefix(strings.ToLower(gotA), "tls: failed to verify certificate:") {
+		t.Fatalf("expected canonical phrase to keep the TLS mismatch detail, got=%q", gotA)
+	}
+}
+
+func TestExtractEvidenceAlignsReleaseStatusInfoAndStepErrorDetails(t *testing.T) {
+	t.Parallel()
+
+	rawA := `time=2026-04-21T09:58:27.890Z level=INFO msg="Determined release status." release="mce-config" namespace="open-cluster-management" status=failed description="Release \"mce-config\" failed: resource not ready, name: grc-policy-propagator, kind: Deployment, status: InProgress\ncontext deadline exceeded"`
+	rawB := `time=2026-04-21T09:58:28.016Z level=ERROR msg="Step errored." serviceGroup=Microsoft.Azure.ARO.HCP.ACM step=deploy-mce-config err="error running Helm release deployment Step, failed to deploy helm release: resource not ready, name: grc-policy-propagator, kind: Deployment, status: InProgress\ncontext deadline exceeded"`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if gotA != gotB {
+		t.Fatalf("release-status info lines and step-error lines should canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+	lowered := strings.ToLower(gotA)
+	if strings.Contains(lowered, "determined release status") || strings.Contains(lowered, "error running helm release deployment step") {
+		t.Fatalf("expected release wrapper text to be stripped from canonical phrase, got=%q", gotA)
+	}
+	if !strings.Contains(lowered, "resource not ready") || !strings.Contains(lowered, "grc-policy-propagator") {
+		t.Fatalf("expected canonical phrase to retain the actionable release detail, got=%q", gotA)
+	}
+}
+
+func TestExtractEvidenceNormalizesCleanupWorkflowDeletionVariants(t *testing.T) {
+	t.Parallel()
+
+	rawA := `failed to cleanup resource group: ordered cleanup workflow failed for admin-api-serialconsole-bootdiag-wfsm7c: Delete virtual networks: failed deleting sre-vnet-name (Microsoft.Network/virtualNetworks): DELETE https://management.azure.com/subscriptions/XXXX/resourceGroups/rg-a/providers/Microsoft.Network/virtualNetworks/sre-vnet-name`
+	rawB := `failed to cleanup resource group: ordered cleanup workflow failed for admin-api-serialconsole-bootdiag-kgr5zt: Delete virtual networks: failed deleting customer-vnet (Microsoft.Network/virtualNetworks): GET https://management.azure.com/subscriptions/XXXX/resourceGroups/rg-b/providers/Microsoft.Network/virtualNetworks/customer-vnet`
+
+	gotA := extractEvidence(rawA).CanonicalEvidencePhrase
+	gotB := extractEvidence(rawB).CanonicalEvidencePhrase
+	if gotA != gotB {
+		t.Fatalf("cleanup workflow deletion variants should canonicalize identically:\n  A=%q\n  B=%q", gotA, gotB)
+	}
+	if !strings.Contains(gotA, "<cleanup-target>") {
+		t.Fatalf("expected cleanup target name to be normalized, got=%q", gotA)
+	}
+	if !strings.Contains(gotA, "<cleanup-resource>") {
+		t.Fatalf("expected cleanup resource name to be normalized, got=%q", gotA)
+	}
+	if strings.Contains(strings.ToLower(gotA), "delete <url>") || strings.Contains(strings.ToLower(gotA), "get <url>") {
+		t.Fatalf("expected transport method before cleanup URL to be normalized away, got=%q", gotA)
+	}
+}
+
+func TestFallbackSearchSourceUsesFailWrapperForPlaceholderOnlyAssertion(t *testing.T) {
+	t.Parallel()
+
+	raw := `fail [github.com/Azure/ARO-HCP/test/e2e/mise_routing.go:89]: Expected
+    <string>: ...
+to equal
+    <string>: ...`
+
+	runURL, signatureID, phrase, found := fallbackSearchSource([]semanticcontracts.Phase1WorksetRecord{{
+		RunURL:      "https://prow.ci.example/view/1",
+		SignatureID: "sig-1",
+		RawText:     raw,
+	}})
+	if !found {
+		t.Fatalf("expected fallback search source to find a literal wrapper line")
+	}
+	if runURL != "https://prow.ci.example/view/1" || signatureID != "sig-1" {
+		t.Fatalf("unexpected search source metadata: runURL=%q signatureID=%q", runURL, signatureID)
+	}
+	if !strings.HasPrefix(strings.ToLower(phrase), "fail [github.com/azure/aro-hcp/test/e2e/mise_routing.go:89]: expected") {
+		t.Fatalf("expected fallback search phrase to use the literal fail wrapper line, got=%q", phrase)
+	}
+}
+
+func TestContextualizeCanonicalWithTestName(t *testing.T) {
+	t.Parallel()
+
+	timeoutGot := contextualizeCanonicalWithTestName("Timed out after <duration>s.", "Engineering should expose expected metrics")
+	timeoutWant := "Engineering should expose expected metrics: Timed out after <duration>s."
+	if timeoutGot != timeoutWant {
+		t.Fatalf("unexpected timeout contextualization: got=%q want=%q", timeoutGot, timeoutWant)
+	}
+
+	assertionGot := contextualizeCanonicalWithTestName("assertion failed: expected values to equal", "MISE routing returns the versioned frontend")
+	assertionWant := "MISE routing returns the versioned frontend: assertion failed: expected values to equal"
+	if assertionGot != assertionWant {
+		t.Fatalf("unexpected assertion contextualization: got=%q want=%q", assertionGot, assertionWant)
+	}
+}
+
+func TestCompileDoesNotFlagSearchSourceNotFoundWhenFallbackSourceSucceeds(t *testing.T) {
+	t.Parallel()
+
+	testName := "MISE Routing routes to the correct frontend based on version header MISE v2 when x-ms-mise-version header is set"
+	groupKey := buildGroupKey("int", "e2e", "periodic-ci", testName)
+	workset := []semanticcontracts.Phase1WorksetRecord{{
+		SchemaVersion: semanticcontracts.CurrentSchemaVersion,
+		Environment:   "int",
+		RowID:         "row-1",
+		GroupKey:      groupKey,
+		Lane:          "e2e",
+		JobName:       "periodic-ci",
+		TestName:      testName,
+		TestSuite:     "e2e",
+		SignatureID:   "sig-1",
+		OccurredAt:    "2026-04-24T10:00:00Z",
+		RunURL:        "https://prow.ci.example/view/1",
+		RawText: `fail [github.com/Azure/ARO-HCP/test/e2e/mise_routing.go:89]: Expected
+    <string>: ...
+to equal
+    <string>: ...`,
+	}}
+	assignments := []semanticcontracts.Phase1AssignmentRecord{{
+		SchemaVersion:                    semanticcontracts.CurrentSchemaVersion,
+		Environment:                      "int",
+		RowID:                            "row-1",
+		GroupKey:                         groupKey,
+		Phase1LocalClusterKey:            "cluster-1",
+		CanonicalEvidencePhraseCandidate: "assertion failed: expected values to equal",
+		Confidence:                       "medium",
+	}}
+
+	clusters, reviewItems, err := Compile(workset, assignments)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	if len(clusters) != 1 {
+		t.Fatalf("expected one cluster, got=%d", len(clusters))
+	}
+	cluster := clusters[0]
+	if !strings.HasPrefix(strings.ToLower(cluster.SearchQueryPhrase), "fail [github.com/azure/aro-hcp/test/e2e/mise_routing.go:89]: expected") {
+		t.Fatalf("expected fallback search source to provide a literal fail wrapper line, got=%q", cluster.SearchQueryPhrase)
+	}
+	for _, item := range reviewItems {
+		if item.Reason == "search_query_source_not_found" {
+			t.Fatalf("did not expect search_query_source_not_found when fallbackSearchSource succeeds: %+v", item)
+		}
+	}
+}
+
 func TestSeverityForReviewItem(t *testing.T) {
 	t.Parallel()
 
@@ -1046,6 +1291,21 @@ func TestSharesStructuredErrorPrefix(t *testing.T) {
 		{
 			a:    "error running helm release deployment step, failed to deploy helm release: resource not ready, name: arobit-forwarder",
 			b:    "error running helm release deployment step, failed to deploy helm release: resource not ready, name: aro-hcp-backend",
+			want: true,
+		},
+		{
+			a:    "resource not ready, name: multicluster-engine-operator, kind: Deployment, status: InProgress context deadline exceeded",
+			b:    "resource not ready, name: grc-policy-propagator, kind: Deployment, status: InProgress context deadline exceeded",
+			want: true,
+		},
+		{
+			a:    "failed post-install: resource not ready, name: finalize-mce, kind: Job, status: InProgress context deadline exceeded",
+			b:    "failed post-install: resource not ready, name: finalize-mce-config, kind: Job, status: InProgress context deadline exceeded",
+			want: true,
+		},
+		{
+			a:    `level=error msg="step errored." serviceGroup=Microsoft.Azure.ARO.HCP.ACM step=deploy-mce err="error running helm release deployment step, failed to deploy helm release: resource not ready, name: finalize-mce, kind: job, status: inprogress\ncontext deadline exceeded"`,
+			b:    `level=error msg="step errored." serviceGroup=Microsoft.Azure.ARO.HCP.ACM step=deploy-mce-config err="error running helm release deployment step, failed to deploy helm release: resource not ready, name: grc-policy-propagator, kind: deployment, status: inprogress\ncontext deadline exceeded"`,
 			want: true,
 		},
 		{
